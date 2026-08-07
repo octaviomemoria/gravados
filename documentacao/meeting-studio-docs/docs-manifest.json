@@ -1,0 +1,23 @@
+{
+  "project": "Meeting Studio",
+  "generated": "2026-08-07",
+  "documents": [
+    "00_README.md",
+    "01_PRODUCT_VISION_PRD.md",
+    "02_FUNCTIONAL_REQUIREMENTS.md",
+    "03_TECHNICAL_ARCHITECTURE.md",
+    "04_RECORDING_ENGINE.md",
+    "05_MEDIA_EDITOR.md",
+    "06_DATA_MODEL.md",
+    "07_AI_TRANSCRIPTION_KNOWLEDGE.md",
+    "08_UX_FLOWS.md",
+    "09_SECURITY_PRIVACY_COMPLIANCE.md",
+    "10_TESTING_QA.md",
+    "11_ROADMAP_BACKLOG.md",
+    "12_DEVELOPMENT_STANDARDS.md",
+    "13_ACCEPTANCE_CRITERIA.md",
+    "AGENTS.md",
+    "CODEX_START_PROMPT.md",
+    "14_TECHNICAL_RESEARCH_NOTES.md"
+  ]
+}
