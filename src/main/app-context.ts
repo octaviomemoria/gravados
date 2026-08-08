@@ -1,6 +1,8 @@
 import type { DatabaseClient } from './database/client'
 import {
   ProjectRepository,
+  TrackRepository,
+  SegmentRepository,
   ExportJobRepository,
   SettingsRepository
 } from './database/repositories'
@@ -9,6 +11,7 @@ import { SettingsService, buildDefaultSettings } from './services/settings.servi
 import { JobRunner } from './jobs/job-runner'
 import { ExportJobStore, type ExportJobPayload, type ExportJobResult } from './jobs/export-job-store'
 import { RecordingStateMachine } from './recording/recording-state-machine'
+import { RecordingSessionManager } from './recording/recording-session-manager'
 
 /**
  * Raiz de composicao do processo main: instancia repositorios e servicos uma unica vez e os
@@ -24,6 +27,7 @@ export interface AppContext {
   settingsService: SettingsService
   exportJobRunner: JobRunner<ExportJobPayload, ExportJobResult>
   recordingStateMachine: RecordingStateMachine
+  recordingSessionManager: RecordingSessionManager
 }
 
 export interface CreateAppContextOptions {
@@ -35,6 +39,8 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
   const { databaseClient, libraryRootPath } = options
 
   const projectRepository = new ProjectRepository(databaseClient.db)
+  const trackRepository = new TrackRepository(databaseClient.db)
+  const segmentRepository = new SegmentRepository(databaseClient.db)
   const exportJobRepository = new ExportJobRepository(databaseClient.db)
   const settingsRepository = new SettingsRepository(databaseClient.db)
 
@@ -47,6 +53,13 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     new ExportJobStore(exportJobRepository)
   )
   const recordingStateMachine = new RecordingStateMachine()
+  const recordingSessionManager = new RecordingSessionManager(
+    projectRepository,
+    trackRepository,
+    segmentRepository,
+    recordingStateMachine,
+    libraryRootPath
+  )
 
   return {
     databaseClient,
@@ -56,6 +69,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     projectService,
     settingsService,
     exportJobRunner,
-    recordingStateMachine
+    recordingStateMachine,
+    recordingSessionManager
   }
 }

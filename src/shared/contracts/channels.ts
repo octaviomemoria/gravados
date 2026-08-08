@@ -16,6 +16,7 @@ export const IPC_CHANNELS = {
   },
   recording: {
     start: 'recording.start',
+    appendChunk: 'recording.appendChunk',
     stop: 'recording.stop',
     getState: 'recording.getState'
   },

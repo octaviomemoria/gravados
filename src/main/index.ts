@@ -21,6 +21,15 @@ function resolveLogLevel(): LogLevel {
   return (VALID_LOG_LEVELS as readonly string[]).includes(raw ?? '') ? (raw as LogLevel) : 'info'
 }
 
+// Somente para os testes E2E (`tests/e2e/recording.spec.ts`): substitui camera/microfone reais
+// por um dispositivo sintetico do Chromium, permitindo testar o pipeline de gravacao de ponta a
+// ponta sem hardware real. Nunca ativado fora do processo de teste (variavel de ambiente
+// dedicada, setada apenas pelo `electron.launch({ env })` do Playwright).
+if (process.env.MEETING_STUDIO_E2E_FAKE_MEDIA === '1') {
+  app.commandLine.appendSwitch('use-fake-device-for-media-stream')
+  app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
+}
+
 let appContext: AppContext | undefined
 
 /**

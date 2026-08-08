@@ -292,3 +292,38 @@ body {
   background: var(--ms-color-primary);
   transition: width 80ms linear;
 }
+
+.recording-controls__actions {
+  margin-top: var(--ms-space-3);
+}
+
+.recording-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ms-space-2);
+  padding: var(--ms-space-2) var(--ms-space-3);
+  border-radius: var(--ms-radius-sm);
+  background: var(--ms-color-bg);
+  border: 1px solid var(--ms-color-border);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  margin-top: var(--ms-space-3);
+}
+
+.recording-indicator__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ms-color-danger);
+  animation: recording-indicator-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes recording-indicator-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}

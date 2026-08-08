@@ -2,17 +2,18 @@ import { useState } from 'react'
 import { EmptyState } from '../../components/EmptyState'
 import { CameraPreview } from './CameraPreview'
 import { LevelMeter } from './LevelMeter'
+import { RecordingControls } from './RecordingControls'
 import { useMediaDevices } from './useMediaDevices'
 import { useDeviceStream } from './useDeviceStream'
 import { useAudioLevel } from './useAudioLevel'
 import { useScreenSources } from './useScreenSources'
+import { useRecordingSession } from './useRecordingSession'
 
 /**
- * RF-002/RF-003/RF-004/RF-008 + MVP-AC-001 ("visualizar e selecionar as fontes"). Escopo
- * deliberado desta etapa (Fase 1, primeiro incremento): selecionar e pre-visualizar fontes.
- * Qualidade/segmentacao/layout (tambem mostrados no mockup de 08_UX_FLOWS.md secao 3) e o botao
- * "Iniciar gravacao" chegam com a captura real (proximo incremento da Fase 1) - `recording.start`
- * ainda retorna `NotImplementedError` no backend.
+ * RF-002/RF-003/RF-004/RF-008/RF-009/RF-043 + MVP-AC-001. Escopo deliberado deste incremento
+ * (Fase 1): captura real, mas SOMENTE microfone (ver README "Decisoes de arquitetura") - tela e
+ * camera ainda sao so selecao/preview, sem gravar. Qualidade/segmentacao/layout/pause ficam para
+ * incrementos seguintes.
  */
 export function RecordingSetupPage() {
   const { cameras, microphones, permissionDenied, loading: devicesLoading } = useMediaDevices()
@@ -29,6 +30,8 @@ export function RecordingSetupPage() {
     selectedMicId ? { audio: { deviceId: { exact: selectedMicId } } } : null
   )
   const micLevel = useAudioLevel(micStream)
+  const recordingSession = useRecordingSession(micStream)
+  const isRecording = recordingSession.status === 'recording' || recordingSession.status === 'stopping'
 
   return (
     <div className="feature-page">
@@ -78,6 +81,7 @@ export function RecordingSetupPage() {
         {cameras.length > 0 && (
           <select
             className="device-select"
+            aria-label="Camera"
             value={selectedCameraId ?? ''}
             onChange={(event) => setSelectedCameraId(event.target.value || null)}
           >
@@ -103,8 +107,10 @@ export function RecordingSetupPage() {
         {microphones.length > 0 && (
           <select
             className="device-select"
+            aria-label="Microfone"
             value={selectedMicId ?? ''}
             onChange={(event) => setSelectedMicId(event.target.value || null)}
+            disabled={isRecording}
           >
             <option value="">Sem microfone</option>
             {microphones.map((microphone) => (
@@ -117,6 +123,15 @@ export function RecordingSetupPage() {
         {micError && <EmptyState message="Nao foi possivel testar o nivel deste microfone." />}
         <LevelMeter level={micLevel} />
       </section>
+
+      <RecordingControls
+        status={recordingSession.status}
+        elapsedMs={recordingSession.elapsedMs}
+        error={recordingSession.error}
+        micSelected={Boolean(selectedMicId)}
+        onStart={(title) => void recordingSession.start(title)}
+        onStop={() => void recordingSession.stop()}
+      />
     </div>
   )
 }

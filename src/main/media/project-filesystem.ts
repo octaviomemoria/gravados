@@ -92,10 +92,19 @@ export async function createProjectDirectoryTree(paths: ProjectPaths): Promise<v
  */
 export type ManifestTrackType = 'screen' | 'camera' | 'microphone' | 'system_audio'
 
+export interface ManifestSegment {
+  index: number
+  relativePath: string
+  startedAtMs: number
+  endedAtMs: number | null
+  byteSize: number
+  finalized: boolean
+}
+
 export interface ManifestTrack {
   id: string
   type: ManifestTrackType
-  segments: unknown[]
+  segments: ManifestSegment[]
 }
 
 export interface ProjectManifest {
@@ -114,6 +123,11 @@ export function createInitialManifest(projectId: string): ProjectManifest {
     startedAt: null,
     tracks: []
   }
+}
+
+/** `screen_000001.webm` (04_RECORDING_ENGINE.md secao 5: `<sourceName>_<indice 6 digitos>.webm`). */
+export function buildSegmentFileName(sourceName: string, index: number): string {
+  return `${sourceName}_${String(index).padStart(6, '0')}.webm`
 }
 
 /**

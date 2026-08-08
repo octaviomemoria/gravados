@@ -44,6 +44,14 @@ export class ProjectRepository {
     this.db.update(projects).set({ status }).where(eq(projects.id, id)).run()
   }
 
+  /** Usado ao iniciar/finalizar uma gravacao (`startedAt`/`endedAt`/`durationMs`/`status`). */
+  updateRecordingLifecycle(
+    id: string,
+    patch: Partial<Pick<ProjectEntity, 'status' | 'startedAt' | 'endedAt' | 'durationMs'>>
+  ): void {
+    this.db.update(projects).set(patch).where(eq(projects.id, id)).run()
+  }
+
   delete(id: string): void {
     this.db.delete(projects).where(eq(projects.id, id)).run()
   }
