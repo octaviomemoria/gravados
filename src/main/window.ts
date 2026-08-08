@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { createSecureWebPreferences } from './security/secure-webpreferences'
 import { applyContentSecurityPolicy } from './security/content-security-policy'
 import { applyNavigationGuard } from './security/navigation-guard'
+import { registerMediaPermissionHandlers } from './security/permissions'
 import { APP_NAME } from '../shared/constants/app-info'
 
 /** electron-vite define esta variavel de ambiente durante `electron-vite dev`. */
@@ -13,6 +14,7 @@ function isDevServerActive(): boolean {
 export function createMainWindow(): BrowserWindow {
   const isDev = isDevServerActive()
   applyContentSecurityPolicy(session.defaultSession, isDev)
+  registerMediaPermissionHandlers(session.defaultSession)
 
   const preloadPath = join(__dirname, '../preload/index.js')
 

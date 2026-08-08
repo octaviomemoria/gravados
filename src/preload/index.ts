@@ -4,6 +4,7 @@ import { createSettingsApi } from './api/settings.api'
 import { createRecordingApi } from './api/recording.api'
 import { createExportApi } from './api/export.api'
 import { createSystemApi } from './api/system.api'
+import { createDevicesApi } from './api/devices.api'
 import type { MeetingStudioApi } from '../shared/types/preload-api'
 
 const projectApi = createProjectApi()
@@ -22,7 +23,8 @@ const meetingStudioApi: MeetingStudioApi = {
   settings: createSettingsApi(),
   recording: createRecordingApi(),
   export: createExportApi(),
-  system: createSystemApi()
+  system: createSystemApi(),
+  devices: createDevicesApi()
 }
 
 // Nunca expor `ipcRenderer` generico diretamente - apenas esta API tipada e validada.

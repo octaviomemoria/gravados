@@ -27,6 +27,9 @@ export const IPC_CHANNELS = {
   system: {
     getAppInfo: 'system.getAppInfo',
     getDiskSpace: 'system.getDiskSpace'
+  },
+  devices: {
+    listScreens: 'devices.listScreens'
   }
 } as const
 

@@ -6,10 +6,12 @@ Aplicativo desktop para gravação, edição, organização e análise inteligen
 Local-first, não destrutivo, recuperável. Windows-first no MVP, sem dependências que impeçam
 suporte futuro a macOS.
 
-Este repositório está atualmente na **Fase 0 — Bootstrap e Fundação Técnica**: fundação
-arquitetural (Electron/React/TypeScript/Vite, IPC tipado e validado, SQLite+Drizzle, segurança de
-processo, sistema de jobs, logging, testes/CI). **Nenhuma gravação real de tela/câmera/microfone
-ainda existe** — isso é escopo da Fase 1 (ver [Roadmap](#próximo-passo)).
+A **Fase 0 — Bootstrap e Fundação Técnica** está completa: fundação arquitetural
+(Electron/React/TypeScript/Vite, IPC tipado e validado, SQLite+Drizzle, segurança de processo,
+sistema de jobs, logging, testes/CI). A **Fase 1 — Recording Core** foi iniciada com o primeiro
+incremento (REC-001 a REC-004: listar telas/janelas, câmeras, microfones e pré-visualização) — ver
+[Dispositivos e preview](#dispositivos-e-preview-fase-1). **A gravação real ainda não existe**
+(início/pausa/parada, persistência de chunks, segmentação) — próximos incrementos da Fase 1.
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -132,6 +134,27 @@ criados ao criar um projeto — nenhum arquivo de mídia real é gravado.
   de qualquer operação.
 - FFmpeg (esqueleto): sempre `spawn(binary, args)`, nunca `exec` com concatenação de string.
 
+### Dispositivos e preview (Fase 1)
+
+Primeiro incremento da Fase 1 — Recording Core (RF-002/RF-003/RF-004/RF-008, MVP-AC-001):
+
+- **Telas/janelas** (`devices.listScreens`): `desktopCapturer.getSources()` só existe no processo
+  main; retorna `{id, name, kind, thumbnailDataUrl}` via IPC. O `id` (`screen:ZZ:0`/`window:XX:YY`)
+  fica pronto para ser usado como `chromeMediaSourceId` quando a captura real for implementada.
+- **Câmeras/microfones**: enumerados no renderer via `navigator.mediaDevices.enumerateDevices()`
+  (API web padrão, sem IPC). Rótulos só vêm preenchidos após permissão concedida —
+  `session.setPermissionRequestHandler`/`setPermissionCheckHandler` (`main/security/permissions.ts`)
+  concedem automaticamente apenas `'media'`, escopados à própria janela do app; qualquer outra
+  permissão é negada por padrão.
+- **Preview**: vídeo ao vivo da câmera (`getUserMedia` + `<video>`) e medidor de nível do
+  microfone (Web Audio `AnalyserNode`, RMS normalizado — `calculateAudioLevel`, testado
+  isoladamente). Telas mostram apenas a miniatura estática do `desktopCapturer` (não abrem uma
+  captura de tela ao vivo só para a etapa de seleção — decisão deliberada de custo/benefício).
+- Falha de permissão/dispositivo nunca trava a UI (MVP-AC-014): mostra mensagem amigável.
+- `RecordingSetupPage` (rota "Nova gravação") cobre apenas seleção + preview. Qualidade,
+  segmentação, layout e o botão "Iniciar gravação" (que ainda retornaria `NotImplementedError`)
+  ficam para o próximo incremento, junto da captura real.
+
 ## Estrutura de diretórios
 
 ```text
@@ -250,18 +273,25 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 ## Testes
 
 - **Vitest** (`tests/unit/`): máquina de estados de gravação e de jobs, filesystem/escrita atômica,
-  construção de argumentos FFmpeg, wrapper de IPC (validação/erro/sucesso), schemas Zod, erros de
-  domínio, migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço de
-  configurações, store de tema, smoke test de componente (jsdom).
+  construção de argumentos FFmpeg, classificação de fontes de tela, cálculo de nível de áudio
+  (RMS), wrapper de IPC (validação/erro/sucesso), schemas Zod, erros de domínio, migrations
+  (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço de configurações,
+  store de tema, smoke test de componente (jsdom). 76 testes, 18 arquivos.
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
-  criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
-  (`navigation.spec.ts`).
+  criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar, incluindo
+  "Nova gravação" com enumeração real de dispositivos (`navigation.spec.ts`). 10 testes.
 
 ## Pendências conhecidas
 
-- Gravação real (tela/câmera/microfone/áudio do sistema), editor, transcrição/IA, exportação real,
-  empacotamento (`electron-builder`) e nuvem/colaboração — todos fora do escopo desta fase por
-  desenho (ver `11_ROADMAP_BACKLOG.md`).
+- Captura real (início/pausa/parada de gravação, persistência de chunks, segmentação,
+  `system audio`), editor, transcrição/IA, exportação real, empacotamento (`electron-builder`) e
+  nuvem/colaboração — fora do escopo desta fase por desenho (ver `11_ROADMAP_BACKLOG.md`).
+- `RecordingSetupPage` cobre apenas seleção/preview de fontes — sem seleção de qualidade,
+  segmentação ou layout ainda (também previstos na tela de setup por `08_UX_FLOWS.md` §3).
+- Preview de tela usa apenas a miniatura estática do `desktopCapturer`, não uma captura ao vivo.
+- `useMediaDevices` trata qualquer falha de `getUserMedia` (inclusive "nenhum dispositivo
+  encontrado") como `permissionDenied` — mensagem ligeiramente imprecisa quando a causa real é
+  ausência de hardware, não permissão negada; refinamento futuro, não bloqueante.
 - Sem seletor de pasta nativo nas Configurações (a pasta padrão da biblioteca é somente leitura
   nesta fase).
 - CI (`.github/workflows/ci.yml`) só roda de fato quando o repositório for enviado a um remoto
@@ -269,8 +299,8 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 
 ## Próximo passo
 
-**Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`), começando por device enumeration e preview
-(REC-001 a REC-004: listar telas/câmeras/microfones via `desktopCapturer`/`navigator.mediaDevices`
-+ preview), pré-requisito de tudo o mais na fase (state machine real, chunk persistence,
-segmentação, pause/resume, disk monitor, stop/finalize) — já scaffolded nesta fase, mas não
-implementado.
+Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): REC-005 a REC-016 — captura real
+(screen/camera/mic/system audio via `MediaRecorder` + `chromeMediaSourceId`), conectar a máquina de
+estados já existente (`RecordingStateMachine`) a chamadas reais, persistência contínua de chunks em
+disco, segmentação por tempo/tamanho, pause/resume, marcadores, monitor de disco e finalização —
+substituindo o `NotImplementedError` atual de `recording.start`/`recording.stop`.

@@ -13,6 +13,7 @@ import type { CreateProjectRequest, ProjectResponse } from '../schemas/project.s
 import type { SettingsCategory } from '../schemas/settings.schema'
 import type { StartRecordingRequest, StopRecordingRequest } from '../schemas/recording.schema'
 import type { StartExportRequest, ExportJobResponse } from '../schemas/export.schema'
+import type { ScreenSource } from '../schemas/devices.schema'
 import type { RecordingState } from './recording-state'
 
 export interface ProjectApi {
@@ -51,6 +52,11 @@ export interface SystemApi {
   getDiskSpace: (path?: string) => Promise<{ freeBytes: number; totalBytes: number; path: string }>
 }
 
+export interface DevicesApi {
+  /** RF-002 - telas/monitores/janelas disponiveis para captura. */
+  listScreens: () => Promise<ScreenSource[]>
+}
+
 export interface MeetingStudioApi {
   project: ProjectApi
   library: LibraryApi
@@ -58,4 +64,5 @@ export interface MeetingStudioApi {
   recording: RecordingApi
   export: ExportApi
   system: SystemApi
+  devices: DevicesApi
 }
