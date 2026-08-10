@@ -7,7 +7,7 @@ export interface RecordingControlsProps {
   status: 'idle' | 'starting' | 'recording' | 'stopping'
   elapsedMs: number
   error: string | null
-  micSelected: boolean
+  canStart: boolean
   onStart: (title: string) => void
   onStop: () => void
 }
@@ -17,7 +17,7 @@ export function RecordingControls({
   status,
   elapsedMs,
   error,
-  micSelected,
+  canStart,
   onStart,
   onStop
 }: RecordingControlsProps) {
@@ -53,7 +53,7 @@ export function RecordingControls({
         {!isActive ? (
           <Button
             onClick={() => onStart(title.trim() || 'Reuniao sem titulo')}
-            disabled={!micSelected || status === 'starting'}
+            disabled={!canStart || status === 'starting'}
           >
             {status === 'starting' ? 'Iniciando...' : 'Iniciar gravacao'}
           </Button>

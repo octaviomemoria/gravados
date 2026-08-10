@@ -10,10 +10,11 @@ import { useScreenSources } from './useScreenSources'
 import { useRecordingSession } from './useRecordingSession'
 
 /**
- * RF-002/RF-003/RF-004/RF-008/RF-009/RF-043 + MVP-AC-001. Escopo deliberado deste incremento
- * (Fase 1): captura real, mas SOMENTE microfone (ver README "Decisoes de arquitetura") - tela e
- * camera ainda sao so selecao/preview, sem gravar. Qualidade/segmentacao/layout/pause ficam para
- * incrementos seguintes.
+ * RF-002/RF-003/RF-004/RF-006/RF-007/RF-008/RF-009/RF-043 + MVP-AC-001. Escopo deliberado deste
+ * incremento (Fase 1): captura real de microfone E camera, simultaneas e independentes (ver
+ * README "Decisoes de arquitetura") - tela ainda e so selecao/preview, sem gravar (exige
+ * `chromeMediaSourceId`, incremento seguinte). Qualidade/segmentacao/layout/pause ficam para
+ * depois.
  */
 export function RecordingSetupPage() {
   const { cameras, microphones, permissionDenied, loading: devicesLoading } = useMediaDevices()
@@ -30,7 +31,7 @@ export function RecordingSetupPage() {
     selectedMicId ? { audio: { deviceId: { exact: selectedMicId } } } : null
   )
   const micLevel = useAudioLevel(micStream)
-  const recordingSession = useRecordingSession(micStream)
+  const recordingSession = useRecordingSession({ microphone: micStream, camera: cameraStream })
   const isRecording = recordingSession.status === 'recording' || recordingSession.status === 'stopping'
 
   return (
@@ -84,6 +85,7 @@ export function RecordingSetupPage() {
             aria-label="Camera"
             value={selectedCameraId ?? ''}
             onChange={(event) => setSelectedCameraId(event.target.value || null)}
+            disabled={isRecording}
           >
             <option value="">Sem camera</option>
             {cameras.map((camera) => (
@@ -128,7 +130,7 @@ export function RecordingSetupPage() {
         status={recordingSession.status}
         elapsedMs={recordingSession.elapsedMs}
         error={recordingSession.error}
-        micSelected={Boolean(selectedMicId)}
+        canStart={Boolean(selectedMicId) || Boolean(selectedCameraId)}
         onStart={(title) => void recordingSession.start(title)}
         onStop={() => void recordingSession.stop()}
       />

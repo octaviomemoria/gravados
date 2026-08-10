@@ -13,6 +13,7 @@ import type { CreateProjectRequest, ProjectResponse } from '../schemas/project.s
 import type { SettingsCategory } from '../schemas/settings.schema'
 import type {
   StartRecordingRequest,
+  RecordingTrackHandle,
   AppendRecordingChunkRequest,
   StopRecordingRequest
 } from '../schemas/recording.schema'
@@ -42,7 +43,7 @@ export interface SettingsApi {
 export interface RecordingApi {
   start: (
     request: StartRecordingRequest
-  ) => Promise<{ state: RecordingState; microphoneTrackId: string }>
+  ) => Promise<{ state: RecordingState; tracks: RecordingTrackHandle[] }>
   appendChunk: (
     request: AppendRecordingChunkRequest
   ) => Promise<{ receivedBytes: number; totalBytes: number }>

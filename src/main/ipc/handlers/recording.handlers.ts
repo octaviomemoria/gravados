@@ -13,16 +13,17 @@ import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
 
 /**
- * Primeiro incremento real da Fase 1 - Recording Core (RF-002..RF-016, somente microfone -
+ * Terceiro incremento real da Fase 1 - Recording Core (RF-002..RF-016, microfone + camera -
  * ver README "Decisoes de arquitetura"). `start`/`appendChunk`/`stop` sao reais, delegando a
- * `RecordingSessionManager`. Tela/camera/audio do sistema, segmentacao, pause/resume e
- * marcadores ficam para incrementos seguintes.
+ * `RecordingSessionManager`. Tela, audio do sistema, segmentacao, pause/resume e marcadores
+ * ficam para incrementos seguintes.
  */
 export function registerRecordingHandlers(context: AppContext): void {
   registerHandler(
     IPC_CHANNELS.recording.start,
     { request: StartRecordingRequestSchema, response: StartRecordingResponseSchema },
-    async (request) => context.recordingSessionManager.start(request.projectId)
+    async (request) =>
+      context.recordingSessionManager.start(request.projectId, request.trackTypes)
   )
 
   registerHandler(

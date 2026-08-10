@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import type { RecordingTrackType } from '@shared/schemas/recording.schema'
 
 export type RecordingSessionStatus = 'idle' | 'starting' | 'recording' | 'stopping'
 
@@ -8,41 +9,58 @@ export interface RecordingSessionState {
   error: string | null
 }
 
-const CHUNK_TIMESLICE_MS = 1000
-const PREFERRED_MIME_TYPES = ['audio/webm;codecs=opus', 'audio/webm']
+export interface RecordingSources {
+  microphone: MediaStream | null
+  camera: MediaStream | null
+}
 
-function pickSupportedMimeType(): string {
-  for (const candidate of PREFERRED_MIME_TYPES) {
+const CHUNK_TIMESLICE_MS = 1000
+
+function pickSupportedMimeType(kind: 'audio' | 'video'): string {
+  const candidates =
+    kind === 'audio' ? ['audio/webm;codecs=opus', 'audio/webm'] : ['video/webm;codecs=vp8', 'video/webm']
+  for (const candidate of candidates) {
     if (MediaRecorder.isTypeSupported(candidate)) return candidate
   }
   return ''
 }
 
+interface TrackRecorderState {
+  recorder: MediaRecorder
+  sequence: number
+  sendQueue: Promise<void>
+}
+
 /**
- * RF-009/RF-011/RF-014/RF-016 (primeiro incremento - somente microfone). Envia cada chunk do
- * `MediaRecorder` ao main assim que ele chega (nunca acumula a gravacao inteira em memoria no
- * renderer - RF-014), em fila estritamente serial (`sendQueueRef`) para garantir que os chunks
- * cheguem na ordem correta mesmo que o IPC de um chunk demore mais que o proximo ser gerado.
+ * RF-006/RF-007/RF-009/RF-011/RF-014/RF-016 (terceiro incremento - microfone + camera
+ * simultaneos, ver README "Decisoes de arquitetura"). Um `MediaRecorder` por fonte ativa, cada
+ * um com seu proprio `trackId` (devolvido por `recording.start`) e sua propria fila serial de
+ * envio - a ordem só precisa ser garantida DENTRO de cada trilha (cada uma vira um arquivo
+ * separado), nao entre trilhas diferentes.
  */
-export function useRecordingSession(micStream: MediaStream | null) {
+export function useRecordingSession(sources: RecordingSources) {
   const [state, setState] = useState<RecordingSessionState>({
     status: 'idle',
     elapsedMs: 0,
     error: null
   })
 
-  const recorderRef = useRef<MediaRecorder | null>(null)
   const projectIdRef = useRef<string | null>(null)
-  const trackIdRef = useRef<string | null>(null)
-  const sequenceRef = useRef(0)
-  const sendQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const trackRecordersRef = useRef<Map<string, TrackRecorderState>>(new Map())
   const startedAtRef = useRef(0)
   const elapsedIntervalRef = useRef<number | null>(null)
 
   const start = useCallback(
     async (title: string) => {
-      if (!micStream) {
-        setState((prev) => ({ ...prev, error: 'Selecione um microfone antes de gravar.' }))
+      const trackTypes: RecordingTrackType[] = []
+      if (sources.microphone) trackTypes.push('MICROPHONE')
+      if (sources.camera) trackTypes.push('CAMERA')
+
+      if (trackTypes.length === 0) {
+        setState((prev) => ({
+          ...prev,
+          error: 'Selecione ao menos uma fonte (microfone ou camera) antes de gravar.'
+        }))
         return
       }
 
@@ -50,44 +68,48 @@ export function useRecordingSession(micStream: MediaStream | null) {
 
       try {
         const project = await window.meetingStudio.project.create({ title })
-        const { microphoneTrackId } = await window.meetingStudio.recording.start({
-          projectId: project.id
+        const { tracks } = await window.meetingStudio.recording.start({
+          projectId: project.id,
+          trackTypes
         })
 
         projectIdRef.current = project.id
-        trackIdRef.current = microphoneTrackId
-        sequenceRef.current = 0
-        sendQueueRef.current = Promise.resolve()
+        trackRecordersRef.current.clear()
 
-        const mimeType = pickSupportedMimeType()
-        const recorder = new MediaRecorder(micStream, mimeType ? { mimeType } : undefined)
+        for (const handle of tracks) {
+          const stream = handle.type === 'MICROPHONE' ? sources.microphone : sources.camera
+          if (!stream) continue
 
-        recorder.ondataavailable = (event: BlobEvent) => {
-          if (event.data.size === 0 || !trackIdRef.current) return
-          const sequence = sequenceRef.current
-          sequenceRef.current += 1
-          const trackId = trackIdRef.current
-          const chunkMimeType = recorder.mimeType
+          const mimeType = pickSupportedMimeType(handle.type === 'MICROPHONE' ? 'audio' : 'video')
+          const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+          const trackState: TrackRecorderState = { recorder, sequence: 0, sendQueue: Promise.resolve() }
+          trackRecordersRef.current.set(handle.trackId, trackState)
 
-          sendQueueRef.current = sendQueueRef.current
-            .then(async () => {
-              const buffer = await event.data.arrayBuffer()
-              await window.meetingStudio.recording.appendChunk({
-                trackId,
-                sequence,
-                mimeType: chunkMimeType,
-                data: new Uint8Array(buffer)
+          recorder.ondataavailable = (event: BlobEvent) => {
+            if (event.data.size === 0) return
+            const sequence = trackState.sequence
+            trackState.sequence += 1
+            const chunkMimeType = recorder.mimeType
+
+            trackState.sendQueue = trackState.sendQueue
+              .then(async () => {
+                const buffer = await event.data.arrayBuffer()
+                await window.meetingStudio.recording.appendChunk({
+                  trackId: handle.trackId,
+                  sequence,
+                  mimeType: chunkMimeType,
+                  data: new Uint8Array(buffer)
+                })
               })
-            })
-            .catch((error: unknown) => {
-              // Falha ao persistir UM chunk nao deve interromper a gravacao em andamento - o
-              // usuario ainda pode parar normalmente; o segmento refletira os chunks recebidos.
-              console.error('Falha ao enviar chunk de gravacao', error)
-            })
+              .catch((error: unknown) => {
+                // Falha ao persistir UM chunk nao deve interromper a gravacao em andamento.
+                console.error('Falha ao enviar chunk de gravacao', error)
+              })
+          }
+
+          recorder.start(CHUNK_TIMESLICE_MS)
         }
 
-        recorderRef.current = recorder
-        recorder.start(CHUNK_TIMESLICE_MS)
         startedAtRef.current = Date.now()
         elapsedIntervalRef.current = window.setInterval(() => {
           setState((prev) => ({ ...prev, elapsedMs: Date.now() - startedAtRef.current }))
@@ -103,13 +125,13 @@ export function useRecordingSession(micStream: MediaStream | null) {
         })
       }
     },
-    [micStream]
+    [sources.microphone, sources.camera]
   )
 
   const stop = useCallback(async () => {
-    const recorder = recorderRef.current
     const projectId = projectIdRef.current
-    if (!recorder || !projectId) return
+    const trackRecorders = trackRecordersRef.current
+    if (!projectId || trackRecorders.size === 0) return
 
     setState((prev) => ({ ...prev, status: 'stopping' }))
 
@@ -118,13 +140,18 @@ export function useRecordingSession(micStream: MediaStream | null) {
       elapsedIntervalRef.current = null
     }
 
-    await new Promise<void>((resolveStop) => {
-      recorder.addEventListener('stop', () => resolveStop(), { once: true })
-      recorder.stop()
-    })
+    await Promise.all(
+      Array.from(trackRecorders.values()).map(
+        (trackState) =>
+          new Promise<void>((resolveStop) => {
+            trackState.recorder.addEventListener('stop', () => resolveStop(), { once: true })
+            trackState.recorder.stop()
+          })
+      )
+    )
 
-    // Espera todos os chunks pendentes serem enviados antes de pedir a finalizacao no main.
-    await sendQueueRef.current
+    // Espera todos os chunks pendentes de TODAS as trilhas serem enviados antes de finalizar.
+    await Promise.all(Array.from(trackRecorders.values()).map((trackState) => trackState.sendQueue))
 
     try {
       await window.meetingStudio.recording.stop({ projectId })
@@ -133,9 +160,8 @@ export function useRecordingSession(micStream: MediaStream | null) {
       console.error('Falha ao finalizar gravacao', error)
       setState({ status: 'idle', elapsedMs: 0, error: 'Falha ao finalizar a gravacao.' })
     } finally {
-      recorderRef.current = null
+      trackRecorders.clear()
       projectIdRef.current = null
-      trackIdRef.current = null
     }
   }, [])
 

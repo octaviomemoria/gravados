@@ -9,11 +9,12 @@ suporte futuro a macOS.
 A **Fase 0 — Bootstrap e Fundação Técnica** está completa: fundação arquitetural
 (Electron/React/TypeScript/Vite, IPC tipado e validado, SQLite+Drizzle, segurança de processo,
 sistema de jobs, logging, testes/CI). A **Fase 1 — Recording Core** está em andamento:
-REC-001 a REC-004 (dispositivos + preview) e um primeiro pipeline de captura real — **somente
-microfone** — já funcionam de ponta a ponta (gravar → persistir em disco continuamente →
-finalizar). Ver [Dispositivos e preview](#dispositivos-e-preview-fase-1) e
-[Captura real - microfone](#captura-real--microfone-fase-1). Tela, câmera, áudio do sistema,
-segmentação, pausa/retomada e marcadores ainda não existem — próximos incrementos da Fase 1.
+REC-001 a REC-004 (dispositivos + preview) e um pipeline de captura real com **microfone e
+câmera simultâneos** (trilhas independentes) já funcionam de ponta a ponta (gravar → persistir
+em disco continuamente → finalizar). Ver [Dispositivos e preview](#dispositivos-e-preview-fase-1)
+e [Captura real de microfone e câmera](#captura-real-de-microfone-e-câmera-fase-1). Tela (exige API
+não-padrão do Chromium), áudio do sistema, segmentação, pausa/retomada e marcadores ainda não
+existem — próximos incrementos da Fase 1.
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -156,35 +157,40 @@ Primeiro incremento da Fase 1 — Recording Core (RF-002/RF-003/RF-004/RF-008, M
 - `RecordingSetupPage` (rota "Nova gravação") cobre seleção + preview + captura (ver abaixo).
   Qualidade, segmentação e layout ainda não estão na tela de setup.
 
-### Captura real - microfone (Fase 1)
+### Captura real de microfone e câmera (Fase 1)
 
-Segundo incremento da Fase 1 — pipeline completo de gravação, mas **somente microfone** (RF-002 a
-RF-016 aplicam-se integralmente só a essa fonte; tela/câmera continuam apenas seleção/preview).
-Escolhida deliberadamente como primeira fonte por ser a mais simples (sem `chromeMediaSourceId`,
-sem composição de vídeo), validando a arquitetura de streaming/persistência antes de estender a
-telas e câmeras.
+Terceiro incremento da Fase 1 — pipeline completo de gravação com **múltiplas trilhas
+simultâneas**: microfone e câmera, independentes (RF-006 "webcam + áudio", RF-007 "trilhas
+independentes"). Começou por microfone sozinho (fonte mais simples, sem `chromeMediaSourceId`) para
+validar a arquitetura de streaming/persistência antes de generalizar para N trilhas; tela fica para
+o próximo incremento (exige a API não-padrão do Chromium `chromeMediaSourceId`).
 
-- **Fluxo**: `project.create` (RF-001) → `recording.start({projectId})` cria a trilha
-  `MICROPHONE`, transiciona a `RecordingStateMachine` `IDLE→PREPARING→RECORDING` → `MediaRecorder`
-  no renderer emite chunks a cada ~1s → cada chunk vai para `recording.appendChunk` e é escrito no
-  arquivo imediatamente (nunca acumulado em memória - RF-014) → `recording.stop({projectId})`
-  fecha o arquivo, marca o segmento finalizado, atualiza `projects`/`manifest.json` e transiciona
-  `STOPPING→FINALIZING→COMPLETED` (depois reseta para `IDLE`, liberando uma nova sessão).
+- **Fluxo**: `project.create` (RF-001) → `recording.start({projectId, trackTypes})` cria uma
+  trilha por tipo pedido (`MICROPHONE`/`CAMERA`), transiciona a `RecordingStateMachine`
+  `IDLE→PREPARING→RECORDING` → um `MediaRecorder` por fonte no renderer emite chunks a cada ~1s →
+  cada chunk vai para `recording.appendChunk` marcado com o `trackId` da sua fonte e é escrito no
+  arquivo daquela trilha imediatamente (nunca acumulado em memória - RF-014) →
+  `recording.stop({projectId})` fecha e finaliza TODAS as trilhas ativas, atualiza
+  `projects`/`manifest.json` e transiciona `STOPPING→FINALIZING→COMPLETED` (depois reseta para
+  `IDLE`, liberando uma nova sessão).
 - **Protocolo de chunk binário** (`recording.appendChunk`): payload `{trackId, sequence, mimeType,
   data: Uint8Array}` validado por Zod (`z.instanceof(Uint8Array)`) - a serialização estruturada do
   Electron transporta os bytes nativamente, sem round-trip via base64/JSON. Chunks fora de ordem
   ou duplicados são descartados (`sequence <= lastSequence`) para nunca corromper o arquivo. O
-  renderer serializa o envio numa fila estritamente sequencial (`useRecordingSession`) para
-  garantir a ordem mesmo se um IPC demorar mais que o próximo chunk ser gerado.
-- **`RecordingSessionManager`** (`main/recording/`): dona da única sessão ativa por vez; abre o
-  arquivo/cria a linha de segmento só no PRIMEIRO chunk (quando o `mimeType` real já é conhecido);
-  qualquer falha durante `start`/`stop` libera a sessão e reseta a máquina de estados para `IDLE`,
-  nunca deixando o sistema preso sem possibilidade de nova tentativa (AGENTS.md: confiabilidade).
+  renderer mantém uma fila de envio estritamente sequencial POR TRILHA (`useRecordingSession`) -
+  a ordem só precisa ser garantida dentro de cada trilha (cada uma vira um arquivo separado), não
+  entre trilhas diferentes.
+- **`RecordingSessionManager`** (`main/recording/`): dona da única sessão ativa por vez, com um
+  `Map<trackId, TrackSession>` interno; abre o arquivo/cria a linha de segmento de cada trilha só
+  no PRIMEIRO chunk dela (quando o `mimeType` real já é conhecido); qualquer falha durante
+  `start`/`stop` libera a sessão e reseta a máquina de estados para `IDLE`, nunca deixando o
+  sistema preso sem possibilidade de nova tentativa (AGENTS.md: confiabilidade).
 - **Indicador de gravação** (RF-043): `RecordingControls` mostra `REC HH:MM:SS` enquanto ativo.
-- Testado de ponta a ponta em `tests/e2e/recording.spec.ts` usando o dispositivo de áudio
-  sintético do Chromium (`--use-fake-device-for-media-stream`, habilitado só via
-  `MEETING_STUDIO_E2E_FAKE_MEDIA=1`) - grava de verdade, sem hardware, e verifica o arquivo final
-  no disco.
+- Testado de ponta a ponta em `tests/e2e/recording.spec.ts` usando os dispositivos de áudio/vídeo
+  sintéticos do Chromium (`--use-fake-device-for-media-stream`, habilitado só via
+  `MEETING_STUDIO_E2E_FAKE_MEDIA=1`) - grava as duas trilhas de verdade, sem hardware, e verifica
+  os dois arquivos finais no disco via `expect.poll` (espera a condição real - arquivo com bytes -
+  em vez de um tempo fixo, mais robusto sob carga de sistema variável).
 
 ## Estrutura de diretórios
 
@@ -304,28 +310,34 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 ## Testes
 
 - **Vitest** (`tests/unit/`): máquina de estados de gravação e de jobs, `RecordingSessionManager`
-  de ponta a ponta (start/appendChunk/stop reais, escrita em disco, manifest, DB, chunks fora de
-  ordem, falhas), filesystem/escrita atômica, construção de argumentos FFmpeg, classificação de
-  fontes de tela, cálculo de nível de áudio (RMS), formatação de tempo decorrido, wrapper de IPC
-  (validação/erro/sucesso), schemas Zod, erros de domínio, migrations (tabelas/índices/FKs),
-  repositórios (project/settings/export-job), serviço de configurações, store de tema, smoke test
-  de componente (jsdom). **87 testes, 20 arquivos.**
+  de ponta a ponta multi-trilha (start/appendChunk/stop reais, microfone+câmera simultâneos e
+  independentes, escrita em disco, manifest, DB, chunks fora de ordem, falhas), filesystem/escrita
+  atômica, construção de argumentos FFmpeg, classificação de fontes de tela, cálculo de nível de
+  áudio (RMS), formatação de tempo decorrido, wrapper de IPC (validação/erro/sucesso), schemas
+  Zod, erros de domínio, migrations (tabelas/índices/FKs), repositórios
+  (project/settings/export-job), serviço de configurações, store de tema, smoke test de componente
+  (jsdom). **89 testes, 20 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
-  (`navigation.spec.ts`); **gravação real de microfone de ponta a ponta** com dispositivo de áudio
-  sintético do Chromium, verificando o arquivo de segmento gravado em disco
-  (`recording.spec.ts`). **11 testes.**
+  (`navigation.spec.ts`); **gravação real de microfone + câmera simultâneos de ponta a ponta** com
+  dispositivos de áudio/vídeo sintéticos do Chromium, verificando os dois arquivos de segmento
+  gravados em disco via `expect.poll` (`recording.spec.ts`). **11 testes**, validados estáveis em
+  3 execuções completas consecutivas da suíte.
 
 ## Pendências conhecidas
 
-- Tela/câmera/áudio do sistema, segmentação por tempo/tamanho, pause/resume, marcadores, monitor
-  de disco, editor, transcrição/IA, exportação real, empacotamento (`electron-builder`) e
+- Tela, áudio do sistema, segmentação por tempo/tamanho, pause/resume, marcadores, monitor de
+  disco, editor, transcrição/IA, exportação real, empacotamento (`electron-builder`) e
   nuvem/colaboração — fora do escopo desta fase por desenho (ver `11_ROADMAP_BACKLOG.md`).
 - `RecordingSetupPage` ainda não tem seleção de qualidade/segmentação/layout (também previstos na
   tela de setup por `08_UX_FLOWS.md` §3).
 - Preview de tela usa apenas a miniatura estática do `desktopCapturer`, não uma captura ao vivo.
 - Só uma sessão de gravação por vez (processo inteiro) - correto para o MVP atual, mas sem
   isolamento multi-projeto ainda.
+- Em `RecordingSessionManager.stop()`, se uma trilha falhar ao fechar no meio do loop de
+  finalização multi-trilha, as trilhas seguintes não são finalizadas (a sessão é sempre liberada
+  de qualquer forma - o app nunca fica travado - mas o segmento daquela trilha específica pode
+  ficar sem `endedAtMs`/`finalized`); limitação conhecida, não exercitada pelos testes atuais.
 - `useMediaDevices` trata qualquer falha de `getUserMedia` (inclusive "nenhum dispositivo
   encontrado") como `permissionDenied` — mensagem ligeiramente imprecisa quando a causa real é
   ausência de hardware, não permissão negada; refinamento futuro, não bloqueante.
@@ -337,8 +349,9 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 ## Próximo passo
 
 Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): estender o pipeline de captura
-já validado (microfone) para **tela** (RF-002, `chromeMediaSourceId` a partir do `id` já retornado
-por `devices.listScreens`) e **câmera** (RF-003), suportando múltiplas trilhas simultâneas por
-sessão (RF-006/RF-007); depois REC-008 (system audio), REC-011/012 (segmentação por tempo/tamanho
-- rotação de segmento, hoje sempre um único arquivo por trilha), REC-013 (pause/resume), REC-014
-(marcadores) e REC-015 (monitor de disco/RF-042).
+multi-trilha já validado (microfone + câmera) para **tela** (RF-002, `chromeMediaSourceId` a
+partir do `id` já retornado por `devices.listScreens`) — o `RecordingSessionManager` já é
+genérico o suficiente para receber um terceiro `RecordingTrackType`; depois REC-008 (system
+audio), REC-011/012 (segmentação por tempo/tamanho - rotação de segmento, hoje sempre um único
+arquivo por trilha), REC-013 (pause/resume), REC-014 (marcadores) e REC-015 (monitor de disco/
+RF-042).

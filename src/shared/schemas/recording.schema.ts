@@ -5,24 +5,38 @@ import { EmptyRequestSchema, IdSchema } from './common.schema'
 export const RecordingStateSchema = z.enum(RECORDING_STATES)
 
 /**
- * RF-009/RF-014/RF-011 (primeiro incremento - somente microfone, ver README "Decisoes de
- * arquitetura"). O projeto (RF-001) ja deve existir via `project.create` antes de chamar `start` -
- * `recording.*` nao cria o projeto, so a sessao de captura sobre um projeto existente.
+ * RF-006/RF-007 (combinacoes + trilhas independentes) - terceiro incremento: microfone + camera
+ * simultaneos (ver README "Decisoes de arquitetura"). Tela fica para o proximo incremento (exige
+ * `chromeMediaSourceId`, API nao-padrao do Chromium). O projeto (RF-001) ja deve existir via
+ * `project.create` antes de chamar `start` - `recording.*` nao cria o projeto, so a sessao de
+ * captura sobre um projeto existente.
  */
+export const RecordingTrackTypeSchema = z.enum(['MICROPHONE', 'CAMERA'])
+export type RecordingTrackType = z.infer<typeof RecordingTrackTypeSchema>
+
 export const StartRecordingRequestSchema = z.object({
-  projectId: IdSchema
+  projectId: IdSchema,
+  trackTypes: z.array(RecordingTrackTypeSchema).min(1)
 })
 export type StartRecordingRequest = z.infer<typeof StartRecordingRequestSchema>
+
+export const RecordingTrackHandleSchema = z.object({
+  trackId: IdSchema,
+  type: RecordingTrackTypeSchema
+})
+export type RecordingTrackHandle = z.infer<typeof RecordingTrackHandleSchema>
+
 export const StartRecordingResponseSchema = z.object({
   state: RecordingStateSchema,
-  microphoneTrackId: IdSchema
+  tracks: z.array(RecordingTrackHandleSchema)
 })
 
 /**
  * Canal dedicado para chunks binarios do MediaRecorder (RF-014: "nao acumular a sessao completa
  * em memoria" - cada chunk e escrito em disco assim que chega, nunca bufferizado no processo
  * main). `data` trafega como `Uint8Array` - a serializacao estruturada do Electron transporta
- * bytes nativamente, sem round-trip via base64/JSON.
+ * bytes nativamente, sem round-trip via base64/JSON. `trackId` roteia o chunk para a trilha
+ * correta dentro da sessao ativa (uma trilha por fonte: microfone, camera, ...).
  */
 export const AppendRecordingChunkRequestSchema = z.object({
   trackId: IdSchema,

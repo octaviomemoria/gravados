@@ -12,6 +12,7 @@ import {
 import { RecordingStateMachine } from '../../../src/main/recording/recording-state-machine'
 import { RecordingSessionManager } from '../../../src/main/recording/recording-session-manager'
 import type { DatabaseClient } from '../../../src/main/database/client'
+import type { RecordingTrackHandle } from '../../../src/shared/schemas/recording.schema'
 
 describe('RecordingSessionManager', () => {
   let client: DatabaseClient
@@ -52,15 +53,27 @@ describe('RecordingSessionManager', () => {
     return { id }
   }
 
+  function findTrack(tracks: RecordingTrackHandle[], type: RecordingTrackHandle['type']): string {
+    const handle = tracks.find((track) => track.type === type)
+    if (!handle) throw new Error(`Trilha ${type} nao encontrada na resposta de start()`)
+    return handle.trackId
+  }
+
   it('rejects starting for a project that does not exist', async () => {
-    await expect(manager.start(randomUUID())).rejects.toThrow('nao encontrado')
+    await expect(manager.start(randomUUID(), ['MICROPHONE'])).rejects.toThrow('nao encontrado')
   })
 
-  it('runs a full start -> appendChunk -> stop cycle and writes bytes to disk', async () => {
+  it('rejects starting with no track types selected', async () => {
     const project = createProject()
-    const { microphoneTrackId, state } = await manager.start(project.id)
+    await expect(manager.start(project.id, [])).rejects.toThrow('ao menos uma fonte')
+  })
+
+  it('runs a full start -> appendChunk -> stop cycle (microphone only) and writes bytes to disk', async () => {
+    const project = createProject()
+    const { tracks, state } = await manager.start(project.id, ['MICROPHONE'])
     expect(state).toBe('RECORDING')
     expect(manager.getState()).toBe('RECORDING')
+    const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
 
     const result1 = await manager.appendChunk(
       microphoneTrackId,
@@ -115,9 +128,47 @@ describe('RecordingSessionManager', () => {
     expect(manifest.tracks[0]?.segments[0]?.byteSize).toBe(6)
   })
 
+  it('records microphone and camera simultaneously as independent tracks/files', async () => {
+    const project = createProject()
+    const { tracks } = await manager.start(project.id, ['MICROPHONE', 'CAMERA'])
+    expect(tracks).toHaveLength(2)
+    const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
+    const cameraTrackId = findTrack(tracks, 'CAMERA')
+    expect(microphoneTrackId).not.toBe(cameraTrackId)
+
+    await manager.appendChunk(microphoneTrackId, 0, 'audio/webm', new Uint8Array([1, 1, 1]))
+    await manager.appendChunk(cameraTrackId, 0, 'video/webm', new Uint8Array([2, 2]))
+    await manager.appendChunk(microphoneTrackId, 1, 'audio/webm', new Uint8Array([1]))
+
+    await manager.stop(project.id)
+
+    const micFile = await readFile(
+      join(libraryRoot, 'projects', project.id, 'source', 'microphone', 'microphone_000001.webm')
+    )
+    expect(micFile).toEqual(Buffer.from([1, 1, 1, 1]))
+
+    const cameraFile = await readFile(
+      join(libraryRoot, 'projects', project.id, 'source', 'camera', 'camera_000001.webm')
+    )
+    expect(cameraFile).toEqual(Buffer.from([2, 2]))
+
+    const micSegments = segmentRepository.listByTrack(microphoneTrackId)
+    const cameraSegments = segmentRepository.listByTrack(cameraTrackId)
+    expect(micSegments[0]?.mimeType).toBe('audio/webm')
+    expect(cameraSegments[0]?.mimeType).toBe('video/webm')
+    expect(micSegments[0]?.finalized).toBe(true)
+    expect(cameraSegments[0]?.finalized).toBe(true)
+
+    const manifestPath = join(libraryRoot, 'projects', project.id, 'manifest.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+      tracks: Array<{ type: string }>
+    }
+    expect(manifest.tracks.map((track) => track.type).sort()).toEqual(['camera', 'microphone'])
+  })
+
   it('rejects appendChunk for a mismatched trackId', async () => {
     const project = createProject()
-    await manager.start(project.id)
+    await manager.start(project.id, ['MICROPHONE'])
     await expect(
       manager.appendChunk(randomUUID(), 0, 'audio/webm', new Uint8Array([1]))
     ).rejects.toThrow()
@@ -125,9 +176,9 @@ describe('RecordingSessionManager', () => {
 
   it('rejects starting a second recording while one is already active', async () => {
     const first = createProject()
-    await manager.start(first.id)
+    await manager.start(first.id, ['MICROPHONE'])
     const second = createProject()
-    await expect(manager.start(second.id)).rejects.toThrow('em andamento')
+    await expect(manager.start(second.id, ['MICROPHONE'])).rejects.toThrow('em andamento')
   })
 
   it('rejects stop when there is no active session for the project', async () => {
@@ -137,7 +188,8 @@ describe('RecordingSessionManager', () => {
 
   it('drops out-of-order/duplicate chunks without corrupting the file', async () => {
     const project = createProject()
-    const { microphoneTrackId } = await manager.start(project.id)
+    const { tracks } = await manager.start(project.id, ['MICROPHONE'])
+    const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
 
     await manager.appendChunk(microphoneTrackId, 0, 'audio/webm', new Uint8Array([1, 1]))
     const duplicate = await manager.appendChunk(
@@ -164,11 +216,11 @@ describe('RecordingSessionManager', () => {
 
   it('allows a new recording after the previous one completes', async () => {
     const first = createProject()
-    await manager.start(first.id)
+    await manager.start(first.id, ['MICROPHONE'])
     await manager.stop(first.id)
 
     const second = createProject()
-    const { state } = await manager.start(second.id)
+    const { state } = await manager.start(second.id, ['MICROPHONE'])
     expect(state).toBe('RECORDING')
   })
 })

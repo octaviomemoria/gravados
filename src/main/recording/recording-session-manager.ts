@@ -11,37 +11,65 @@ import {
   createProjectDirectoryTree,
   writeManifestAtomic,
   type ProjectPaths,
-  type ProjectManifest
+  type ProjectManifest,
+  type ManifestTrack,
+  type ManifestTrackType
 } from '../media/project-filesystem'
 import { SOURCE_ROOT_FOLDER_NAME } from '../../shared/constants/filesystem'
 import { MANIFEST_SCHEMA_VERSION } from '../../shared/constants/app-info'
 import { ValidationError, MediaFinalizeError, NotFoundError } from '../../shared/types/domain-errors'
 import type { RecordingState } from '../../shared/types/recording-state'
+import type { RecordingTrackType, RecordingTrackHandle } from '../../shared/schemas/recording.schema'
 import { createScopedLogger } from '../services/logger'
 
 const logger = createScopedLogger('recording-session')
 
-/** RF-002..RF-016 (primeiro incremento - somente microfone, ver README "Decisoes de arquitetura"). */
-const MICROPHONE_SOURCE_NAME = 'microphone'
+/**
+ * RF-006/RF-007 (terceiro incremento - microfone + camera simultaneos, ver README "Decisoes de
+ * arquitetura"). Tela fica para o proximo incremento (exige `chromeMediaSourceId`, API
+ * nao-padrao do Chromium). Mapeia cada tipo de trilha suportado para sua pasta/nome de fonte.
+ */
+const TRACK_TYPE_INFO: Record<
+  RecordingTrackType,
+  { manifestType: ManifestTrackType; sourceName: string; getSourcePath: (paths: ProjectPaths) => string }
+> = {
+  MICROPHONE: {
+    manifestType: 'microphone',
+    sourceName: 'microphone',
+    getSourcePath: (paths) => paths.sourceMicrophonePath
+  },
+  CAMERA: {
+    manifestType: 'camera',
+    sourceName: 'camera',
+    getSourcePath: (paths) => paths.sourceCameraPath
+  }
+}
+
+interface TrackSegmentState {
+  id: string
+  relativePath: string
+  fileHandle: FileHandle
+  byteSize: number
+  mimeType: string
+  lastSequence: number
+}
+
+interface TrackSessionState {
+  trackId: string
+  type: RecordingTrackType
+  segment: TrackSegmentState | null
+}
 
 interface ActiveSession {
   projectId: string
-  microphoneTrackId: string
   paths: ProjectPaths
   startedAtMs: number
-  segment: {
-    id: string
-    relativePath: string
-    fileHandle: FileHandle
-    byteSize: number
-    mimeType: string
-    lastSequence: number
-  } | null
+  tracks: Map<string, TrackSessionState>
 }
 
 export interface StartRecordingResult {
   state: RecordingState
-  microphoneTrackId: string
+  tracks: RecordingTrackHandle[]
 }
 
 export interface AppendChunkResult {
@@ -50,10 +78,11 @@ export interface AppendChunkResult {
 }
 
 /**
- * Orquestra UMA sessao de gravacao ativa por vez (RF-009/RF-011/RF-014/RF-016). Cada chunk
- * recebido do MediaRecorder do renderer e escrito no arquivo imediatamente - nunca acumulado em
- * memoria (RF-014). O arquivo/registro de segmento so e criado no PRIMEIRO chunk, quando o
- * `mimeType` real (definido pelo `MediaRecorder` do renderer) e conhecido.
+ * Orquestra UMA sessao de gravacao ativa por vez, com N trilhas simultaneas (RF-006/RF-007/
+ * RF-009/RF-011/RF-014/RF-016). Cada chunk recebido do MediaRecorder do renderer e escrito no
+ * arquivo da SUA trilha imediatamente - nunca acumulado em memoria (RF-014). O arquivo/registro
+ * de segmento de cada trilha so e criado no PRIMEIRO chunk dela, quando o `mimeType` real
+ * (definido pelo `MediaRecorder` do renderer) e conhecido.
  */
 export class RecordingSessionManager {
   private activeSession: ActiveSession | null = null
@@ -70,9 +99,12 @@ export class RecordingSessionManager {
     return this.stateMachine.getState()
   }
 
-  async start(projectId: string): Promise<StartRecordingResult> {
+  async start(projectId: string, trackTypes: RecordingTrackType[]): Promise<StartRecordingResult> {
     if (this.activeSession) {
       throw new ValidationError('Ja existe uma gravacao em andamento.')
+    }
+    if (trackTypes.length === 0) {
+      throw new ValidationError('Selecione ao menos uma fonte para gravar.')
     }
 
     const project = this.projectRepository.findById(projectId)
@@ -86,18 +118,25 @@ export class RecordingSessionManager {
       const paths = buildProjectPaths(this.libraryRootPath, projectId)
       await createProjectDirectoryTree(paths)
 
-      const microphoneTrackId = randomUUID()
-      this.trackRepository.create({
-        id: microphoneTrackId,
-        projectId,
-        type: 'MICROPHONE',
-        enabled: true,
-        position: 0,
-        startOffsetMs: 0
+      const tracks = new Map<string, TrackSessionState>()
+      const trackHandles: RecordingTrackHandle[] = []
+
+      trackTypes.forEach((type, index) => {
+        const trackId = randomUUID()
+        this.trackRepository.create({
+          id: trackId,
+          projectId,
+          type,
+          enabled: true,
+          position: index,
+          startOffsetMs: 0
+        })
+        tracks.set(trackId, { trackId, type, segment: null })
+        trackHandles.push({ trackId, type })
       })
 
       const startedAtMs = Date.now()
-      this.activeSession = { projectId, microphoneTrackId, paths, startedAtMs, segment: null }
+      this.activeSession = { projectId, paths, startedAtMs, tracks }
 
       this.stateMachine.transitionTo('RECORDING')
       this.projectRepository.updateRecordingLifecycle(projectId, {
@@ -107,12 +146,8 @@ export class RecordingSessionManager {
 
       await this.writeManifest('RECORDING', startedAtMs)
 
-      logger.info('Gravacao iniciada', {
-        projectId,
-        trackId: microphoneTrackId,
-        operation: 'recording.start'
-      })
-      return { state: this.stateMachine.getState(), microphoneTrackId }
+      logger.info('Gravacao iniciada', { projectId, operation: 'recording.start' })
+      return { state: this.stateMachine.getState(), tracks: trackHandles }
     } catch (error) {
       // Nunca deixar o gerenciador preso em PREPARING sem sessao ativa - uma falha aqui deve
       // sempre permitir uma nova tentativa (AGENTS.md: priorize confiabilidade/recuperacao).
@@ -129,14 +164,16 @@ export class RecordingSessionManager {
     data: Uint8Array
   ): Promise<AppendChunkResult> {
     const session = this.activeSession
-    if (!session || session.microphoneTrackId !== trackId) {
+    const track = session?.tracks.get(trackId)
+    if (!session || !track) {
       throw new ValidationError('Nenhuma gravacao ativa corresponde a esta trilha.')
     }
 
-    if (!session.segment) {
-      const fileName = buildSegmentFileName(MICROPHONE_SOURCE_NAME, 1)
-      const relativePath = join(SOURCE_ROOT_FOLDER_NAME, MICROPHONE_SOURCE_NAME, fileName)
-      const absolutePath = join(session.paths.sourceMicrophonePath, fileName)
+    if (!track.segment) {
+      const info = TRACK_TYPE_INFO[track.type]
+      const fileName = buildSegmentFileName(info.sourceName, 1)
+      const relativePath = join(SOURCE_ROOT_FOLDER_NAME, info.sourceName, fileName)
+      const absolutePath = join(info.getSourcePath(session.paths), fileName)
       const fileHandle = await open(absolutePath, 'w')
       const segmentId = randomUUID()
 
@@ -153,23 +190,27 @@ export class RecordingSessionManager {
         finalized: false
       })
 
-      session.segment = { id: segmentId, relativePath, fileHandle, byteSize: 0, mimeType, lastSequence: -1 }
+      track.segment = {
+        id: segmentId,
+        relativePath,
+        fileHandle,
+        byteSize: 0,
+        mimeType,
+        lastSequence: -1
+      }
     }
 
-    if (sequence <= session.segment.lastSequence) {
+    if (sequence <= track.segment.lastSequence) {
       // Chunk fora de ordem/duplicado (reenvio) - ignorado para nao corromper o arquivo.
-      logger.warn('Chunk fora de ordem ignorado', {
-        trackId,
-        operation: 'recording.appendChunk'
-      })
-      return { receivedBytes: 0, totalBytes: session.segment.byteSize }
+      logger.warn('Chunk fora de ordem ignorado', { trackId, operation: 'recording.appendChunk' })
+      return { receivedBytes: 0, totalBytes: track.segment.byteSize }
     }
 
-    await session.segment.fileHandle.write(data)
-    session.segment.byteSize += data.byteLength
-    session.segment.lastSequence = sequence
+    await track.segment.fileHandle.write(data)
+    track.segment.byteSize += data.byteLength
+    track.segment.lastSequence = sequence
 
-    return { receivedBytes: data.byteLength, totalBytes: session.segment.byteSize }
+    return { receivedBytes: data.byteLength, totalBytes: track.segment.byteSize }
   }
 
   async stop(projectId: string): Promise<{ state: RecordingState }> {
@@ -184,27 +225,29 @@ export class RecordingSessionManager {
     const endedAtMs = Date.now()
     const durationMs = endedAtMs - session.startedAtMs
 
-    if (session.segment) {
-      try {
-        await session.segment.fileHandle.sync()
-        await session.segment.fileHandle.close()
-      } catch (error) {
-        this.stateMachine.transitionTo('FAILED')
-        // Libera a sessao mesmo em falha - senao o gerenciador fica preso achando que uma
-        // gravacao (quebrada) ainda esta ativa, impedindo qualquer nova tentativa.
-        this.activeSession = null
-        this.stateMachine.reset()
-        throw new MediaFinalizeError('Falha ao finalizar o arquivo de audio gravado.', {
-          projectId,
-          errorName: error instanceof Error ? error.name : 'UNKNOWN'
-        })
+    try {
+      // Nota: se uma trilha falhar ao fechar no meio do loop, as trilhas seguintes nao sao
+      // finalizadas (limitacao conhecida deste incremento) - mas a sessao SEMPRE e liberada no
+      // catch abaixo, entao o app nunca fica preso sem poder iniciar uma nova gravacao.
+      for (const track of session.tracks.values()) {
+        if (!track.segment) continue
+        await track.segment.fileHandle.sync()
+        await track.segment.fileHandle.close()
+        this.segmentRepository.markFinalized(
+          track.segment.id,
+          endedAtMs,
+          endedAtMs - session.startedAtMs,
+          track.segment.byteSize
+        )
       }
-      this.segmentRepository.markFinalized(
-        session.segment.id,
-        endedAtMs,
-        endedAtMs - session.startedAtMs,
-        session.segment.byteSize
-      )
+    } catch (error) {
+      this.stateMachine.transitionTo('FAILED')
+      this.activeSession = null
+      this.stateMachine.reset()
+      throw new MediaFinalizeError('Falha ao finalizar a midia gravada.', {
+        projectId,
+        errorName: error instanceof Error ? error.name : 'UNKNOWN'
+      })
     }
 
     this.projectRepository.updateRecordingLifecycle(projectId, {
@@ -213,10 +256,7 @@ export class RecordingSessionManager {
       durationMs
     })
 
-    await this.writeManifest('COMPLETED', session.startedAtMs, {
-      endedAtMs,
-      segment: session.segment
-    })
+    await this.writeManifest('COMPLETED', session.startedAtMs, endedAtMs)
 
     this.stateMachine.transitionTo('COMPLETED')
     const finalState = this.stateMachine.getState()
@@ -232,34 +272,34 @@ export class RecordingSessionManager {
   private async writeManifest(
     status: RecordingState,
     startedAtMs: number,
-    finalized?: { endedAtMs: number; segment: ActiveSession['segment'] }
+    endedAtMs?: number
   ): Promise<void> {
     const session = this.activeSession
     if (!session) return
+
+    const tracks: ManifestTrack[] = Array.from(session.tracks.values()).map((track) => ({
+      id: track.trackId,
+      type: TRACK_TYPE_INFO[track.type].manifestType,
+      segments: track.segment
+        ? [
+            {
+              index: 1,
+              relativePath: track.segment.relativePath,
+              startedAtMs,
+              endedAtMs: endedAtMs ?? null,
+              byteSize: track.segment.byteSize,
+              finalized: endedAtMs !== undefined
+            }
+          ]
+        : []
+    }))
 
     const manifest: ProjectManifest = {
       schemaVersion: MANIFEST_SCHEMA_VERSION,
       projectId: session.projectId,
       status,
       startedAt: new Date(startedAtMs).toISOString(),
-      tracks: [
-        {
-          id: session.microphoneTrackId,
-          type: 'microphone',
-          segments: session.segment
-            ? [
-                {
-                  index: 1,
-                  relativePath: session.segment.relativePath,
-                  startedAtMs,
-                  endedAtMs: finalized?.endedAtMs ?? null,
-                  byteSize: session.segment.byteSize,
-                  finalized: Boolean(finalized)
-                }
-              ]
-            : []
-        }
-      ]
+      tracks
     }
 
     await writeManifestAtomic(session.paths.manifestPath, manifest)
