@@ -192,6 +192,24 @@ o próximo incremento (exige a API não-padrão do Chromium `chromeMediaSourceId
   os dois arquivos finais no disco via `expect.poll` (espera a condição real - arquivo com bytes -
   em vez de um tempo fixo, mais robusto sob carga de sistema variável).
 
+### Captura real de tela (Fase 1)
+
+Quarto incremento da Fase 1 — terceira fonte simultânea (RF-002), completando o trio tela +
+câmera + microfone previsto para o MVP (cada combinação testada em par, ver "Testes" abaixo):
+
+- **Aquisição sob demanda**: diferente de câmera/microfone (que já chegam como streams contínuas
+  de preview escolhidas em `RecordingSetupPage`), a stream de tela só é adquirida no exato momento
+  de `recording.start` — não há preview de tela ao vivo (a etapa de seleção mostra apenas a
+  miniatura estática do `desktopCapturer`, decisão já registrada no incremento anterior).
+  `acquireScreenStream(sourceId)` usa `chromeMediaSourceId`/`mandatory: {chromeMediaSource:
+  'desktop'}`, extensões não-padrão do Chromium para `getUserMedia` sem tipos DOM próprios
+  (interface `DesktopCaptureConstraints` + cast local).
+- **`RecordingSessionManager`**: `SCREEN` é só mais uma entrada em `TRACK_TYPE_INFO` — a estrutura
+  em `Map<trackId, TrackSession>` introduzida no incremento anterior já era genérica o suficiente
+  para um terceiro tipo de trilha sem alterações estruturais.
+- Testado de ponta a ponta em `tests/e2e/recording.spec.ts` (cenário "screen + microphone") e via
+  teste sintético de 3 trilhas simultâneas em `recording-session-manager.test.ts`.
+
 ## Estrutura de diretórios
 
 ```text
@@ -306,29 +324,48 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     `electron.vite.config.ts`. Qualquer nova dependência npm usada em `src/preload/` precisa
     continuar assim (empacotada), diferente de `src/main/`, que mantém `externalizeDepsPlugin()`
     (necessário para não quebrar o módulo nativo `better-sqlite3`).
+22. **E2E de gravação real dividido em pares, não um único teste de 3 trilhas** — capturar tela +
+    câmera + microfone simultaneamente via hardware/streams reais neste ambiente de teste mostrou-
+    se pesado demais (codificação de vídeo é cara), causando falta de recursos intermitente para
+    uma das trilhas, apesar da lógica em si (`RecordingSessionManager`) já estar provada correta
+    com 3 trilhas simultâneas via dados sintéticos (sem essa restrição de hardware). Dois cenários
+    de 2 trilhas cobrem cada par real sem empilhar as três de uma vez.
+23. **Timeouts de poll/teste elevados + 2 retries no cenário microfone+câmera** (não no cenário
+    tela+microfone, que nunca mostrou o sintoma) — rodando a suíte completa (12 testes, 1 worker,
+    vários lançamentos sequenciais do Electron no mesmo processo Node), a trilha de vídeo da
+    câmera especificamente mostrou flakiness intermitente que não se reproduz isolada nem nos
+    testes sintéticos, ou seja, é contenção cumulativa de recursos (GPU/CPU) deste ambiente/
+    topologia de teste (N instâncias reais do Electron em sequência), não um bug de aplicação.
+    `beforeEach`/`afterEach` (não `beforeAll`/`afterAll`) garantem que cada retry relança uma
+    instância fresca do Electron. Ver comentário completo em `tests/e2e/recording.spec.ts`.
 
 ## Testes
 
 - **Vitest** (`tests/unit/`): máquina de estados de gravação e de jobs, `RecordingSessionManager`
-  de ponta a ponta multi-trilha (start/appendChunk/stop reais, microfone+câmera simultâneos e
+  de ponta a ponta multi-trilha (start/appendChunk/stop reais, microfone+câmera+tela simultâneos e
   independentes, escrita em disco, manifest, DB, chunks fora de ordem, falhas), filesystem/escrita
   atômica, construção de argumentos FFmpeg, classificação de fontes de tela, cálculo de nível de
   áudio (RMS), formatação de tempo decorrido, wrapper de IPC (validação/erro/sucesso), schemas
   Zod, erros de domínio, migrations (tabelas/índices/FKs), repositórios
   (project/settings/export-job), serviço de configurações, store de tema, smoke test de componente
-  (jsdom). **89 testes, 20 arquivos.**
+  (jsdom). **90 testes, 20 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
-  (`navigation.spec.ts`); **gravação real de microfone + câmera simultâneos de ponta a ponta** com
-  dispositivos de áudio/vídeo sintéticos do Chromium, verificando os dois arquivos de segmento
-  gravados em disco via `expect.poll` (`recording.spec.ts`). **11 testes**, validados estáveis em
-  3 execuções completas consecutivas da suíte.
+  (`navigation.spec.ts`); **gravação real de microfone + câmera** e **gravação real de tela +
+  microfone**, cada par de ponta a ponta com dispositivos de áudio/vídeo sintéticos do Chromium
+  (câmera/microfone) e captura de tela real, verificando os arquivos de segmento gravados em disco
+  via `expect.poll` (`recording.spec.ts`, ver decisão registrada #22 sobre não empilhar as 3
+  trilhas num único teste, e #23 sobre timeouts/retries). **12 testes**, validados estáveis em
+  3 execuções completas consecutivas da suíte após ajuste de timeout/retry.
 
 ## Pendências conhecidas
 
-- Tela, áudio do sistema, segmentação por tempo/tamanho, pause/resume, marcadores, monitor de
-  disco, editor, transcrição/IA, exportação real, empacotamento (`electron-builder`) e
-  nuvem/colaboração — fora do escopo desta fase por desenho (ver `11_ROADMAP_BACKLOG.md`).
+- Áudio do sistema, segmentação por tempo/tamanho, pause/resume, marcadores, monitor de disco,
+  editor, transcrição/IA, exportação real, empacotamento (`electron-builder`) e nuvem/colaboração —
+  fora do escopo desta fase por desenho (ver `11_ROADMAP_BACKLOG.md`).
+- Captura simultânea das **3** fontes (tela+câmera+microfone) não é exercitada em E2E com hardware
+  real neste ambiente de teste (contenção de recursos - decisão registrada #22); a lógica está
+  provada correta via teste sintético de 3 trilhas em `recording-session-manager.test.ts`.
 - `RecordingSetupPage` ainda não tem seleção de qualidade/segmentação/layout (também previstos na
   tela de setup por `08_UX_FLOWS.md` §3).
 - Preview de tela usa apenas a miniatura estática do `desktopCapturer`, não uma captura ao vivo.
@@ -348,10 +385,9 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 
 ## Próximo passo
 
-Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): estender o pipeline de captura
-multi-trilha já validado (microfone + câmera) para **tela** (RF-002, `chromeMediaSourceId` a
-partir do `id` já retornado por `devices.listScreens`) — o `RecordingSessionManager` já é
-genérico o suficiente para receber um terceiro `RecordingTrackType`; depois REC-008 (system
-audio), REC-011/012 (segmentação por tempo/tamanho - rotação de segmento, hoje sempre um único
-arquivo por trilha), REC-013 (pause/resume), REC-014 (marcadores) e REC-015 (monitor de disco/
-RF-042).
+Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): as três fontes de captura
+(tela, câmera, microfone) já estão implementadas e testadas em pares reais + trio sintético. Os
+próximos itens do roadmap: REC-008 (system audio — quarta trilha, mesmo padrão de
+`TRACK_TYPE_INFO` usado para tela/câmera/microfone), REC-011/012 (segmentação por tempo/tamanho -
+rotação de segmento, hoje sempre um único arquivo por trilha), REC-013 (pause/resume), REC-014
+(marcadores) e REC-015 (monitor de disco/RF-042).

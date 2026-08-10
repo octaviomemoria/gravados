@@ -20,7 +20,11 @@ const INITIAL_STATE: MediaDevicesState = {
 }
 
 const RETRY_DELAY_MS = 250
-const MAX_ENUMERATE_ATTEMPTS = 6
+// 12 tentativas x 250ms = ate 3s de margem extra. So se paga esse custo quando um tipo de
+// dispositivo esperado ainda nao apareceu (caso comum: enumeracao completa na 1a tentativa, custo
+// zero). Ajustado para cima apos observar que o orçamento anterior (1.5s) nao bastava sob picos
+// de carga do sistema durante testes E2E.
+const MAX_ENUMERATE_ATTEMPTS = 12
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))

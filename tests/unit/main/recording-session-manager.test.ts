@@ -166,6 +166,41 @@ describe('RecordingSessionManager', () => {
     expect(manifest.tracks.map((track) => track.type).sort()).toEqual(['camera', 'microphone'])
   })
 
+  it('records microphone, camera and screen simultaneously as three independent tracks/files', async () => {
+    const project = createProject()
+    const { tracks } = await manager.start(project.id, ['MICROPHONE', 'CAMERA', 'SCREEN'])
+    expect(tracks).toHaveLength(3)
+    const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
+    const cameraTrackId = findTrack(tracks, 'CAMERA')
+    const screenTrackId = findTrack(tracks, 'SCREEN')
+    expect(new Set([microphoneTrackId, cameraTrackId, screenTrackId]).size).toBe(3)
+
+    await manager.appendChunk(microphoneTrackId, 0, 'audio/webm', new Uint8Array([1]))
+    await manager.appendChunk(cameraTrackId, 0, 'video/webm', new Uint8Array([2, 2]))
+    await manager.appendChunk(screenTrackId, 0, 'video/webm', new Uint8Array([3, 3, 3]))
+
+    await manager.stop(project.id)
+
+    const screenFile = await readFile(
+      join(libraryRoot, 'projects', project.id, 'source', 'screen', 'screen_000001.webm')
+    )
+    expect(screenFile).toEqual(Buffer.from([3, 3, 3]))
+
+    const screenSegments = segmentRepository.listByTrack(screenTrackId)
+    expect(screenSegments[0]?.finalized).toBe(true)
+    expect(screenSegments[0]?.byteSize).toBe(3)
+
+    const manifestPath = join(libraryRoot, 'projects', project.id, 'manifest.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+      tracks: Array<{ type: string }>
+    }
+    expect(manifest.tracks.map((track) => track.type).sort()).toEqual([
+      'camera',
+      'microphone',
+      'screen'
+    ])
+  })
+
   it('rejects appendChunk for a mismatched trackId', async () => {
     const project = createProject()
     await manager.start(project.id, ['MICROPHONE'])

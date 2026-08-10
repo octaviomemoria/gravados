@@ -232,6 +232,11 @@ body {
   border-color: var(--ms-color-primary);
 }
 
+.screen-source-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .screen-source-card__thumbnail {
   width: 100%;
   aspect-ratio: 16 / 9;

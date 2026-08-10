@@ -25,9 +25,11 @@ import { createScopedLogger } from '../services/logger'
 const logger = createScopedLogger('recording-session')
 
 /**
- * RF-006/RF-007 (terceiro incremento - microfone + camera simultaneos, ver README "Decisoes de
- * arquitetura"). Tela fica para o proximo incremento (exige `chromeMediaSourceId`, API
- * nao-padrao do Chromium). Mapeia cada tipo de trilha suportado para sua pasta/nome de fonte.
+ * RF-002/RF-006/RF-007 (quarto incremento - microfone + camera + tela simultaneos, ver README
+ * "Decisoes de arquitetura"). Mapeia cada tipo de trilha suportado para sua pasta/nome de fonte -
+ * o main nao sabe (nem precisa saber) COMO o renderer obteve a stream de cada tipo (getUserMedia
+ * simples para mic/camera, `chromeMediaSourceId` para tela); so recebe chunks ja marcados com o
+ * `trackId` correto.
  */
 const TRACK_TYPE_INFO: Record<
   RecordingTrackType,
@@ -42,6 +44,11 @@ const TRACK_TYPE_INFO: Record<
     manifestType: 'camera',
     sourceName: 'camera',
     getSourcePath: (paths) => paths.sourceCameraPath
+  },
+  SCREEN: {
+    manifestType: 'screen',
+    sourceName: 'screen',
+    getSourcePath: (paths) => paths.sourceScreenPath
   }
 }
 
