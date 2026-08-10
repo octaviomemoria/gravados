@@ -10,9 +10,10 @@ import { useScreenSources } from './useScreenSources'
 import { useRecordingSession } from './useRecordingSession'
 
 /**
- * RF-002/RF-003/RF-004/RF-006/RF-007/RF-008/RF-009/RF-043 + MVP-AC-001. Escopo deliberado deste
- * incremento (Fase 1): captura real de tela, microfone E camera, simultaneas e independentes
- * (ver README "Decisoes de arquitetura"). Qualidade/segmentacao/layout/pause ficam para depois.
+ * RF-002/RF-003/RF-004/RF-005/RF-006/RF-007/RF-008/RF-009/RF-043 + MVP-AC-001. Escopo deliberado
+ * deste incremento (Fase 1): captura real de tela, camera, microfone E audio do sistema,
+ * simultaneas e independentes (ver README "Decisoes de arquitetura"). Qualidade/segmentacao/
+ * layout/pause ficam para depois.
  */
 export function RecordingSetupPage() {
   const { cameras, microphones, permissionDenied, loading: devicesLoading } = useMediaDevices()
@@ -21,6 +22,7 @@ export function RecordingSetupPage() {
   const [selectedScreenId, setSelectedScreenId] = useState<string | null>(null)
   const [selectedCameraId, setSelectedCameraId] = useState<string | null>(null)
   const [selectedMicId, setSelectedMicId] = useState<string | null>(null)
+  const [systemAudioEnabled, setSystemAudioEnabled] = useState(false)
 
   const { stream: cameraStream, error: cameraError } = useDeviceStream(
     selectedCameraId ? { video: { deviceId: { exact: selectedCameraId } } } : null
@@ -29,10 +31,16 @@ export function RecordingSetupPage() {
     selectedMicId ? { audio: { deviceId: { exact: selectedMicId } } } : null
   )
   const micLevel = useAudioLevel(micStream)
+  // RF-005: a API do Chromium exige uma fonte de video do tipo tela (nunca janela) emparelhada
+  // com a captura de audio loopback (ver `acquireSystemAudioStream`) - independente de qual tela
+  // o usuario escolheu gravar como video (`selectedScreenId`, pode ate ser nenhuma).
+  const systemAudioCarrierSourceId =
+    systemAudioEnabled ? (screenSources?.find((source) => source.kind === 'screen')?.id ?? null) : null
   const recordingSession = useRecordingSession({
     microphone: micStream,
     camera: cameraStream,
-    screenSourceId: selectedScreenId
+    screenSourceId: selectedScreenId,
+    systemAudioCarrierSourceId
   })
   const isRecording = recordingSession.status === 'recording' || recordingSession.status === 'stopping'
 
@@ -127,13 +135,28 @@ export function RecordingSetupPage() {
         )}
         {micError && <EmptyState message="Nao foi possivel testar o nivel deste microfone." />}
         <LevelMeter level={micLevel} />
+
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={systemAudioEnabled}
+            onChange={(event) => setSystemAudioEnabled(event.target.checked)}
+            disabled={isRecording}
+          />
+          Audio do sistema (quando suportado pela plataforma)
+        </label>
       </section>
 
       <RecordingControls
         status={recordingSession.status}
         elapsedMs={recordingSession.elapsedMs}
         error={recordingSession.error}
-        canStart={Boolean(selectedMicId) || Boolean(selectedCameraId) || Boolean(selectedScreenId)}
+        canStart={
+          Boolean(selectedMicId) ||
+          Boolean(selectedCameraId) ||
+          Boolean(selectedScreenId) ||
+          Boolean(systemAudioCarrierSourceId)
+        }
         onStart={(title) => void recordingSession.start(title)}
         onStop={() => void recordingSession.stop()}
       />

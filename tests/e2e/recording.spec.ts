@@ -19,18 +19,20 @@ function fileHasBytes(path: string): boolean {
 }
 
 /**
- * Testes de ponta a ponta da captura real (quarto incremento: tela + microfone + camera). Usa os
- * dispositivos sinteticos de audio/video do Chromium (`--use-fake-device-for-media-stream`,
- * habilitado via `MEETING_STUDIO_E2E_FAKE_MEDIA=1` - ver `main/index.ts`) para microfone/camera,
- * e a captura de tela real (`chromeMediaSourceId`, nao afetada pela flag de dispositivo falso).
+ * Testes de ponta a ponta da captura real (quinto incremento: tela + camera + microfone + audio
+ * do sistema). Usa os dispositivos sinteticos de audio/video do Chromium
+ * (`--use-fake-device-for-media-stream`, habilitado via `MEETING_STUDIO_E2E_FAKE_MEDIA=1` - ver
+ * `main/index.ts`) para microfone/camera, e captura real via `chromeMediaSource: 'desktop'` para
+ * tela e audio do sistema (nao afetada pela flag de dispositivo falso, que so cobre
+ * getUserMedia de camera/microfone).
  *
- * Decisao registrada: dividido em DOIS cenarios de 2 trilhas (nao um unico de 3) - capturar tela +
+ * Decisao registrada: dividido em cenarios de 2 trilhas (nao um unico de 4) - capturar tela +
  * camera + microfone SIMULTANEAMENTE via hardware/streams reais mostrou-se pesado demais para
  * este ambiente de teste (codificacao de video de tela e cara), causando falta de recursos para
  * uma das trilhas de forma intermitente, apesar da logica em si (`RecordingSessionManager`) ja
- * estar provada correta com 3 trilhas simultaneas via dados sinteticos em
- * `tests/unit/main/recording-session-manager.test.ts` (sem essa restricao de hardware). Os dois
- * testes abaixo cobrem cada par de combinacao real sem empilhar as tres de uma vez.
+ * estar provada correta com ate 4 trilhas simultaneas via dados sinteticos em
+ * `tests/unit/main/recording-session-manager.test.ts` (sem essa restricao de hardware). Os testes
+ * abaixo cobrem cada par de combinacao real sem empilhar todas de uma vez.
  *
  * A variavel da janela do app e chamada `appWindow` (nao `window`) deliberadamente: o tipo global
  * `window.meetingStudio` (declarado em `src/renderer/global.d.ts`) precisa ser referenciado dentro
@@ -224,6 +226,67 @@ test.describe('recording (screen + microphone)', () => {
     const finalized = await getActiveProjectPaths(appWindow)
     expect(finalized.status).toBe('COMPLETED')
     expect(fileHasBytes(screenPath)).toBe(true)
+    expect(fileHasBytes(microphonePath)).toBe(true)
+  })
+})
+
+test.describe('recording (system audio + microphone)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeAll(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterAll(async () => {
+    await electronApp.close()
+  })
+
+  test('records system audio and microphone end-to-end and persists two non-empty segment files', async () => {
+    test.info().setTimeout(RECORDING_TEST_TIMEOUT_MS)
+    await openRecordingSetup(appWindow)
+
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+
+    // RF-005: so um checkbox (nao ha dispositivo/id para escolher - e o audio de saida inteiro
+    // do sistema), diferente de camera/tela que sao pickers.
+    const systemAudioCheckbox = appWindow.getByRole('checkbox', { name: /Audio do sistema/i })
+    await expect(systemAudioCheckbox).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await systemAudioCheckbox.check()
+
+    await appWindow.getByLabel('Titulo da reuniao').fill('Reuniao de teste E2E - system audio+mic')
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const { rootPath } = await getActiveProjectPaths(appWindow)
+    const systemAudioPath = join(rootPath, 'source', 'system-audio', 'system-audio_000001.webm')
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+
+    await expect
+      .poll(() => fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de audio (microfone) ser persistido em disco'
+      })
+      .toBe(true)
+    await expect
+      .poll(() => fileHasBytes(systemAudioPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de audio do sistema ser persistido em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    const finalized = await getActiveProjectPaths(appWindow)
+    expect(finalized.status).toBe('COMPLETED')
+    expect(fileHasBytes(systemAudioPath)).toBe(true)
     expect(fileHasBytes(microphonePath)).toBe(true)
   })
 })

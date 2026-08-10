@@ -25,11 +25,15 @@ import { createScopedLogger } from '../services/logger'
 const logger = createScopedLogger('recording-session')
 
 /**
- * RF-002/RF-006/RF-007 (quarto incremento - microfone + camera + tela simultaneos, ver README
- * "Decisoes de arquitetura"). Mapeia cada tipo de trilha suportado para sua pasta/nome de fonte -
- * o main nao sabe (nem precisa saber) COMO o renderer obteve a stream de cada tipo (getUserMedia
- * simples para mic/camera, `chromeMediaSourceId` para tela); so recebe chunks ja marcados com o
- * `trackId` correto.
+ * RF-002/RF-005/RF-006/RF-007 (quinto incremento - microfone + camera + tela + audio do sistema
+ * simultaneos, ver README "Decisoes de arquitetura"). Mapeia cada tipo de trilha suportado para
+ * sua pasta/nome de fonte - o main nao sabe (nem precisa saber) COMO o renderer obteve a stream de
+ * cada tipo (getUserMedia simples para mic/camera, `chromeMediaSourceId`/`chromeMediaSource:
+ * 'desktop'` para tela/audio do sistema); so recebe chunks ja marcados com o `trackId` correto. Se
+ * o renderer nunca enviar nenhum chunk para uma trilha (RF-005: audio do sistema so "quando
+ * suportado pela plataforma" - ver `useRecordingSession.ts`), `stop()` finaliza a sessao
+ * normalmente e essa trilha fica apenas sem segmento (ver teste "gracefully finalizes a track that
+ * never received any chunk").
  */
 const TRACK_TYPE_INFO: Record<
   RecordingTrackType,
@@ -49,6 +53,11 @@ const TRACK_TYPE_INFO: Record<
     manifestType: 'screen',
     sourceName: 'screen',
     getSourcePath: (paths) => paths.sourceScreenPath
+  },
+  SYSTEM_AUDIO: {
+    manifestType: 'system_audio',
+    sourceName: 'system-audio',
+    getSourcePath: (paths) => paths.sourceSystemAudioPath
   }
 }
 

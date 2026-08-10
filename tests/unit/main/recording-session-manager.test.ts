@@ -201,6 +201,78 @@ describe('RecordingSessionManager', () => {
     ])
   })
 
+  it('records microphone, camera, screen and system audio simultaneously as four independent tracks/files', async () => {
+    const project = createProject()
+    const { tracks } = await manager.start(project.id, [
+      'MICROPHONE',
+      'CAMERA',
+      'SCREEN',
+      'SYSTEM_AUDIO'
+    ])
+    expect(tracks).toHaveLength(4)
+    const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
+    const cameraTrackId = findTrack(tracks, 'CAMERA')
+    const screenTrackId = findTrack(tracks, 'SCREEN')
+    const systemAudioTrackId = findTrack(tracks, 'SYSTEM_AUDIO')
+    expect(
+      new Set([microphoneTrackId, cameraTrackId, screenTrackId, systemAudioTrackId]).size
+    ).toBe(4)
+
+    await manager.appendChunk(microphoneTrackId, 0, 'audio/webm', new Uint8Array([1]))
+    await manager.appendChunk(cameraTrackId, 0, 'video/webm', new Uint8Array([2, 2]))
+    await manager.appendChunk(screenTrackId, 0, 'video/webm', new Uint8Array([3, 3, 3]))
+    await manager.appendChunk(systemAudioTrackId, 0, 'audio/webm', new Uint8Array([4, 4, 4, 4]))
+
+    await manager.stop(project.id)
+
+    const systemAudioFile = await readFile(
+      join(libraryRoot, 'projects', project.id, 'source', 'system-audio', 'system-audio_000001.webm')
+    )
+    expect(systemAudioFile).toEqual(Buffer.from([4, 4, 4, 4]))
+
+    const systemAudioSegments = segmentRepository.listByTrack(systemAudioTrackId)
+    expect(systemAudioSegments[0]?.finalized).toBe(true)
+    expect(systemAudioSegments[0]?.byteSize).toBe(4)
+
+    const manifestPath = join(libraryRoot, 'projects', project.id, 'manifest.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+      tracks: Array<{ type: string }>
+    }
+    expect(manifest.tracks.map((track) => track.type).sort()).toEqual([
+      'camera',
+      'microphone',
+      'screen',
+      'system_audio'
+    ])
+  })
+
+  it('gracefully finalizes a track that never received any chunk (RF-005: system audio unsupported on this platform)', async () => {
+    const project = createProject()
+    const { tracks } = await manager.start(project.id, ['MICROPHONE', 'SYSTEM_AUDIO'])
+    const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
+    const systemAudioTrackId = findTrack(tracks, 'SYSTEM_AUDIO')
+
+    // Simula o renderer nao conseguindo adquirir a stream de audio do sistema (RF-005) - so a
+    // trilha de microfone recebe chunks, a de audio do sistema fica sem nenhum.
+    await manager.appendChunk(microphoneTrackId, 0, 'audio/webm', new Uint8Array([7, 7]))
+
+    const stopResult = await manager.stop(project.id)
+    expect(stopResult.state).toBe('COMPLETED')
+    expect(manager.getState()).toBe('IDLE')
+
+    const systemAudioSegments = segmentRepository.listByTrack(systemAudioTrackId)
+    expect(systemAudioSegments).toHaveLength(0)
+
+    const manifestPath = join(libraryRoot, 'projects', project.id, 'manifest.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+      status: string
+      tracks: Array<{ type: string; segments: unknown[] }>
+    }
+    expect(manifest.status).toBe('COMPLETED')
+    const systemAudioManifestTrack = manifest.tracks.find((track) => track.type === 'system_audio')
+    expect(systemAudioManifestTrack?.segments).toEqual([])
+  })
+
   it('rejects appendChunk for a mismatched trackId', async () => {
     const project = createProject()
     await manager.start(project.id, ['MICROPHONE'])

@@ -273,6 +273,21 @@ body {
   object-fit: cover;
 }
 
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: var(--ms-space-2);
+  font-size: 0.9rem;
+  color: var(--ms-color-text);
+  margin-top: var(--ms-space-3);
+  cursor: pointer;
+}
+
+.checkbox-field:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .camera-preview--empty {
   display: flex;
   align-items: center;

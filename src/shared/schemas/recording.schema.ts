@@ -5,13 +5,15 @@ import { EmptyRequestSchema, IdSchema } from './common.schema'
 export const RecordingStateSchema = z.enum(RECORDING_STATES)
 
 /**
- * RF-002/RF-006/RF-007 (combinacoes + trilhas independentes) - quarto incremento: microfone,
- * camera e tela simultaneos (ver README "Decisoes de arquitetura"). Tela usa
- * `chromeMediaSourceId` (API nao-padrao do Chromium) com o `id` retornado por
- * `devices.listScreens`. O projeto (RF-001) ja deve existir via `project.create` antes de chamar
- * `start` - `recording.*` nao cria o projeto, so a sessao de captura sobre um projeto existente.
+ * RF-002/RF-005/RF-006/RF-007 (combinacoes + trilhas independentes) - quinto incremento:
+ * microfone, camera, tela e audio do sistema simultaneos (ver README "Decisoes de arquitetura").
+ * Tela e audio do sistema usam `chromeMediaSourceId`/`chromeMediaSource: 'desktop'` (API nao-
+ * padrao do Chromium); audio do sistema e "quando suportado pela plataforma" (RF-005) - falha ao
+ * adquirir a stream nunca impede as demais trilhas de gravar (ver `useRecordingSession.ts`). O
+ * projeto (RF-001) ja deve existir via `project.create` antes de chamar `start` - `recording.*`
+ * nao cria o projeto, so a sessao de captura sobre um projeto existente.
  */
-export const RecordingTrackTypeSchema = z.enum(['MICROPHONE', 'CAMERA', 'SCREEN'])
+export const RecordingTrackTypeSchema = z.enum(['MICROPHONE', 'CAMERA', 'SCREEN', 'SYSTEM_AUDIO'])
 export type RecordingTrackType = z.infer<typeof RecordingTrackTypeSchema>
 
 export const StartRecordingRequestSchema = z.object({
