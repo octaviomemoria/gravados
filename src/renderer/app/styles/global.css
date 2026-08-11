@@ -199,6 +199,25 @@ body {
   padding: var(--ms-space-3);
 }
 
+.library-list__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ms-space-3);
+}
+
+.library-list__title {
+  flex: 1 1 auto;
+}
+
+.library-list__error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--ms-color-danger);
+  font-size: 0.85rem;
+}
+
 .setup-group {
   margin-bottom: var(--ms-space-8);
 }

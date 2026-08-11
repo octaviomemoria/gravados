@@ -6,6 +6,8 @@ import {
   ListProjectsResponseSchema,
   GetProjectRequestSchema,
   GetProjectResponseSchema,
+  OpenProjectFolderRequestSchema,
+  OpenProjectFolderResponseSchema,
   type CreateProjectRequest
 } from '../../shared/schemas/project.schema'
 import type { ProjectApi } from '../../shared/types/preload-api'
@@ -29,6 +31,12 @@ export function createProjectApi(): ProjectApi {
       invokeChannel(
         IPC_CHANNELS.project.get,
         { request: GetProjectRequestSchema, response: GetProjectResponseSchema },
+        { id }
+      ),
+    openFolder: (id: string) =>
+      invokeChannel(
+        IPC_CHANNELS.project.openFolder,
+        { request: OpenProjectFolderRequestSchema, response: OpenProjectFolderResponseSchema },
         { id }
       )
   }

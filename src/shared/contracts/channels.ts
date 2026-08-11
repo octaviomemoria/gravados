@@ -8,7 +8,8 @@ export const IPC_CHANNELS = {
   project: {
     create: 'project.create',
     list: 'project.list',
-    get: 'project.get'
+    get: 'project.get',
+    openFolder: 'project.openFolder'
   },
   settings: {
     get: 'settings.get',

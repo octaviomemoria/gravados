@@ -25,6 +25,8 @@ export interface ProjectApi {
   create: (request: CreateProjectRequest) => Promise<ProjectResponse>
   list: () => Promise<ProjectResponse[]>
   get: (id: string) => Promise<ProjectResponse>
+  /** RF-017 - abre a pasta do projeto no explorador de arquivos do SO. */
+  openFolder: (id: string) => Promise<{ opened: boolean }>
 }
 
 export interface LibraryApi {

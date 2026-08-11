@@ -30,3 +30,14 @@ export const ListProjectsResponseSchema = z.array(ProjectResponseSchema)
 export const GetProjectRequestSchema = z.object({ id: IdSchema })
 export type GetProjectRequest = z.infer<typeof GetProjectRequestSchema>
 export const GetProjectResponseSchema = ProjectResponseSchema
+
+/**
+ * RF-017 (Biblioteca): abre `rootPath` do projeto no explorador de arquivos do SO. Recebe so o
+ * `id` (nunca um path bruto do renderer) - o main resolve o `rootPath` real a partir do banco,
+ * garantindo que so pastas de projetos legitimos possam ser abertas (nunca um path arbitrario
+ * vindo do lado renderer). `opened: false` (sem lancar erro IPC) cobre o caso nao-excepcional de
+ * a pasta ter sido movida/apagada por fora do app - UI mostra mensagem amigavel, nao uma falha.
+ */
+export const OpenProjectFolderRequestSchema = z.object({ id: IdSchema })
+export type OpenProjectFolderRequest = z.infer<typeof OpenProjectFolderRequestSchema>
+export const OpenProjectFolderResponseSchema = z.object({ opened: z.boolean() })

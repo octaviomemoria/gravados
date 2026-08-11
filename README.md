@@ -373,6 +373,19 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     (`video: false`) derruba o processo de renderer (crash, não Promise rejeitada) no Electron/
     Chromium testado aqui. A fonte de vídeo usada como portador é escolhida automaticamente (o
     primeiro `kind: 'screen'` disponível) e seu vídeo é sempre descartado logo após a aquisição.
+26. **Pastas de projeto continuam nomeadas por `<project-id>` (UUID), nunca pelo título** — assim
+    como `03_TECHNICAL_ARCHITECTURE.md` já especificava ("guardar mídia em estrutura independente
+    do banco"). Renomear a reunião no futuro nunca exige renomear a pasta (arriscado com
+    sincronização de nuvem tipo OneDrive/Google Drive rodando por cima de `Documentos`); títulos
+    livres não precisam de sanitização de caracteres invalidos de path; duas reuniões podem ter o
+    mesmo título sem colisão. A navegabilidade manual (achada confusa ao testar - "só UUID, difícil
+    de achar no Explorer") é resolvida por `project.openFolder` (RF-017, item 27) em vez de mudar o
+    nome da pasta.
+27. **`project.openFolder` recebe só o `id`, nunca um path** — o main resolve o `rootPath` real via
+    `projectService.getProject`, então só pastas de projetos legítimos (já criados pelo próprio
+    app) podem ser abertas; nunca um caminho arbitrário vindo do renderer. `shell.openPath` retorna
+    uma string de erro em vez de lançar - tratado como `{opened: false}` (não um erro IPC), já que
+    "pasta movida/apagada por fora do app" é um estado esperado, não excepcional.
 
 ## Testes
 
@@ -381,9 +394,10 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   sistema simultâneos e independentes, escrita em disco, manifest, DB, chunks fora de ordem,
   falhas, trilha registrada que nunca recebe chunk algum), filesystem/escrita atômica, construção
   de argumentos FFmpeg, classificação de fontes de tela, cálculo de nível de áudio (RMS),
-  formatação de tempo decorrido, wrapper de IPC (validação/erro/sucesso), schemas Zod, erros de
-  domínio, migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço
-  de configurações, store de tema, smoke test de componente (jsdom). **92 testes, 20 arquivos.**
+  formatação de tempo decorrido, wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo
+  `project.openFolder`), erros de domínio, migrations (tabelas/índices/FKs), repositórios
+  (project/settings/export-job), serviço de configurações, store de tema, smoke test de componente
+  (jsdom). **94 testes, 20 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone** e **áudio
@@ -410,6 +424,9 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   para servir de portador da captura.
 - `RecordingSetupPage` ainda não tem seleção de qualidade/segmentação/layout (também previstos na
   tela de setup por `08_UX_FLOWS.md` §3).
+- Biblioteca ainda não tem uma tela de detalhes do projeto (duração, trilhas gravadas, tamanho em
+  disco, player embutido) nem busca/filtro/ordenação - cada item só tem o título e o botão "Abrir
+  pasta" (decisão #27); útil para achar o arquivo, mas não substitui uma visão real do projeto.
 - Preview de tela usa apenas a miniatura estática do `desktopCapturer`, não uma captura ao vivo.
 - Só uma sessão de gravação por vez (processo inteiro) - correto para o MVP atual, mas sem
   isolamento multi-projeto ainda.

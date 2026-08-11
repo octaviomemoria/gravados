@@ -1,3 +1,4 @@
+import { shell } from 'electron'
 import { IPC_CHANNELS } from '../../../shared/contracts/channels'
 import {
   CreateProjectRequestSchema,
@@ -5,7 +6,9 @@ import {
   ListProjectsRequestSchema,
   ListProjectsResponseSchema,
   GetProjectRequestSchema,
-  GetProjectResponseSchema
+  GetProjectResponseSchema,
+  OpenProjectFolderRequestSchema,
+  OpenProjectFolderResponseSchema
 } from '../../../shared/schemas/project.schema'
 import { NotFoundError } from '../../../shared/types/domain-errors'
 import { registerHandler } from '../ipc-handler'
@@ -32,6 +35,21 @@ export function registerProjectHandlers(context: AppContext): void {
       const project = context.projectService.getProject(request.id)
       if (!project) throw new NotFoundError(`Projeto nao encontrado: ${request.id}`)
       return project
+    }
+  )
+
+  registerHandler(
+    IPC_CHANNELS.project.openFolder,
+    { request: OpenProjectFolderRequestSchema, response: OpenProjectFolderResponseSchema },
+    async (request) => {
+      const project = context.projectService.getProject(request.id)
+      if (!project) throw new NotFoundError(`Projeto nao encontrado: ${request.id}`)
+      // `shell.openPath` retorna uma string de erro (nao lanca) em caso de falha - ex.: pasta
+      // movida/apagada por fora do app. Isso nao e excepcional o suficiente pra virar erro IPC
+      // (AGENTS.md/08_UX_FLOWS.md: nunca mostrar codigo/erro cru - a UI trata `opened: false` com
+      // mensagem amigavel, igual a qualquer outro estado "vazio" ja tratado no app).
+      const errorMessage = await shell.openPath(project.rootPath)
+      return { opened: errorMessage === '' }
     }
   )
 }

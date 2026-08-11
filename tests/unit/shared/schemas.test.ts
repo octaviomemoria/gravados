@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { CreateProjectRequestSchema, ProjectResponseSchema } from '../../../src/shared/schemas/project.schema'
+import {
+  CreateProjectRequestSchema,
+  ProjectResponseSchema,
+  OpenProjectFolderRequestSchema
+} from '../../../src/shared/schemas/project.schema'
 import { AppSettingsSchema, SETTINGS_CATEGORY_SCHEMAS } from '../../../src/shared/schemas/settings.schema'
 import { StartRecordingRequestSchema } from '../../../src/shared/schemas/recording.schema'
 import { StartExportRequestSchema } from '../../../src/shared/schemas/export.schema'
@@ -27,6 +31,20 @@ describe('project.schema', () => {
       notes: null
     })
     expect(result.success).toBe(false)
+  })
+
+  it('accepts a valid openFolder request (uuid id)', () => {
+    // Variante RFC4122 valida (nibble '8' no 3o grupo) - '1111-1111-...' usado no teste de
+    // ProjectResponseSchema acima nao serve aqui porque ali o resultado esperado ja e falha
+    // (status invalido), entao a validade do id em si nunca era exercitada.
+    const result = OpenProjectFolderRequestSchema.safeParse({
+      id: '11111111-1111-4111-8111-111111111111'
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects an openFolder request with a non-uuid id', () => {
+    expect(OpenProjectFolderRequestSchema.safeParse({ id: 'not-a-uuid' }).success).toBe(false)
   })
 })
 
