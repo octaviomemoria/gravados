@@ -1,5 +1,7 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RecordingTrackType } from '@shared/schemas/recording.schema'
+import { RecordingPresetsSettingsSchema } from '@shared/schemas/settings.schema'
+import { shouldRotateForSize } from './segmentation-thresholds'
 
 export type RecordingSessionStatus = 'idle' | 'starting' | 'recording' | 'stopping'
 
@@ -103,6 +105,9 @@ async function acquireSystemAudioStream(carrierSourceId: string): Promise<MediaS
 
 interface TrackRecorderState {
   recorder: MediaRecorder
+  stream: MediaStream
+  mimeType: string
+  segmentIndex: number
   sequence: number
   sendQueue: Promise<void>
 }
@@ -118,6 +123,26 @@ interface TrackRecorderState {
  * continuas de preview escolhidas em `RecordingSetupPage`. Audio do sistema, alem disso, degrada
  * graciosamente (RF-005): se a plataforma nao suportar, so essa trilha fica de fora, a gravacao
  * das demais fontes continua normalmente.
+ *
+ * RF-012/RF-013 (sexto incremento - segmentacao por tempo/tamanho): um WebM/Matroska so e valido
+ * se produzido por um ciclo completo `MediaRecorder.start()`...`.stop()` - nao da para so continuar
+ * escrevendo bytes num arquivo novo no meio do stream. Rotacionar um segmento significa: parar o
+ * `MediaRecorder` atual da trilha, esperar seu ultimo chunk ser enviado, e iniciar um NOVO
+ * `MediaRecorder` sobre a MESMA `MediaStream` (parar um recorder nao para as tracks do stream) -
+ * `createTrackRecorderState` e reaproveitada tanto na criacao inicial quanto em cada rotacao,
+ * sempre capturando o `segmentIndex` daquele recorder especifico de forma IMUTAVEL no closure
+ * (nunca lido de uma ref mutavel compartilhada - senao o ultimo chunk do segmento antigo poderia
+ * ser marcado com o indice do novo, ja trocado antes do `ondataavailable` final disparar).
+ *
+ * As funcoes de rotacao abaixo se referenciam mutuamente (`createTrackRecorderState` agenda uma
+ * futura chamada a `rotateTrack`, que chama `createTrackRecorderState` de volta para o proximo
+ * segmento) - `rotateTrackRef` quebra esse ciclo (padrao "latest ref" do React): as outras
+ * funcoes chamam `rotateTrackRef.current(trackId)` em vez de referenciar `rotateTrack` pelo nome
+ * diretamente, entao `withTrackLock`/`scheduleTimeRotation`/`createTrackRecorderState` continuam
+ * memoizaveis com deps estaveis (nunca mudam de identidade entre renders), o que por sua vez
+ * mantem `rotateTrack` E `start` tambem estaveis - sem isso, `react-hooks/exhaustive-deps` fica
+ * preso entre "falta dependencia" e "essa dependencia muda a cada render", ja que as funcoes
+ * formam um ciclo.
  */
 export function useRecordingSession(sources: RecordingSources) {
   const [state, setState] = useState<RecordingSessionState>({
@@ -132,6 +157,156 @@ export function useRecordingSession(sources: RecordingSources) {
   const systemAudioStreamRef = useRef<MediaStream | null>(null)
   const startedAtRef = useRef(0)
   const elapsedIntervalRef = useRef<number | null>(null)
+
+  // Segmentacao (RF-012/RF-013): limites globais lidos uma vez de Configuracoes a cada
+  // `recording.start` (refs, nao state - lidos de dentro de timers/callbacks assincronos que nao
+  // devem re-executar a cada render). `stoppedRef` e checado de forma SINCRONA (antes de qualquer
+  // `await`) no inicio de `rotateTrack` e no inicio de `stop()`, fechando a mesma janela de
+  // corrida corrigida no lado main (`RecordingSessionManager.stop`/`track.stopped`).
+  const timeSegmentationMinutesRef = useRef<number | null>(null)
+  const sizeSegmentationMbRef = useRef<number | null>(null)
+  const stoppedRef = useRef(false)
+  const trackLocksRef = useRef<Map<string, Promise<void>>>(new Map())
+  const rotationTimersRef = useRef<Map<string, number>>(new Map())
+  const rotateTrackRef = useRef<(trackId: string) => Promise<void>>(async () => {})
+  // `MediaRecorder.stop()` emite um ultimo `ondataavailable` de flush ANTES do evento `'stop'` -
+  // esse chunk final ainda pertence ao segmento antigo (mesmo `segmentIndex` do closure) mas seu
+  // `totalBytes` continua acima do limite (bytes so crescem), entao SEM esta guarda ele dispara
+  // uma SEGUNDA rotacao redundante - que roda em fila logo apos a primeira (via `withTrackLock`) e
+  // apaga o segmento recem-criado quase instantaneamente, pulando direto para o proximo indice
+  // (achado via log de diagnostico: `..._000002.webm` nunca era criado, a rotacao ia direto pra
+  // `..._000003.webm`). A guarda impede enfileirar uma nova rotacao enquanto uma ja esta em
+  // andamento para a trilha - marcada no ponto de disparo (sincrono, antes de `withTrackLock`),
+  // nao dentro de `rotateTrack` (que so roda DEPOIS que a fila do `withTrackLock` chega nele - por
+  // essa altura uma rotacao anterior ja teria terminado e liberado a marca, entao a checagem
+  // precisa acontecer ANTES de enfileirar, nao dentro do que foi enfileirado).
+  const rotationInFlightRef = useRef<Set<string>>(new Set())
+
+  const withTrackLock = useCallback((trackId: string, fn: () => Promise<void>): Promise<void> => {
+    const prior = trackLocksRef.current.get(trackId) ?? Promise.resolve()
+    const next = prior.then(fn, fn)
+    trackLocksRef.current.set(
+      trackId,
+      next.catch(() => {})
+    )
+    return next
+  }, [])
+
+  // Marca a trilha como "rotacao em andamento" ANTES de enfileirar (nao dentro de `rotateTrack` -
+  // ver comentario em `rotationInFlightRef`) - ponto unico usado tanto pelo gatilho por tamanho
+  // quanto pelo gatilho por tempo, evitando duplicar a guarda em cada um.
+  const requestRotation = useCallback(
+    (trackId: string): void => {
+      if (rotationInFlightRef.current.has(trackId)) return
+      rotationInFlightRef.current.add(trackId)
+      void withTrackLock(trackId, () => rotateTrackRef.current(trackId))
+    },
+    [withTrackLock]
+  )
+
+  const scheduleTimeRotation = useCallback(
+    (trackId: string): void => {
+      const existing = rotationTimersRef.current.get(trackId)
+      if (existing !== undefined) window.clearTimeout(existing)
+      const minutes = timeSegmentationMinutesRef.current
+      if (minutes === null) return
+      const timerId = window.setTimeout(() => {
+        requestRotation(trackId)
+      }, minutes * 60_000)
+      rotationTimersRef.current.set(trackId, timerId)
+    },
+    [requestRotation]
+  )
+
+  const createTrackRecorderState = useCallback(
+    (trackId: string, stream: MediaStream, mimeType: string, segmentIndex: number): TrackRecorderState => {
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      const trackState: TrackRecorderState = {
+        recorder,
+        stream,
+        mimeType,
+        segmentIndex,
+        sequence: 0,
+        sendQueue: Promise.resolve()
+      }
+
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data.size === 0) return
+        const sequence = trackState.sequence
+        trackState.sequence += 1
+        const chunkMimeType = recorder.mimeType
+
+        trackState.sendQueue = trackState.sendQueue
+          .then(async () => {
+            const buffer = await event.data.arrayBuffer()
+            const response = await window.meetingStudio.recording.appendChunk({
+              trackId,
+              segmentIndex,
+              sequence,
+              mimeType: chunkMimeType,
+              data: new Uint8Array(buffer)
+            })
+            if (shouldRotateForSize(response.totalBytes, sizeSegmentationMbRef.current)) {
+              // Fora da propria `sendQueue` (nao aninhado num `await`) - `rotateTrack` precisa
+              // esperar essa MESMA fila esvaziar antes de trocar de recorder; aninhar travaria (a
+              // fila nunca terminaria de esperar por ela mesma). `requestRotation` ja tem a guarda
+              // contra o chunk final de flush do `.stop()` disparar uma segunda rotacao redundante
+              // (ver comentario em `rotationInFlightRef`).
+              requestRotation(trackId)
+            }
+          })
+          .catch((error: unknown) => {
+            // Falha ao persistir UM chunk nao deve interromper a gravacao em andamento.
+            console.error('Falha ao enviar chunk de gravacao', error)
+          })
+      }
+
+      return trackState
+    },
+    [requestRotation]
+  )
+
+  const rotateTrack = useCallback(
+    async (trackId: string): Promise<void> => {
+      // `rotationInFlightRef` foi marcada em `requestRotation`, ANTES desta funcao ser enfileirada
+      // - sempre limpar aqui (mesmo em early-return) para permitir a PROXIMA rotacao genuina
+      // (quando o novo segmento tambem crescer alem do limite).
+      try {
+        if (stoppedRef.current) return
+        const current = trackRecordersRef.current.get(trackId)
+        if (!current) return
+
+        await new Promise<void>((resolveStop) => {
+          current.recorder.addEventListener('stop', () => resolveStop(), { once: true })
+          current.recorder.stop()
+        })
+        await current.sendQueue
+
+        if (stoppedRef.current) return
+
+        const next = createTrackRecorderState(
+          trackId,
+          current.stream,
+          current.mimeType,
+          current.segmentIndex + 1
+        )
+        trackRecordersRef.current.set(trackId, next)
+        next.recorder.start(CHUNK_TIMESLICE_MS)
+        scheduleTimeRotation(trackId)
+      } finally {
+        rotationInFlightRef.current.delete(trackId)
+      }
+    },
+    [createTrackRecorderState, scheduleTimeRotation]
+  )
+
+  // Mantem `rotateTrackRef` sempre apontando para a versao mais recente de `rotateTrack` (que,
+  // nesta implementacao, e estavel entre renders ja que suas proprias deps tambem sao - mas o
+  // ref e o que realmente quebra o ciclo de dependencias, entao mante-lo atualizado aqui e o que
+  // torna essa premissa segura mesmo que uma dependencia deixe de ser estavel no futuro).
+  useEffect(() => {
+    rotateTrackRef.current = rotateTrack
+  }, [rotateTrack])
 
   const start = useCallback(
     async (title: string) => {
@@ -150,9 +325,17 @@ export function useRecordingSession(sources: RecordingSources) {
       }
 
       setState({ status: 'starting', elapsedMs: 0, error: null })
+      stoppedRef.current = false
 
       let projectId: string | null = null
       try {
+        const presets = RecordingPresetsSettingsSchema.parse(
+          await window.meetingStudio.settings.get('recordingPresets')
+        )
+        timeSegmentationMinutesRef.current = presets.timeSegmentationMinutes
+        sizeSegmentationMbRef.current = presets.sizeSegmentationMb
+        rotationInFlightRef.current.clear()
+
         const project = await window.meetingStudio.project.create({ title })
         projectId = project.id
         const { tracks } = await window.meetingStudio.recording.start({
@@ -194,37 +377,10 @@ export function useRecordingSession(sources: RecordingSources) {
           const mimeType = pickSupportedMimeType(
             handle.type === 'MICROPHONE' || handle.type === 'SYSTEM_AUDIO' ? 'audio' : 'video'
           )
-          const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
-          const trackState: TrackRecorderState = {
-            recorder,
-            sequence: 0,
-            sendQueue: Promise.resolve()
-          }
+          const trackState = createTrackRecorderState(handle.trackId, stream, mimeType, 1)
           trackRecordersRef.current.set(handle.trackId, trackState)
-
-          recorder.ondataavailable = (event: BlobEvent) => {
-            if (event.data.size === 0) return
-            const sequence = trackState.sequence
-            trackState.sequence += 1
-            const chunkMimeType = recorder.mimeType
-
-            trackState.sendQueue = trackState.sendQueue
-              .then(async () => {
-                const buffer = await event.data.arrayBuffer()
-                await window.meetingStudio.recording.appendChunk({
-                  trackId: handle.trackId,
-                  sequence,
-                  mimeType: chunkMimeType,
-                  data: new Uint8Array(buffer)
-                })
-              })
-              .catch((error: unknown) => {
-                // Falha ao persistir UM chunk nao deve interromper a gravacao em andamento.
-                console.error('Falha ao enviar chunk de gravacao', error)
-              })
-          }
-
-          recorder.start(CHUNK_TIMESLICE_MS)
+          trackState.recorder.start(CHUNK_TIMESLICE_MS)
+          scheduleTimeRotation(handle.trackId)
         }
 
         startedAtRef.current = Date.now()
@@ -239,6 +395,10 @@ export function useRecordingSession(sources: RecordingSources) {
         screenStreamRef.current = null
         systemAudioStreamRef.current?.getTracks().forEach((track) => track.stop())
         systemAudioStreamRef.current = null
+        for (const timerId of rotationTimersRef.current.values()) window.clearTimeout(timerId)
+        rotationTimersRef.current.clear()
+        trackLocksRef.current.clear()
+        rotationInFlightRef.current.clear()
         trackRecordersRef.current.clear()
         // O main pode ja ter criado uma sessao ativa (recording.start ja retornou com sucesso)
         // mesmo que a configuracao local seguinte (ex.: acquireScreenStream) tenha falhado depois
@@ -259,7 +419,12 @@ export function useRecordingSession(sources: RecordingSources) {
       sources.microphone,
       sources.camera,
       sources.screenSourceId,
-      sources.systemAudioCarrierSourceId
+      sources.systemAudioCarrierSourceId,
+      // Ambas memoizadas com deps estaveis (ver comentario no topo do arquivo sobre `rotateTrackRef`
+      // quebrando o ciclo) - incluir aqui satisfaz `exhaustive-deps` sem fazer `start` mudar de
+      // identidade a cada render.
+      createTrackRecorderState,
+      scheduleTimeRotation
     ]
   )
 
@@ -269,24 +434,32 @@ export function useRecordingSession(sources: RecordingSources) {
     if (!projectId || trackRecorders.size === 0) return
 
     setState((prev) => ({ ...prev, status: 'stopping' }))
+    // Sincrono, antes de qualquer await - impede que uma rotacao ja enfileirada no lock de uma
+    // trilha (auto-rotacao por tempo/tamanho) reabra um recorder novo depois que a gravacao ja
+    // deveria estar parada (mesma correcao aplicada no lado main via `track.stopped`).
+    stoppedRef.current = true
 
     if (elapsedIntervalRef.current !== null) {
       window.clearInterval(elapsedIntervalRef.current)
       elapsedIntervalRef.current = null
     }
+    for (const timerId of rotationTimersRef.current.values()) window.clearTimeout(timerId)
+    rotationTimersRef.current.clear()
 
+    const trackIds = Array.from(trackRecorders.keys())
     await Promise.all(
-      Array.from(trackRecorders.values()).map(
-        (trackState) =>
-          new Promise<void>((resolveStop) => {
+      trackIds.map((trackId) =>
+        withTrackLock(trackId, async () => {
+          const trackState = trackRecorders.get(trackId)
+          if (!trackState) return
+          await new Promise<void>((resolveStop) => {
             trackState.recorder.addEventListener('stop', () => resolveStop(), { once: true })
             trackState.recorder.stop()
           })
+          await trackState.sendQueue
+        })
       )
     )
-
-    // Espera todos os chunks pendentes de TODAS as trilhas serem enviados antes de finalizar.
-    await Promise.all(Array.from(trackRecorders.values()).map((trackState) => trackState.sendQueue))
 
     screenStreamRef.current?.getTracks().forEach((track) => track.stop())
     screenStreamRef.current = null
@@ -301,9 +474,11 @@ export function useRecordingSession(sources: RecordingSources) {
       setState({ status: 'idle', elapsedMs: 0, error: 'Falha ao finalizar a gravacao.' })
     } finally {
       trackRecorders.clear()
+      trackLocksRef.current.clear()
+      rotationInFlightRef.current.clear()
       projectIdRef.current = null
     }
-  }, [])
+  }, [withTrackLock])
 
   return { ...state, start, stop }
 }

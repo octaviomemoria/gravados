@@ -15,8 +15,9 @@ import type { AppContext } from '../../app-context'
 /**
  * Terceiro incremento real da Fase 1 - Recording Core (RF-002..RF-016, microfone + camera -
  * ver README "Decisoes de arquitetura"). `start`/`appendChunk`/`stop` sao reais, delegando a
- * `RecordingSessionManager`. Tela, audio do sistema, segmentacao, pause/resume e marcadores
- * ficam para incrementos seguintes.
+ * `RecordingSessionManager`. Segmentacao por tempo/tamanho (RF-012/RF-013) chegou no sexto
+ * incremento - `appendChunk` agora repassa `segmentIndex`. Pause/resume e marcadores ficam para
+ * incrementos seguintes.
  */
 export function registerRecordingHandlers(context: AppContext): void {
   registerHandler(
@@ -32,6 +33,7 @@ export function registerRecordingHandlers(context: AppContext): void {
     async (request) =>
       context.recordingSessionManager.appendChunk(
         request.trackId,
+        request.segmentIndex,
         request.sequence,
         request.mimeType,
         request.data

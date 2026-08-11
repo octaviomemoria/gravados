@@ -77,6 +77,7 @@ describe('RecordingSessionManager', () => {
 
     const result1 = await manager.appendChunk(
       microphoneTrackId,
+      1,
       0,
       'audio/webm',
       new Uint8Array([1, 2, 3, 4])
@@ -85,6 +86,7 @@ describe('RecordingSessionManager', () => {
 
     const result2 = await manager.appendChunk(
       microphoneTrackId,
+      1,
       1,
       'audio/webm',
       new Uint8Array([5, 6])
@@ -136,9 +138,9 @@ describe('RecordingSessionManager', () => {
     const cameraTrackId = findTrack(tracks, 'CAMERA')
     expect(microphoneTrackId).not.toBe(cameraTrackId)
 
-    await manager.appendChunk(microphoneTrackId, 0, 'audio/webm', new Uint8Array([1, 1, 1]))
-    await manager.appendChunk(cameraTrackId, 0, 'video/webm', new Uint8Array([2, 2]))
-    await manager.appendChunk(microphoneTrackId, 1, 'audio/webm', new Uint8Array([1]))
+    await manager.appendChunk(microphoneTrackId, 1, 0, 'audio/webm', new Uint8Array([1, 1, 1]))
+    await manager.appendChunk(cameraTrackId, 1, 0, 'video/webm', new Uint8Array([2, 2]))
+    await manager.appendChunk(microphoneTrackId, 1, 1, 'audio/webm', new Uint8Array([1]))
 
     await manager.stop(project.id)
 
@@ -175,9 +177,9 @@ describe('RecordingSessionManager', () => {
     const screenTrackId = findTrack(tracks, 'SCREEN')
     expect(new Set([microphoneTrackId, cameraTrackId, screenTrackId]).size).toBe(3)
 
-    await manager.appendChunk(microphoneTrackId, 0, 'audio/webm', new Uint8Array([1]))
-    await manager.appendChunk(cameraTrackId, 0, 'video/webm', new Uint8Array([2, 2]))
-    await manager.appendChunk(screenTrackId, 0, 'video/webm', new Uint8Array([3, 3, 3]))
+    await manager.appendChunk(microphoneTrackId, 1, 0, 'audio/webm', new Uint8Array([1]))
+    await manager.appendChunk(cameraTrackId, 1, 0, 'video/webm', new Uint8Array([2, 2]))
+    await manager.appendChunk(screenTrackId, 1, 0, 'video/webm', new Uint8Array([3, 3, 3]))
 
     await manager.stop(project.id)
 
@@ -218,10 +220,10 @@ describe('RecordingSessionManager', () => {
       new Set([microphoneTrackId, cameraTrackId, screenTrackId, systemAudioTrackId]).size
     ).toBe(4)
 
-    await manager.appendChunk(microphoneTrackId, 0, 'audio/webm', new Uint8Array([1]))
-    await manager.appendChunk(cameraTrackId, 0, 'video/webm', new Uint8Array([2, 2]))
-    await manager.appendChunk(screenTrackId, 0, 'video/webm', new Uint8Array([3, 3, 3]))
-    await manager.appendChunk(systemAudioTrackId, 0, 'audio/webm', new Uint8Array([4, 4, 4, 4]))
+    await manager.appendChunk(microphoneTrackId, 1, 0, 'audio/webm', new Uint8Array([1]))
+    await manager.appendChunk(cameraTrackId, 1, 0, 'video/webm', new Uint8Array([2, 2]))
+    await manager.appendChunk(screenTrackId, 1, 0, 'video/webm', new Uint8Array([3, 3, 3]))
+    await manager.appendChunk(systemAudioTrackId, 1, 0, 'audio/webm', new Uint8Array([4, 4, 4, 4]))
 
     await manager.stop(project.id)
 
@@ -254,7 +256,7 @@ describe('RecordingSessionManager', () => {
 
     // Simula o renderer nao conseguindo adquirir a stream de audio do sistema (RF-005) - so a
     // trilha de microfone recebe chunks, a de audio do sistema fica sem nenhum.
-    await manager.appendChunk(microphoneTrackId, 0, 'audio/webm', new Uint8Array([7, 7]))
+    await manager.appendChunk(microphoneTrackId, 1, 0, 'audio/webm', new Uint8Array([7, 7]))
 
     const stopResult = await manager.stop(project.id)
     expect(stopResult.state).toBe('COMPLETED')
@@ -277,7 +279,7 @@ describe('RecordingSessionManager', () => {
     const project = createProject()
     await manager.start(project.id, ['MICROPHONE'])
     await expect(
-      manager.appendChunk(randomUUID(), 0, 'audio/webm', new Uint8Array([1]))
+      manager.appendChunk(randomUUID(), 1, 0, 'audio/webm', new Uint8Array([1]))
     ).rejects.toThrow()
   })
 
@@ -298,9 +300,10 @@ describe('RecordingSessionManager', () => {
     const { tracks } = await manager.start(project.id, ['MICROPHONE'])
     const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
 
-    await manager.appendChunk(microphoneTrackId, 0, 'audio/webm', new Uint8Array([1, 1]))
+    await manager.appendChunk(microphoneTrackId, 1, 0, 'audio/webm', new Uint8Array([1, 1]))
     const duplicate = await manager.appendChunk(
       microphoneTrackId,
+      1,
       0,
       'audio/webm',
       new Uint8Array([9, 9])
@@ -329,5 +332,134 @@ describe('RecordingSessionManager', () => {
     const second = createProject()
     const { state } = await manager.start(second.id, ['MICROPHONE'])
     expect(state).toBe('RECORDING')
+  })
+
+  // RF-012/RF-013 (sexto incremento - segmentacao por tempo/tamanho): o renderer sinaliza a
+  // rotacao simplesmente enviando um `segmentIndex` maior no proximo chunk - estes testes cobrem
+  // a reacao do manager a essa mudanca de indice, sem depender de nenhum timer real.
+  describe('segmentacao (rotacao de segmentos)', () => {
+    it('rotates to a new segment mid-session and finalizes the previous one immediately (not only at stop)', async () => {
+      const project = createProject()
+      const { tracks } = await manager.start(project.id, ['MICROPHONE'])
+      const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
+
+      await manager.appendChunk(microphoneTrackId, 1, 0, 'audio/webm', new Uint8Array([1, 1]))
+      await manager.appendChunk(microphoneTrackId, 1, 1, 'audio/webm', new Uint8Array([2, 2]))
+      // Rotaciona: segmentIndex sobe para 2, sequence reinicia em 0 (segmento novo).
+      const rotateResult = await manager.appendChunk(
+        microphoneTrackId,
+        2,
+        0,
+        'audio/webm',
+        new Uint8Array([3, 3, 3])
+      )
+      expect(rotateResult).toEqual({ receivedBytes: 3, totalBytes: 3 })
+
+      // O primeiro segmento ja deve estar finalizado ANTES de stop() ser chamado.
+      const segmentsBeforeStop = segmentRepository.listByTrack(microphoneTrackId)
+      expect(segmentsBeforeStop).toHaveLength(2)
+      const firstSegment = segmentsBeforeStop.find((segment) => segment.seqIndex === 1)
+      expect(firstSegment?.finalized).toBe(true)
+      expect(firstSegment?.byteSize).toBe(4)
+      expect(firstSegment?.endedAtMs).not.toBeNull()
+      const secondSegment = segmentsBeforeStop.find((segment) => segment.seqIndex === 2)
+      expect(secondSegment?.finalized).toBe(false)
+
+      await manager.stop(project.id)
+
+      const firstFile = await readFile(
+        join(libraryRoot, 'projects', project.id, 'source', 'microphone', 'microphone_000001.webm')
+      )
+      expect(firstFile).toEqual(Buffer.from([1, 1, 2, 2]))
+      const secondFile = await readFile(
+        join(libraryRoot, 'projects', project.id, 'source', 'microphone', 'microphone_000002.webm')
+      )
+      expect(secondFile).toEqual(Buffer.from([3, 3, 3]))
+    })
+
+    it('writes a manifest with multiple segments per track, each with its own byteSize, after rotation and stop', async () => {
+      const project = createProject()
+      const { tracks } = await manager.start(project.id, ['MICROPHONE'])
+      const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
+
+      await manager.appendChunk(microphoneTrackId, 1, 0, 'audio/webm', new Uint8Array([1, 1]))
+      await manager.appendChunk(microphoneTrackId, 2, 0, 'audio/webm', new Uint8Array([2, 2, 2]))
+      await manager.stop(project.id)
+
+      const manifestPath = join(libraryRoot, 'projects', project.id, 'manifest.json')
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+        tracks: Array<{ segments: Array<{ index: number; byteSize: number; finalized: boolean }> }>
+      }
+      const segments = manifest.tracks[0]?.segments ?? []
+      expect(segments).toHaveLength(2)
+      expect(segments[0]).toMatchObject({ index: 1, byteSize: 2, finalized: true })
+      expect(segments[1]).toMatchObject({ index: 2, byteSize: 3, finalized: true })
+    })
+
+    it('drops a chunk tagged with an already-rotated-away segmentIndex without corrupting the current file', async () => {
+      const project = createProject()
+      const { tracks } = await manager.start(project.id, ['MICROPHONE'])
+      const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
+
+      await manager.appendChunk(microphoneTrackId, 1, 0, 'audio/webm', new Uint8Array([1, 1]))
+      await manager.appendChunk(microphoneTrackId, 2, 0, 'audio/webm', new Uint8Array([2, 2, 2]))
+      // Chunk atrasado do segmento 1, que ja foi rotacionado/finalizado - deve ser descartado.
+      const stale = await manager.appendChunk(
+        microphoneTrackId,
+        1,
+        1,
+        'audio/webm',
+        new Uint8Array([9, 9])
+      )
+      expect(stale.receivedBytes).toBe(0)
+
+      await manager.stop(project.id)
+
+      const firstFile = await readFile(
+        join(libraryRoot, 'projects', project.id, 'source', 'microphone', 'microphone_000001.webm')
+      )
+      expect(firstFile).toEqual(Buffer.from([1, 1]))
+    })
+
+    it('rejects a late appendChunk queued right after stop() begins, without corrupting the finalized file', async () => {
+      const project = createProject()
+      const { tracks } = await manager.start(project.id, ['MICROPHONE'])
+      const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
+      await manager.appendChunk(microphoneTrackId, 1, 0, 'audio/webm', new Uint8Array([1, 1]))
+
+      // stop() e chamado primeiro (entra no mutex da trilha primeiro); o appendChunk seguinte,
+      // mesmo chamado logo em seguida sem esperar, so roda DEPOIS - deve ver a trilha ja marcada
+      // como `stopped` e rejeitar, em vez de reabrir um segmento numa gravacao ja finalizada
+      // (regressao para o bug de concorrencia corrigido neste incremento).
+      const stopPromise = manager.stop(project.id)
+      const latePromise = manager.appendChunk(
+        microphoneTrackId,
+        1,
+        1,
+        'audio/webm',
+        new Uint8Array([9, 9])
+      )
+      // Anexado SINCRONAMENTE (sem `await` entre a criacao de `latePromise` e esta linha) - a
+      // rejeicao so acontece depois de pelo menos um microtask (a promise so roda quando o mutex
+      // da trilha resolve), mas se o handler for anexado so depois de outro `await` (ex.:
+      // aguardando `stopPromise` primeiro), a rejeicao pode disparar ANTES do handler existir,
+      // gerando um "unhandled rejection" que o Vitest reporta como erro mesmo com a asserção
+      // eventualmente passando.
+      const lateRejection = expect(latePromise).rejects.toThrow()
+
+      await expect(stopPromise).resolves.toMatchObject({ state: 'COMPLETED' })
+      await lateRejection
+
+      const filePath = join(
+        libraryRoot,
+        'projects',
+        project.id,
+        'source',
+        'microphone',
+        'microphone_000001.webm'
+      )
+      const fileContent = await readFile(filePath)
+      expect(fileContent).toEqual(Buffer.from([1, 1]))
+    })
   })
 })

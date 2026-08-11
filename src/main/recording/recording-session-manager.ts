@@ -63,17 +63,35 @@ const TRACK_TYPE_INFO: Record<
 
 interface TrackSegmentState {
   id: string
+  seqIndex: number
   relativePath: string
   fileHandle: FileHandle
   byteSize: number
   mimeType: string
   lastSequence: number
+  startedAtMs: number
+  endedAtMs: number | null
+  finalized: boolean
 }
 
 interface TrackSessionState {
   trackId: string
   type: RecordingTrackType
-  segment: TrackSegmentState | null
+  currentSegment: TrackSegmentState | null
+  // RF-012/RF-013 (segmentacao): segmentos ja rotacionados/finalizados, acumulados em memoria para
+  // montar o manifest com o historico completo. Consultar o banco a cada escrita do manifest nao
+  // serviria - a linha do segmento em aberto so tem `byteSize` atualizado no banco quando finaliza
+  // (`markFinalized`), entao apareceria sempre como 0 ate a proxima rotacao/stop.
+  finalizedSegments: TrackSegmentState[]
+  // Fecha a janela de corrida entre `stop()` e um `appendChunk` que ja estava enfileirado no mutex
+  // desta trilha: marcado a true como a PRIMEIRA acao (antes de qualquer await) dentro do bloco
+  // exclusivo de `stop()`, entao qualquer chamada de `appendChunk` que so ganha a vez depois nunca
+  // reabre um segmento novo numa trilha que ja deveria estar finalizada.
+  stopped: boolean
+  // Serializa toda mutacao desta trilha (append normal, rotacao, finalizacao em stop) - sem isso,
+  // uma rotacao concorrente com o proximo chunk (ou com `stop()`) poderia finalizar/abrir segmentos
+  // fora de ordem.
+  mutex: Promise<unknown>
 }
 
 interface ActiveSession {
@@ -99,9 +117,20 @@ export interface AppendChunkResult {
  * arquivo da SUA trilha imediatamente - nunca acumulado em memoria (RF-014). O arquivo/registro
  * de segmento de cada trilha so e criado no PRIMEIRO chunk dela, quando o `mimeType` real
  * (definido pelo `MediaRecorder` do renderer) e conhecido.
+ *
+ * RF-012/RF-013 (sexto incremento - segmentacao por tempo/tamanho): o RENDERER decide quando
+ * rotacionar (compara `totalBytes` devolvido por `appendChunk` contra `sizeSegmentationMb`, ou um
+ * timer contra `timeSegmentationMinutes` - ver `useRecordingSession.ts`) e so sinaliza a decisao
+ * enviando um `segmentIndex` maior no proximo chunk. O main reage a essa mudanca de indice: nao
+ * existe um canal IPC dedicado para "rotacione agora" - a mesma logica de criacao preguicosa que
+ * ja existia para o primeiro segmento e reaproveitada para qualquer segmento seguinte.
  */
 export class RecordingSessionManager {
   private activeSession: ActiveSession | null = null
+  // Serializa escritas do manifest entre si - trilhas diferentes podem rotacionar (e portanto
+  // chamar `writeManifest`) concorrentemente; sem este mutex, a escrita atomica mais antiga
+  // poderia terminar seu rename DEPOIS da mais nova, deixando o manifest.json com dados velhos.
+  private manifestMutex: Promise<unknown> = Promise.resolve()
 
   constructor(
     private readonly projectRepository: ProjectRepository,
@@ -147,7 +176,14 @@ export class RecordingSessionManager {
           position: index,
           startOffsetMs: 0
         })
-        tracks.set(trackId, { trackId, type, segment: null })
+        tracks.set(trackId, {
+          trackId,
+          type,
+          currentSegment: null,
+          finalizedSegments: [],
+          stopped: false,
+          mutex: Promise.resolve()
+        })
         trackHandles.push({ trackId, type })
       })
 
@@ -175,6 +211,7 @@ export class RecordingSessionManager {
 
   async appendChunk(
     trackId: string,
+    segmentIndex: number,
     sequence: number,
     mimeType: string,
     data: Uint8Array
@@ -185,48 +222,36 @@ export class RecordingSessionManager {
       throw new ValidationError('Nenhuma gravacao ativa corresponde a esta trilha.')
     }
 
-    if (!track.segment) {
-      const info = TRACK_TYPE_INFO[track.type]
-      const fileName = buildSegmentFileName(info.sourceName, 1)
-      const relativePath = join(SOURCE_ROOT_FOLDER_NAME, info.sourceName, fileName)
-      const absolutePath = join(info.getSourcePath(session.paths), fileName)
-      const fileHandle = await open(absolutePath, 'w')
-      const segmentId = randomUUID()
-
-      this.segmentRepository.create({
-        id: segmentId,
-        trackId,
-        seqIndex: 1,
-        relativePath,
-        startedAtMs: session.startedAtMs,
-        endedAtMs: null,
-        durationMs: null,
-        byteSize: 0,
-        mimeType,
-        finalized: false
-      })
-
-      track.segment = {
-        id: segmentId,
-        relativePath,
-        fileHandle,
-        byteSize: 0,
-        mimeType,
-        lastSequence: -1
+    return this.runExclusive(track, async () => {
+      if (track.stopped) {
+        throw new ValidationError('Nenhuma gravacao ativa corresponde a esta trilha.')
       }
-    }
 
-    if (sequence <= track.segment.lastSequence) {
-      // Chunk fora de ordem/duplicado (reenvio) - ignorado para nao corromper o arquivo.
-      logger.warn('Chunk fora de ordem ignorado', { trackId, operation: 'recording.appendChunk' })
-      return { receivedBytes: 0, totalBytes: track.segment.byteSize }
-    }
+      if (!track.currentSegment) {
+        await this.openNewSegment(session, track, segmentIndex, mimeType)
+      } else if (segmentIndex > track.currentSegment.seqIndex) {
+        await this.finalizeCurrentSegment(track, Date.now())
+        await this.openNewSegment(session, track, segmentIndex, mimeType)
+        await this.writeManifest('RECORDING', session.startedAtMs)
+      }
 
-    await track.segment.fileHandle.write(data)
-    track.segment.byteSize += data.byteLength
-    track.segment.lastSequence = sequence
+      const segment = track.currentSegment
+      if (!segment || segmentIndex !== segment.seqIndex || sequence <= segment.lastSequence) {
+        // Chunk de um segmento ja rotacionado (chegou atrasado) ou fora de ordem/duplicado dentro
+        // do segmento atual - descartado para nao corromper o arquivo.
+        logger.warn('Chunk fora de ordem/segmento obsoleto ignorado', {
+          trackId,
+          operation: 'recording.appendChunk'
+        })
+        return { receivedBytes: 0, totalBytes: segment?.byteSize ?? 0 }
+      }
 
-    return { receivedBytes: data.byteLength, totalBytes: track.segment.byteSize }
+      await segment.fileHandle.write(data)
+      segment.byteSize += data.byteLength
+      segment.lastSequence = sequence
+
+      return { receivedBytes: data.byteLength, totalBytes: segment.byteSize }
+    })
   }
 
   async stop(projectId: string): Promise<{ state: RecordingState }> {
@@ -246,15 +271,13 @@ export class RecordingSessionManager {
       // finalizadas (limitacao conhecida deste incremento) - mas a sessao SEMPRE e liberada no
       // catch abaixo, entao o app nunca fica preso sem poder iniciar uma nova gravacao.
       for (const track of session.tracks.values()) {
-        if (!track.segment) continue
-        await track.segment.fileHandle.sync()
-        await track.segment.fileHandle.close()
-        this.segmentRepository.markFinalized(
-          track.segment.id,
-          endedAtMs,
-          endedAtMs - session.startedAtMs,
-          track.segment.byteSize
-        )
+        await this.runExclusive(track, async () => {
+          // Primeira acao, antes de qualquer await - fecha a corrida com um `appendChunk` que ja
+          // estava enfileirado no mutex desta trilha quando `stop()` foi chamado (ver comentario
+          // em `TrackSessionState.stopped`).
+          track.stopped = true
+          await this.finalizeCurrentSegment(track, endedAtMs)
+        })
       }
     } catch (error) {
       this.stateMachine.transitionTo('FAILED')
@@ -272,7 +295,7 @@ export class RecordingSessionManager {
       durationMs
     })
 
-    await this.writeManifest('COMPLETED', session.startedAtMs, endedAtMs)
+    await this.writeManifest('COMPLETED', session.startedAtMs)
 
     this.stateMachine.transitionTo('COMPLETED')
     const finalState = this.stateMachine.getState()
@@ -285,39 +308,119 @@ export class RecordingSessionManager {
     return { state: finalState }
   }
 
-  private async writeManifest(
-    status: RecordingState,
-    startedAtMs: number,
-    endedAtMs?: number
+  /** Serializa mutacoes de UMA trilha (fila FIFO) - reaproveitado por append/rotacao/stop. */
+  private runExclusive<T>(track: TrackSessionState, fn: () => Promise<T>): Promise<T> {
+    const result = track.mutex.then(fn, fn)
+    track.mutex = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
+  }
+
+  private async openNewSegment(
+    session: ActiveSession,
+    track: TrackSessionState,
+    seqIndex: number,
+    mimeType: string
   ): Promise<void> {
-    const session = this.activeSession
-    if (!session) return
+    const info = TRACK_TYPE_INFO[track.type]
+    const fileName = buildSegmentFileName(info.sourceName, seqIndex)
+    const relativePath = join(SOURCE_ROOT_FOLDER_NAME, info.sourceName, fileName)
+    const absolutePath = join(info.getSourcePath(session.paths), fileName)
+    const fileHandle = await open(absolutePath, 'w')
+    const segmentId = randomUUID()
+    const startedAtMs = Date.now()
 
-    const tracks: ManifestTrack[] = Array.from(session.tracks.values()).map((track) => ({
-      id: track.trackId,
-      type: TRACK_TYPE_INFO[track.type].manifestType,
-      segments: track.segment
-        ? [
-            {
-              index: 1,
-              relativePath: track.segment.relativePath,
-              startedAtMs,
-              endedAtMs: endedAtMs ?? null,
-              byteSize: track.segment.byteSize,
-              finalized: endedAtMs !== undefined
-            }
-          ]
-        : []
-    }))
+    this.segmentRepository.create({
+      id: segmentId,
+      trackId: track.trackId,
+      seqIndex,
+      relativePath,
+      startedAtMs,
+      endedAtMs: null,
+      durationMs: null,
+      byteSize: 0,
+      mimeType,
+      finalized: false
+    })
 
-    const manifest: ProjectManifest = {
-      schemaVersion: MANIFEST_SCHEMA_VERSION,
-      projectId: session.projectId,
-      status,
-      startedAt: new Date(startedAtMs).toISOString(),
-      tracks
+    track.currentSegment = {
+      id: segmentId,
+      seqIndex,
+      relativePath,
+      fileHandle,
+      byteSize: 0,
+      mimeType,
+      lastSequence: -1,
+      startedAtMs,
+      endedAtMs: null,
+      finalized: false
     }
+  }
 
-    await writeManifestAtomic(session.paths.manifestPath, manifest)
+  private async finalizeCurrentSegment(track: TrackSessionState, endedAtMs: number): Promise<void> {
+    const segment = track.currentSegment
+    if (!segment) return
+    await segment.fileHandle.sync()
+    await segment.fileHandle.close()
+    this.segmentRepository.markFinalized(
+      segment.id,
+      endedAtMs,
+      endedAtMs - segment.startedAtMs,
+      segment.byteSize
+    )
+    segment.endedAtMs = endedAtMs
+    segment.finalized = true
+    track.finalizedSegments.push(segment)
+    track.currentSegment = null
+  }
+
+  private async writeManifest(status: RecordingState, startedAtMs: number): Promise<void> {
+    // Serializado (nao so encadeado no chamador) porque rotacoes de trilhas DIFERENTES podem
+    // disparar escritas do manifest concorrentemente a partir de mutexes de trilha independentes.
+    await this.runManifestExclusive(async () => {
+      const session = this.activeSession
+      if (!session) return
+
+      const tracks: ManifestTrack[] = Array.from(session.tracks.values()).map((track) => {
+        const allSegments = [
+          ...track.finalizedSegments,
+          ...(track.currentSegment ? [track.currentSegment] : [])
+        ].sort((a, b) => a.seqIndex - b.seqIndex)
+
+        return {
+          id: track.trackId,
+          type: TRACK_TYPE_INFO[track.type].manifestType,
+          segments: allSegments.map((segment) => ({
+            index: segment.seqIndex,
+            relativePath: segment.relativePath,
+            startedAtMs: segment.startedAtMs,
+            endedAtMs: segment.endedAtMs,
+            byteSize: segment.byteSize,
+            finalized: segment.finalized
+          }))
+        }
+      })
+
+      const manifest: ProjectManifest = {
+        schemaVersion: MANIFEST_SCHEMA_VERSION,
+        projectId: session.projectId,
+        status,
+        startedAt: new Date(startedAtMs).toISOString(),
+        tracks
+      }
+
+      await writeManifestAtomic(session.paths.manifestPath, manifest)
+    })
+  }
+
+  private runManifestExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.manifestMutex.then(fn, fn)
+    this.manifestMutex = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
   }
 }

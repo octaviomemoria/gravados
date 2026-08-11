@@ -181,6 +181,36 @@ body {
   font-size: 0.85rem;
 }
 
+.settings-section__hint {
+  color: var(--ms-color-text-muted);
+  font-size: 0.85rem;
+  max-width: 640px;
+  margin-top: 0;
+}
+
+.settings-field-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ms-space-4);
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ms-space-2);
+  font-size: 0.85rem;
+}
+
+.settings-field input {
+  width: 160px;
+  padding: var(--ms-space-2) var(--ms-space-3);
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-color-border);
+  background: var(--ms-color-surface);
+  color: var(--ms-color-text);
+  font-size: 0.9rem;
+}
+
 .library-list,
 .export-list {
   list-style: none;

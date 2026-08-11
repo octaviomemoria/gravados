@@ -235,6 +235,50 @@ MVP (tela + câmera + microfone + áudio do sistema):
   e via testes sintéticos em `recording-session-manager.test.ts` (4 trilhas simultâneas + o caso
   de trilha sem nenhum chunk).
 
+### Segmentação por tempo/tamanho (Fase 1)
+
+Sexto incremento da Fase 1 — RF-012/RF-013: cada trilha rotaciona para um novo arquivo
+(`camera_000001.webm` → `camera_000002.webm` → ...) ao cruzar um limite configurável de tempo OU
+tamanho, sem interromper a gravação. Configuração global em **Configurações** (reaproveita o
+schema `recordingPresets` já existente desde a Fase 0, até então sem nenhuma UI).
+
+- **Restrição técnica central**: um arquivo WebM/Matroska só é válido se produzido por um ciclo
+  completo `MediaRecorder.start()`…`.stop()` — não dá para simplesmente continuar escrevendo bytes
+  num arquivo novo no meio do stream. Rotacionar significa parar o `MediaRecorder` atual da
+  trilha e iniciar um **novo** sobre a MESMA `MediaStream` (parar um recorder não para as tracks
+  do stream) — `createTrackRecorderState` em `useRecordingSession.ts` é reaproveitada tanto na
+  criação inicial quanto em cada rotação.
+- **Sem canal IPC novo para rotação**: `recording.appendChunk` ganhou um campo `segmentIndex` — o
+  renderer decide QUANDO rotacionar (compara `totalBytes`, já devolvido por `appendChunk`, contra
+  `sizeSegmentationMb`; um `setTimeout` por trilha contra `timeSegmentationMinutes`) e só sinaliza
+  a decisão enviando um índice maior no próximo chunk. O main reage à mudança de índice reaproveitando
+  a mesma lógica de criação preguiçosa que já existia para o primeiro segmento.
+- **Dois bugs de concorrência corrigidos como parte deste incremento** (não eram visíveis com um
+  segmento só por trilha): `durationMs` de cada segmento agora é calculado a partir do início
+  DAQUELE segmento (antes usava o início da sessão inteira); e `RecordingSessionManager.stop()`
+  marca a trilha como `stopped` como a **primeira ação**, antes de qualquer `await`, fechando uma
+  janela onde um `appendChunk` já enfileirado no mutex da trilha poderia reabrir um segmento numa
+  gravação já finalizada. O mesmo padrão (`stoppedRef`, verificado de forma síncrona) existe no
+  lado renderer.
+- **Bug real encontrado só no E2E (não nos testes sintéticos) e corrigido**: `MediaRecorder.stop()`
+  emite um último chunk de "flush" antes do evento `'stop'` — esse chunk final ainda pertence ao
+  segmento antigo, mas seu `totalBytes` continua acima do limite configurado (bytes só crescem),
+  então disparava uma **segunda rotação redundante** logo após a primeira, que apagava o segmento
+  recém-criado quase instantaneamente e pulava direto para o próximo índice (`..._000002.webm`
+  nunca chegava a existir). Diagnosticado capturando `page.on('console')` numa execução isolada.
+  Corrigido com uma guarda (`rotationInFlightRef` em `useRecordingSession.ts`) que impede
+  enfileirar uma nova rotação enquanto uma já está em andamento para a trilha.
+- Testado de ponta a ponta em `tests/e2e/recording.spec.ts` (cenário "segmentation", limite de 1
+  MB — o mínimo permitido pelo schema — numa trilha de câmera) e via testes sintéticos em
+  `recording-session-manager.test.ts` (rotação mid-sessão, manifest com múltiplos segmentos,
+  chunk de segmento obsoleto descartado, `stop()` correndo em paralelo com um `appendChunk`
+  tardio). A taxa de bytes/segundo da câmera sintética mostrou-se muito variável sob a carga deste
+  ambiente de teste (de ~27 KB a mais de 1 MB em janelas de duração semelhante) — mesma classe de
+  contenção de recursos já documentada para "microphone + camera"; mitigado com timeouts
+  generosos e 2 retries (decisão registrada #30/#31). Validado com 2 de 3 execuções completas da
+  suíte 100% limpas e a terceira precisando dos retries (mesmo nível de estabilidade já aceito
+  para "microphone + camera" neste mesmo ambiente).
+
 ## Estrutura de diretórios
 
 ```text
@@ -386,34 +430,73 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     app) podem ser abertas; nunca um caminho arbitrário vindo do renderer. `shell.openPath` retorna
     uma string de erro em vez de lançar - tratado como `{opened: false}` (não um erro IPC), já que
     "pasta movida/apagada por fora do app" é um estado esperado, não excepcional.
+28. **Rotação de segmento sinalizada pelo proprio chunk, sem canal IPC dedicado** — o renderer
+    decide QUANDO rotacionar (compara `totalBytes` já devolvido por `appendChunk` contra
+    `sizeSegmentationMb`; timer contra `timeSegmentationMinutes`) e só envia um `segmentIndex`
+    maior no próximo chunk. O main reage a essa mudança reaproveitando a mesma lógica de criação
+    preguiçosa que já existia para o primeiro segmento — mais simples e com menos superfície de
+    corrida do que um canal `recording.rotateSegment` dedicado.
+29. **Configuração de segmentação é global (Configurações), não por gravação** — reaproveita o
+    schema `recordingPresets` já existente desde a Fase 0 (`timeSegmentationMinutes`/
+    `sizeSegmentationMb`, ambos nullable e independentes - se os dois estiverem preenchidos, o que
+    for atingido primeiro dispara a rotação). `qualityPreset`, mesma categoria de settings,
+    permanece sem UI neste incremento (schema existe, nada ainda o consome).
+30. **Guarda contra rotação redundante (`rotationInFlightRef`)** — `MediaRecorder.stop()` emite um
+    último chunk de flush antes do evento `'stop'`; esse chunk ainda pertence ao segmento antigo
+    mas seu `totalBytes` continua acima do limite (bytes só crescem), o que sem essa guarda
+    disparava uma segunda rotação logo após a primeira, apagando o segmento recém-criado quase
+    instantaneamente. A guarda é marcada no PONTO DE DISPARO (`requestRotation`, síncrono, antes
+    de enfileirar no `withTrackLock`), não dentro de `rotateTrack` em si - por essa altura uma
+    rotação anterior já teria terminado e liberado a marca, então checar ali não teria efeito.
+31. **2 retries + `beforeEach`/`afterEach` no cenário E2E de segmentação** (mesmo padrão já usado
+    para "microphone + camera", decisão #23) — mesma classe de contenção de recursos já
+    documentada para a trilha de vídeo da câmera, não um bug de lógica (a rotação em si está
+    provada correta via 4 testes sintéticos dedicados, sem essa restrição de hardware, e via
+    execução E2E isolada e repetida após a correção do item #30).
 
 ## Testes
 
 - **Vitest** (`tests/unit/`): máquina de estados de gravação e de jobs, `RecordingSessionManager`
   de ponta a ponta multi-trilha (start/appendChunk/stop reais, microfone+câmera+tela+áudio do
   sistema simultâneos e independentes, escrita em disco, manifest, DB, chunks fora de ordem,
-  falhas, trilha registrada que nunca recebe chunk algum), filesystem/escrita atômica, construção
-  de argumentos FFmpeg, classificação de fontes de tela, cálculo de nível de áudio (RMS),
-  formatação de tempo decorrido, wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo
-  `project.openFolder`), erros de domínio, migrations (tabelas/índices/FKs), repositórios
-  (project/settings/export-job), serviço de configurações, store de tema, smoke test de componente
-  (jsdom). **94 testes, 20 arquivos.**
+  falhas, trilha registrada que nunca recebe chunk algum, **rotação de segmento mid-sessão,
+  manifest com múltiplos segmentos por trilha, chunk de segmento já rotacionado descartado,
+  `stop()` correndo em paralelo com um `appendChunk` tardio**), filesystem/escrita atômica,
+  construção de argumentos FFmpeg, classificação de fontes de tela, cálculo de nível de áudio
+  (RMS), formatação de tempo decorrido, **limiar puro de rotação por tamanho**, wrapper de IPC
+  (validação/erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de domínio,
+  migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço de
+  configurações, store de tema, smoke test de componente (jsdom). **102 testes, 21 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
-  (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone** e **áudio
-  do sistema + microfone**, cada par de ponta a ponta com dispositivos de áudio/vídeo sintéticos do
-  Chromium (câmera/microfone) e captura real de tela/áudio do sistema, verificando os arquivos de
-  segmento gravados em disco via `expect.poll` (`recording.spec.ts`, ver decisões registradas #22
-  sobre não empilhar todas as trilhas num único teste, #23 sobre timeouts/retries e #25 sobre o
-  emparelhamento áudio+vídeo do áudio do sistema). **13 testes**, validados estáveis (todos os
-  testes passam, com a flakiness já conhecida e documentada do cenário microfone+câmera absorvida
-  pelos retries) em 3 execuções completas consecutivas da suíte.
+  (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
+  do sistema + microfone** e **segmentação por tamanho (câmera, limite de 1 MB)**, cada cenário de
+  ponta a ponta com dispositivos de áudio/vídeo sintéticos do Chromium (câmera/microfone) e
+  captura real de tela/áudio do sistema, verificando os arquivos de segmento gravados em disco via
+  `expect.poll` (`recording.spec.ts`, ver decisões registradas #22 sobre não empilhar todas as
+  trilhas num único teste, #23 sobre timeouts/retries, #25 sobre o emparelhamento áudio+vídeo do
+  áudio do sistema e #28/#29 sobre rotação de segmento). **14 testes**, validados estáveis (todos
+  os testes passam, com a flakiness já conhecida e documentada do cenário microfone+câmera
+  absorvida pelos retries) em 3 execuções completas consecutivas da suíte.
 
 ## Pendências conhecidas
 
-- Segmentação por tempo/tamanho, pause/resume, marcadores, monitor de disco, editor, transcrição/
-  IA, exportação real, empacotamento (`electron-builder`) e nuvem/colaboração — fora do escopo
+- Pause/resume, marcadores, monitor de disco, editor, transcrição/IA, exportação real em múltiplos
+  formatos (mp4/mp3/wav/etc. - pedido explícito do usuário, adiado para um incremento próprio;
+  ver "Próximo passo"), empacotamento (`electron-builder`) e nuvem/colaboração — fora do escopo
   desta fase por desenho (ver `11_ROADMAP_BACKLOG.md`).
+- Segmentação por TEMPO não é exercitada em E2E (só a via testes unitários sintéticos, que não
+  dependem de tempo real) — `timeSegmentationMinutes` é um inteiro em minutos (mínimo 1) no
+  schema, sem caminho para forçar uma rotação em segundos num teste sem mudar o schema só por
+  conveniência de teste (decisão registrada, ver comentário no topo de `recording.spec.ts`).
+- `qualityPreset` (mesma categoria de settings da segmentação) segue sem UI e sem nenhum efeito
+  real na captura (resolução/fps/bitrate) — schema e defaults existem desde a Fase 0, nunca
+  consumidos.
+- Se `RecordingSessionManager` falhar ao ABRIR um novo segmento no meio de uma rotação (ex.: erro
+  de disco), a trilha fica sem segmento atual até a próxima tentativa de chunk (que tenta abrir de
+  novo) - não há um limite de retentativas nem um erro visível na UI para esse caso específico;
+  falha ao persistir UM chunk já não interrompe a gravação por desenho, mas esse caminho
+  específico não tem teste dedicado.
 - Captura simultânea das **4** fontes (tela+câmera+microfone+áudio do sistema) não é exercitada em
   E2E com hardware real neste ambiente de teste (contenção de recursos - decisão registrada #22);
   a lógica está provada correta via teste sintético de 4 trilhas em
@@ -444,8 +527,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 
 ## Próximo passo
 
-Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): as quatro fontes de captura
-(tela, câmera, microfone, áudio do sistema) já estão implementadas e testadas em pares reais +
-quarteto sintético. Próximos itens do roadmap: REC-011/012 (segmentação por tempo/tamanho -
-rotação de segmento, hoje sempre um único arquivo por trilha), REC-013 (pause/resume), REC-014
-(marcadores) e REC-015 (monitor de disco/RF-042).
+Duas frentes identificadas, ambas fora do escopo desta fase de captura:
+
+1. **Exportação em múltiplos formatos** (pedido explícito do usuário) — hoje a gravação é sempre
+   `.webm` (único formato que o `MediaRecorder` do Chromium produz de forma confiável); entregar
+   um arquivo em MP4/MP3/WAV/M4A-AAC/AVI/MPEG/OGG exige uma etapa real de conversão via FFmpeg
+   (`main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`, nenhum binário
+   instalado, `export.start` sempre lança `NotImplementedError`) - feature nova e maior,
+   correspondendo à Fase 4 - Export do roadmap (EXP-001..009), a ser planejada separadamente.
+2. Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): REC-013 (pause/resume),
+   REC-014 (marcadores) e REC-015 (monitor de disco/RF-042) — as quatro fontes de captura e a
+   segmentação por tempo/tamanho já estão implementadas e testadas.

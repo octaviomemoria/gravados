@@ -2,6 +2,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import { resolve, join } from 'node:path'
 import { existsSync, statSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 
 // Ver comentario detalhado em app-launch.spec.ts: o argumento e a raiz do projeto, nao o .js.
 const APP_ROOT = process.cwd()
@@ -13,6 +14,13 @@ const SELECT_TIMEOUT_MS = 25_000
 // testes de gravacao real desta suite - ver "Decisao registrada" abaixo sobre contencao de
 // recursos cumulativa entre lancamentos sequenciais do Electron na mesma suite.
 const RECORDING_TEST_TIMEOUT_MS = 90_000
+// So para o cenario de segmentacao: medido empiricamente que a camera sintetica do Chromium
+// (`--use-fake-device-for-media-stream`) produz ~200 kbps - cruzar o limite minimo do schema
+// (1 MB) leva ~42s em condicoes ideais (confirmado via arquivos reais chegando a 982 KB dentro do
+// POLL_TIMEOUT_MS padrao de 40s, sem cruzar). Nao e flakiness nem bug de logica - o teste
+// simplesmente precisava de mais tempo de parede para o segundo segmento aparecer.
+const SEGMENTATION_POLL_TIMEOUT_MS = 90_000
+const SEGMENTATION_TEST_TIMEOUT_MS = 120_000
 
 function fileHasBytes(path: string): boolean {
   return existsSync(path) && statSync(path).size > 0
@@ -20,7 +28,8 @@ function fileHasBytes(path: string): boolean {
 
 /**
  * Testes de ponta a ponta da captura real (quinto incremento: tela + camera + microfone + audio
- * do sistema). Usa os dispositivos sinteticos de audio/video do Chromium
+ * do sistema; sexto incremento: segmentacao por tempo/tamanho - ver `test.describe('recording
+ * (segmentation)')` ao final do arquivo). Usa os dispositivos sinteticos de audio/video do Chromium
  * (`--use-fake-device-for-media-stream`, habilitado via `MEETING_STUDIO_E2E_FAKE_MEDIA=1` - ver
  * `main/index.ts`) para microfone/camera, e captura real via `chromeMediaSource: 'desktop'` para
  * tela e audio do sistema (nao afetada pela flag de dispositivo falso, que so cobre
@@ -288,5 +297,128 @@ test.describe('recording (system audio + microphone)', () => {
     expect(finalized.status).toBe('COMPLETED')
     expect(fileHasBytes(systemAudioPath)).toBe(true)
     expect(fileHasBytes(microphonePath)).toBe(true)
+  })
+})
+
+/**
+ * RF-012/RF-013 (sexto incremento - segmentacao por tempo/tamanho). Cobre so o caminho por
+ * TAMANHO: `timeSegmentationMinutes` e um inteiro em MINUTOS (minimo 1, ver
+ * `settings.schema.ts`) - nao ha como forcar uma rotacao por tempo em poucos segundos sem mudar o
+ * schema so para acomodar velocidade de teste (decisao registrada: nao fazer isso so por
+ * conveniencia de teste). A logica de rotacao por TEMPO fica coberta pelos testes unitarios
+ * sinteticos de `recording-session-manager.test.ts`, que nao dependem de tempo real. Grava so
+ * CAMERA.
+ *
+ * Bug real encontrado e corrigido durante o desenvolvimento deste teste (nao um problema do
+ * teste em si): `MediaRecorder.stop()` emite um ultimo chunk de flush ANTES do evento `'stop'` -
+ * esse chunk final ainda pertencia ao segmento antigo, mas seu `totalBytes` continuava acima do
+ * limite configurado (bytes so crescem), entao disparava uma SEGUNDA rotacao redundante logo
+ * apos a primeira - que apagava o segmento recem-criado quase instantaneamente e pulava direto
+ * para o proximo indice (`..._000002.webm` nunca chegava a existir, a rotacao ia direto para
+ * `..._000003.webm`). Diagnosticado via log temporario capturando `page.on('console')` durante
+ * uma execucao isolada. Corrigido em `useRecordingSession.ts` com uma guarda
+ * (`rotationInFlightRef`) que impede enfileirar uma nova rotacao enquanto uma ja esta em
+ * andamento para a trilha.
+ *
+ * Decisao registrada: 2 retries + `beforeEach`/`afterEach` (mesmo padrao do describe "microphone
+ * + camera") mantidos MESMO apos corrigir o bug acima - a taxa real de bytes/segundo da camera
+ * sintetica (`--use-fake-device-for-media-stream`) mostrou-se muito mais variavel do que o
+ * esperado sob a carga deste ambiente de teste (medido empiricamente: de ~27 KB a ~982 KB+ em
+ * janelas de gravacao de duracao semelhante) - mesma classe de contencao de recursos ja
+ * documentada para a trilha de video da camera no describe "microphone + camera". Cada retry
+ * relanca uma instancia FRESCA do Electron, isolada de qualquer degradacao da tentativa anterior.
+ */
+test.describe('recording (segmentation)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    // Restaurado a cada tentativa (nao so no fim de todas) - este ambiente compartilha o mesmo
+    // `userData` (e portanto o mesmo `meeting-studio.db`) entre execucoes de teste, entao um
+    // limite de 1 MB deixado para tras afetaria gravacoes de teste (ou manuais) subsequentes,
+    // mesmo que esta tentativa especifica tenha falhado e seja repetida.
+    await appWindow
+      .evaluate(async () => {
+        await window.meetingStudio.settings.update('recordingPresets', {
+          qualityPreset: 'STANDARD',
+          timeSegmentationMinutes: 15,
+          sizeSegmentationMb: null,
+          diskSpaceWarningThresholdMb: 2048,
+          diskSpaceCriticalThresholdMb: 512
+        })
+      })
+      .catch(() => {})
+    await electronApp.close()
+  })
+
+  test('rotates the camera track into a second segment file once the configured size limit is crossed', async () => {
+    test.info().setTimeout(SEGMENTATION_TEST_TIMEOUT_MS)
+    await openRecordingSetup(appWindow)
+
+    // Limite minimo permitido pelo schema (1 MB) - gera o segundo segmento em poucos segundos de
+    // video sintetico. `timeSegmentationMinutes: null` evita qualquer interferencia do timer de
+    // tempo (o default de producao e 15 minutos - nunca dispararia dentro da duracao deste teste
+    // de qualquer forma, mas deixar explicito evita depender do valor padrao).
+    await appWindow.evaluate(async () => {
+      const current = await window.meetingStudio.settings.get('recordingPresets')
+      await window.meetingStudio.settings.update('recordingPresets', {
+        ...current,
+        timeSegmentationMinutes: null,
+        sizeSegmentationMb: 1
+      })
+    })
+
+    const cameraSelect = appWindow.getByLabel('Camera', { exact: true })
+    await expect(cameraSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cameraSelect.selectOption({ index: 1 })
+    // Mesmo cuidado do describe "microphone + camera": esperar o preview aparecer antes de
+    // iniciar, garantindo que a MediaStream ja esta pronta quando `recording.start` for chamado.
+    await expect(appWindow.locator('video.camera-preview')).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+
+    await appWindow.getByLabel('Titulo da reuniao').fill('Reuniao de teste E2E - segmentacao')
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const { rootPath } = await getActiveProjectPaths(appWindow)
+    const firstSegmentPath = join(rootPath, 'source', 'camera', 'camera_000001.webm')
+    const secondSegmentPath = join(rootPath, 'source', 'camera', 'camera_000002.webm')
+
+    await expect
+      .poll(() => fileHasBytes(firstSegmentPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro segmento de camera ser persistido em disco'
+      })
+      .toBe(true)
+    await expect
+      .poll(() => fileHasBytes(secondSegmentPath), {
+        timeout: SEGMENTATION_POLL_TIMEOUT_MS,
+        message: 'aguardando rotacao para o segundo segmento de camera (limite de 1 MB)'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    const finalized = await getActiveProjectPaths(appWindow)
+    expect(finalized.status).toBe('COMPLETED')
+    expect(fileHasBytes(firstSegmentPath)).toBe(true)
+    expect(fileHasBytes(secondSegmentPath)).toBe(true)
+
+    const manifestPath = join(rootPath, 'manifest.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+      tracks: Array<{ type: string; segments: Array<{ index: number; finalized: boolean }> }>
+    }
+    const cameraTrack = manifest.tracks.find((track) => track.type === 'camera')
+    expect(cameraTrack?.segments.length).toBeGreaterThanOrEqual(2)
+    expect(cameraTrack?.segments.every((segment) => segment.finalized)).toBe(true)
   })
 })

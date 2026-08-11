@@ -39,9 +39,17 @@ export const StartRecordingResponseSchema = z.object({
  * main). `data` trafega como `Uint8Array` - a serializacao estruturada do Electron transporta
  * bytes nativamente, sem round-trip via base64/JSON. `trackId` roteia o chunk para a trilha
  * correta dentro da sessao ativa (uma trilha por fonte: microfone, camera, ...).
+ *
+ * `segmentIndex` (RF-012/RF-013 - segmentacao por tempo/tamanho, sexto incremento): o renderer
+ * decide QUANDO rotacionar (ver `useRecordingSession.ts`) e sinaliza a rotacao simplesmente
+ * enviando um indice maior no proximo chunk - o main finaliza o segmento anterior e abre um novo
+ * automaticamente, sem precisar de um canal IPC dedicado para "rotacionar agora". `totalBytes` na
+ * resposta passa a significar "bytes no segmento ATUAL" (nao mais da trilha inteira), ja que cada
+ * segmento reinicia sua propria contagem.
  */
 export const AppendRecordingChunkRequestSchema = z.object({
   trackId: IdSchema,
+  segmentIndex: z.number().int().positive(),
   sequence: z.number().int().nonnegative(),
   mimeType: z.string().min(1),
   data: z.instanceof(Uint8Array)
