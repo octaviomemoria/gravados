@@ -387,6 +387,12 @@ body {
   animation: recording-indicator-pulse 1.4s ease-in-out infinite;
 }
 
+/* RF-010 - sem pulso (parado) e cor neutra distinguem "pausado" de "gravando" a olho. */
+.recording-indicator__dot--paused {
+  background: var(--ms-color-text-muted);
+  animation: none;
+}
+
 @keyframes recording-indicator-pulse {
   0%,
   100% {

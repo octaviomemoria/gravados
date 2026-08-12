@@ -13,7 +13,8 @@ import {
   type ProjectPaths,
   type ProjectManifest,
   type ManifestTrack,
-  type ManifestTrackType
+  type ManifestTrackType,
+  type ManifestPauseInterval
 } from '../media/project-filesystem'
 import { SOURCE_ROOT_FOLDER_NAME } from '../../shared/constants/filesystem'
 import { MANIFEST_SCHEMA_VERSION } from '../../shared/constants/app-info'
@@ -99,6 +100,10 @@ interface ActiveSession {
   paths: ProjectPaths
   startedAtMs: number
   tracks: Map<string, TrackSessionState>
+  // RF-010 (setimo incremento - pausar/retomar). Pausa e uma acao de SESSAO inteira (todas as
+  // trilhas pausam/retomam juntas, nao por trilha) - diferente de rotacao/finalizacao, que sao
+  // por trilha. O ultimo item tem `resumedAtMs: null` enquanto a pausa atual esta em andamento.
+  pauseIntervals: ManifestPauseInterval[]
 }
 
 export interface StartRecordingResult {
@@ -188,7 +193,7 @@ export class RecordingSessionManager {
       })
 
       const startedAtMs = Date.now()
-      this.activeSession = { projectId, paths, startedAtMs, tracks }
+      this.activeSession = { projectId, paths, startedAtMs, tracks, pauseIntervals: [] }
 
       this.stateMachine.transitionTo('RECORDING')
       this.projectRepository.updateRecordingLifecycle(projectId, {
@@ -252,6 +257,44 @@ export class RecordingSessionManager {
 
       return { receivedBytes: data.byteLength, totalBytes: segment.byteSize }
     })
+  }
+
+  /**
+   * RF-010 (setimo incremento - pausar/retomar). Diferente da segmentacao, pausar/retomar NAO
+   * fecha nenhum arquivo - `MediaRecorder.pause()`/`.resume()` (chamados pelo renderer) suspendem
+   * e retomam a MESMA gravacao no mesmo container WebM. O main so precisa transicionar a maquina
+   * de estados e registrar o intervalo de pausa no manifest; nao ha nada para fazer com os
+   * `FileHandle`s abertos (continuam abertos, prontos para o proximo chunk quando retomar).
+   */
+  async pause(projectId: string): Promise<{ state: RecordingState }> {
+    const session = this.activeSession
+    if (!session || session.projectId !== projectId) {
+      throw new ValidationError('Nenhuma gravacao ativa para este projeto.')
+    }
+
+    this.stateMachine.transitionTo('PAUSED')
+    session.pauseIntervals.push({ pausedAtMs: Date.now(), resumedAtMs: null })
+    await this.writeManifest('PAUSED', session.startedAtMs)
+
+    logger.info('Gravacao pausada', { projectId, operation: 'recording.pause' })
+    return { state: this.stateMachine.getState() }
+  }
+
+  async resume(projectId: string): Promise<{ state: RecordingState }> {
+    const session = this.activeSession
+    if (!session || session.projectId !== projectId) {
+      throw new ValidationError('Nenhuma gravacao ativa para este projeto.')
+    }
+
+    this.stateMachine.transitionTo('RECORDING')
+    const currentInterval = session.pauseIntervals.at(-1)
+    if (currentInterval && currentInterval.resumedAtMs === null) {
+      currentInterval.resumedAtMs = Date.now()
+    }
+    await this.writeManifest('RECORDING', session.startedAtMs)
+
+    logger.info('Gravacao retomada', { projectId, operation: 'recording.resume' })
+    return { state: this.stateMachine.getState() }
   }
 
   async stop(projectId: string): Promise<{ state: RecordingState }> {
@@ -408,7 +451,8 @@ export class RecordingSessionManager {
         projectId: session.projectId,
         status,
         startedAt: new Date(startedAtMs).toISOString(),
-        tracks
+        tracks,
+        pauseIntervals: session.pauseIntervals
       }
 
       await writeManifestAtomic(session.paths.manifestPath, manifest)

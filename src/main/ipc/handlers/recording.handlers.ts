@@ -6,6 +6,10 @@ import {
   AppendRecordingChunkResponseSchema,
   StopRecordingRequestSchema,
   StopRecordingResponseSchema,
+  PauseRecordingRequestSchema,
+  PauseRecordingResponseSchema,
+  ResumeRecordingRequestSchema,
+  ResumeRecordingResponseSchema,
   GetRecordingStateRequestSchema,
   GetRecordingStateResponseSchema
 } from '../../../shared/schemas/recording.schema'
@@ -16,8 +20,8 @@ import type { AppContext } from '../../app-context'
  * Terceiro incremento real da Fase 1 - Recording Core (RF-002..RF-016, microfone + camera -
  * ver README "Decisoes de arquitetura"). `start`/`appendChunk`/`stop` sao reais, delegando a
  * `RecordingSessionManager`. Segmentacao por tempo/tamanho (RF-012/RF-013) chegou no sexto
- * incremento - `appendChunk` agora repassa `segmentIndex`. Pause/resume e marcadores ficam para
- * incrementos seguintes.
+ * incremento - `appendChunk` agora repassa `segmentIndex`. Pausar/retomar (RF-010) chegou no
+ * setimo incremento. Marcadores ficam para um incremento seguinte.
  */
 export function registerRecordingHandlers(context: AppContext): void {
   registerHandler(
@@ -44,6 +48,18 @@ export function registerRecordingHandlers(context: AppContext): void {
     IPC_CHANNELS.recording.stop,
     { request: StopRecordingRequestSchema, response: StopRecordingResponseSchema },
     async (request) => context.recordingSessionManager.stop(request.projectId)
+  )
+
+  registerHandler(
+    IPC_CHANNELS.recording.pause,
+    { request: PauseRecordingRequestSchema, response: PauseRecordingResponseSchema },
+    async (request) => context.recordingSessionManager.pause(request.projectId)
+  )
+
+  registerHandler(
+    IPC_CHANNELS.recording.resume,
+    { request: ResumeRecordingRequestSchema, response: ResumeRecordingResponseSchema },
+    async (request) => context.recordingSessionManager.resume(request.projectId)
   )
 
   registerHandler(

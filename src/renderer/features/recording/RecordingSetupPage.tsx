@@ -10,10 +10,10 @@ import { useScreenSources } from './useScreenSources'
 import { useRecordingSession } from './useRecordingSession'
 
 /**
- * RF-002/RF-003/RF-004/RF-005/RF-006/RF-007/RF-008/RF-009/RF-043 + MVP-AC-001. Escopo deliberado
- * deste incremento (Fase 1): captura real de tela, camera, microfone E audio do sistema,
- * simultaneas e independentes (ver README "Decisoes de arquitetura"). Qualidade/segmentacao/
- * layout/pause ficam para depois.
+ * RF-002/RF-003/RF-004/RF-005/RF-006/RF-007/RF-008/RF-009/RF-010/RF-043 + MVP-AC-001. Escopo
+ * deliberado (Fase 1): captura real de tela, camera, microfone E audio do sistema, simultaneas e
+ * independentes, com segmentacao por tempo/tamanho e pausar/retomar (ver README "Decisoes de
+ * arquitetura"). Qualidade/layout ficam para depois.
  */
 export function RecordingSetupPage() {
   const { cameras, microphones, permissionDenied, loading: devicesLoading } = useMediaDevices()
@@ -42,7 +42,13 @@ export function RecordingSetupPage() {
     screenSourceId: selectedScreenId,
     systemAudioCarrierSourceId
   })
-  const isRecording = recordingSession.status === 'recording' || recordingSession.status === 'stopping'
+  // `paused` inclusa deliberadamente - a selecao de fontes fica travada durante toda a sessao
+  // ativa (gravando OU pausada), so libera de novo apos `stop()` (RF-010: pausar nao permite
+  // trocar fonte no meio, so suspende/retoma as trilhas ja escolhidas).
+  const isRecording =
+    recordingSession.status === 'recording' ||
+    recordingSession.status === 'paused' ||
+    recordingSession.status === 'stopping'
 
   return (
     <div className="feature-page">
@@ -159,6 +165,8 @@ export function RecordingSetupPage() {
         }
         onStart={(title) => void recordingSession.start(title)}
         onStop={() => void recordingSession.stop()}
+        onPause={() => void recordingSession.pause()}
+        onResume={() => void recordingSession.resume()}
       />
     </div>
   )

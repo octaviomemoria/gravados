@@ -26,6 +26,10 @@ function fileHasBytes(path: string): boolean {
   return existsSync(path) && statSync(path).size > 0
 }
 
+function fileByteSize(path: string): number {
+  return existsSync(path) ? statSync(path).size : 0
+}
+
 /**
  * Testes de ponta a ponta da captura real (quinto incremento: tela + camera + microfone + audio
  * do sistema; sexto incremento: segmentacao por tempo/tamanho - ver `test.describe('recording
@@ -420,5 +424,93 @@ test.describe('recording (segmentation)', () => {
     const cameraTrack = manifest.tracks.find((track) => track.type === 'camera')
     expect(cameraTrack?.segments.length).toBeGreaterThanOrEqual(2)
     expect(cameraTrack?.segments.every((segment) => segment.finalized)).toBe(true)
+  })
+})
+
+/**
+ * RF-010 (setimo incremento - pausar/retomar). So microfone (fonte mais leve/confiavel deste
+ * ambiente de teste, ver decisoes registradas nos describes acima sobre variabilidade de
+ * camera/tela sob carga) - pausar/retomar em si nao depende de qual fonte, so testa a maquina de
+ * estados + o comportamento real do `MediaRecorder.pause()`/`.resume()`.
+ */
+test.describe('recording (pause/resume)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeAll(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterAll(async () => {
+    await electronApp.close()
+  })
+
+  test('pauses recording (no byte growth), resumes (growth continues), and finishes as a single continuous segment', async () => {
+    test.info().setTimeout(RECORDING_TEST_TIMEOUT_MS)
+    await openRecordingSetup(appWindow)
+
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+
+    await appWindow.getByLabel('Titulo da reuniao').fill('Reuniao de teste E2E - pausar/retomar')
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const { rootPath } = await getActiveProjectPaths(appWindow)
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    const secondSegmentPath = join(rootPath, 'source', 'microphone', 'microphone_000002.webm')
+
+    await expect
+      .poll(() => fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de audio ser persistido em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Pausar' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('PAUSADO', { timeout: 10_000 })
+    const sizeAtPause = fileByteSize(microphonePath)
+
+    // Verificar a AUSENCIA de crescimento nao tem uma condicao real pra fazer poll (o oposto de
+    // "aguardar ate acontecer") - uma espera fixa e a unica forma correta de checar isso, ao
+    // contrario do resto do arquivo, que sempre espera uma condicao real via `expect.poll`.
+    await appWindow.waitForTimeout(3_000)
+    expect(fileByteSize(microphonePath)).toBe(sizeAtPause)
+
+    await appWindow.getByRole('button', { name: 'Retomar' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    await expect
+      .poll(() => fileByteSize(microphonePath) > sizeAtPause, {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando o arquivo crescer de novo apos retomar'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    // Pausar/retomar nunca fecha/abre arquivo (diferente da segmentacao) - so DEVE existir um
+    // unico segmento continuo pra essa trilha, do inicio ao fim da gravacao.
+    expect(fileHasBytes(secondSegmentPath)).toBe(false)
+
+    const finalized = await getActiveProjectPaths(appWindow)
+    expect(finalized.status).toBe('COMPLETED')
+
+    const manifestPath = join(rootPath, 'manifest.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+      status: string
+      pauseIntervals: Array<{ pausedAtMs: number; resumedAtMs: number | null }>
+      tracks: Array<{ type: string; segments: Array<{ index: number }> }>
+    }
+    expect(manifest.pauseIntervals).toHaveLength(1)
+    expect(manifest.pauseIntervals[0]?.resumedAtMs).not.toBeNull()
+    const microphoneTrack = manifest.tracks.find((track) => track.type === 'microphone')
+    expect(microphoneTrack?.segments).toHaveLength(1)
   })
 })

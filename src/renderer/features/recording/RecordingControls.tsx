@@ -4,25 +4,34 @@ import { EmptyState } from '../../components/EmptyState'
 import { formatElapsed } from './format-elapsed'
 
 export interface RecordingControlsProps {
-  status: 'idle' | 'starting' | 'recording' | 'stopping'
+  status: 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
   elapsedMs: number
   error: string | null
   canStart: boolean
   onStart: (title: string) => void
   onStop: () => void
+  onPause: () => void
+  onResume: () => void
 }
 
-/** RF-009/RF-043 - iniciar/parar gravacao + indicador visual de que uma sessao esta ativa. */
+/**
+ * RF-009/RF-010/RF-043 - iniciar/parar/pausar/retomar gravacao + indicador visual do estado.
+ * `isActive` cobre `recording`/`paused`/`stopping` - qualquer estado em que uma sessao existe e o
+ * campo de titulo deve ficar escondido (so faz sentido antes de `start`).
+ */
 export function RecordingControls({
   status,
   elapsedMs,
   error,
   canStart,
   onStart,
-  onStop
+  onStop,
+  onPause,
+  onResume
 }: RecordingControlsProps) {
   const [title, setTitle] = useState('')
-  const isActive = status === 'recording' || status === 'stopping'
+  const isActive = status === 'recording' || status === 'paused' || status === 'stopping'
+  const isPaused = status === 'paused'
 
   return (
     <section className="setup-group recording-controls">
@@ -44,8 +53,15 @@ export function RecordingControls({
 
       {isActive && (
         <div className="recording-indicator" role="status">
-          <span className="recording-indicator__dot" aria-hidden="true" />
-          <span>REC {formatElapsed(elapsedMs)}</span>
+          <span
+            className={
+              'recording-indicator__dot' + (isPaused ? ' recording-indicator__dot--paused' : '')
+            }
+            aria-hidden="true"
+          />
+          <span>
+            {isPaused ? 'PAUSADO' : 'REC'} {formatElapsed(elapsedMs)}
+          </span>
         </div>
       )}
 
@@ -58,9 +74,19 @@ export function RecordingControls({
             {status === 'starting' ? 'Iniciando...' : 'Iniciar gravacao'}
           </Button>
         ) : (
-          <Button variant="secondary" onClick={onStop} disabled={status === 'stopping'}>
-            {status === 'stopping' ? 'Finalizando...' : 'Parar'}
-          </Button>
+          <>
+            {(status === 'recording' || status === 'paused') && (
+              <Button
+                variant="secondary"
+                onClick={isPaused ? onResume : onPause}
+              >
+                {isPaused ? 'Retomar' : 'Pausar'}
+              </Button>
+            )}
+            <Button variant="secondary" onClick={onStop} disabled={status === 'stopping'}>
+              {status === 'stopping' ? 'Finalizando...' : 'Parar'}
+            </Button>
+          </>
         )}
       </div>
     </section>

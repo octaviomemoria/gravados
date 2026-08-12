@@ -64,5 +64,20 @@ export const StopRecordingRequestSchema = z.object({ projectId: IdSchema })
 export type StopRecordingRequest = z.infer<typeof StopRecordingRequestSchema>
 export const StopRecordingResponseSchema = z.object({ state: RecordingStateSchema })
 
+/**
+ * RF-010 (setimo incremento - pausar/retomar). Diferente da segmentacao, pausa NAO fecha/abre
+ * arquivo nenhum: `MediaRecorder.pause()`/`.resume()` sao APIs nativas que suspendem/retomam a
+ * MESMA gravacao (o container WebM continua valido, sem precisar de um novo segmento) - so o main
+ * precisa saber que a sessao esta pausada, para a maquina de estados e para registrar o intervalo
+ * de pausa no manifest (04_RECORDING_ENGINE.md secao 9 - "persistir: pause intervals").
+ */
+export const PauseRecordingRequestSchema = z.object({ projectId: IdSchema })
+export type PauseRecordingRequest = z.infer<typeof PauseRecordingRequestSchema>
+export const PauseRecordingResponseSchema = z.object({ state: RecordingStateSchema })
+
+export const ResumeRecordingRequestSchema = z.object({ projectId: IdSchema })
+export type ResumeRecordingRequest = z.infer<typeof ResumeRecordingRequestSchema>
+export const ResumeRecordingResponseSchema = z.object({ state: RecordingStateSchema })
+
 export const GetRecordingStateRequestSchema = EmptyRequestSchema
 export const GetRecordingStateResponseSchema = z.object({ state: RecordingStateSchema })

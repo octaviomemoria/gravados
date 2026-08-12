@@ -15,7 +15,9 @@ import type {
   StartRecordingRequest,
   RecordingTrackHandle,
   AppendRecordingChunkRequest,
-  StopRecordingRequest
+  StopRecordingRequest,
+  PauseRecordingRequest,
+  ResumeRecordingRequest
 } from '../schemas/recording.schema'
 import type { StartExportRequest, ExportJobResponse } from '../schemas/export.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
@@ -50,6 +52,8 @@ export interface RecordingApi {
     request: AppendRecordingChunkRequest
   ) => Promise<{ receivedBytes: number; totalBytes: number }>
   stop: (request: StopRecordingRequest) => Promise<{ state: RecordingState }>
+  pause: (request: PauseRecordingRequest) => Promise<{ state: RecordingState }>
+  resume: (request: ResumeRecordingRequest) => Promise<{ state: RecordingState }>
   getState: () => Promise<{ state: RecordingState }>
 }
 

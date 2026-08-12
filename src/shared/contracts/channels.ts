@@ -18,6 +18,8 @@ export const IPC_CHANNELS = {
   recording: {
     start: 'recording.start',
     appendChunk: 'recording.appendChunk',
+    pause: 'recording.pause',
+    resume: 'recording.resume',
     stop: 'recording.stop',
     getState: 'recording.getState'
   },

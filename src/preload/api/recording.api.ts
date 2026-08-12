@@ -6,11 +6,17 @@ import {
   AppendRecordingChunkResponseSchema,
   StopRecordingRequestSchema,
   StopRecordingResponseSchema,
+  PauseRecordingRequestSchema,
+  PauseRecordingResponseSchema,
+  ResumeRecordingRequestSchema,
+  ResumeRecordingResponseSchema,
   GetRecordingStateRequestSchema,
   GetRecordingStateResponseSchema,
   type StartRecordingRequest,
   type AppendRecordingChunkRequest,
-  type StopRecordingRequest
+  type StopRecordingRequest,
+  type PauseRecordingRequest,
+  type ResumeRecordingRequest
 } from '../../shared/schemas/recording.schema'
 import type { RecordingApi } from '../../shared/types/preload-api'
 import { invokeChannel } from '../invoke'
@@ -33,6 +39,18 @@ export function createRecordingApi(): RecordingApi {
       invokeChannel(
         IPC_CHANNELS.recording.stop,
         { request: StopRecordingRequestSchema, response: StopRecordingResponseSchema },
+        request
+      ),
+    pause: (request: PauseRecordingRequest) =>
+      invokeChannel(
+        IPC_CHANNELS.recording.pause,
+        { request: PauseRecordingRequestSchema, response: PauseRecordingResponseSchema },
+        request
+      ),
+    resume: (request: ResumeRecordingRequest) =>
+      invokeChannel(
+        IPC_CHANNELS.recording.resume,
+        { request: ResumeRecordingRequestSchema, response: ResumeRecordingResponseSchema },
         request
       ),
     getState: () =>

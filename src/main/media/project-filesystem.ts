@@ -107,12 +107,23 @@ export interface ManifestTrack {
   segments: ManifestSegment[]
 }
 
+/**
+ * RF-010 (setimo incremento - pausar/retomar). `resumedAtMs: null` enquanto a pausa atual ainda
+ * esta em andamento (04_RECORDING_ENGINE.md secao 9: "persistir: pause intervals" - dado de
+ * recuperacao, nao usado ainda para compressao de timeline editorial nesta fase).
+ */
+export interface ManifestPauseInterval {
+  pausedAtMs: number
+  resumedAtMs: number | null
+}
+
 export interface ProjectManifest {
   schemaVersion: number
   projectId: string
   status: RecordingState
   startedAt: string | null
   tracks: ManifestTrack[]
+  pauseIntervals: ManifestPauseInterval[]
 }
 
 export function createInitialManifest(projectId: string): ProjectManifest {
@@ -121,7 +132,8 @@ export function createInitialManifest(projectId: string): ProjectManifest {
     projectId,
     status: 'IDLE',
     startedAt: null,
-    tracks: []
+    tracks: [],
+    pauseIntervals: []
   }
 }
 

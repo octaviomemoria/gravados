@@ -462,4 +462,133 @@ describe('RecordingSessionManager', () => {
       expect(fileContent).toEqual(Buffer.from([1, 1]))
     })
   })
+
+  // RF-010 (setimo incremento - pausar/retomar). Diferente da segmentacao, pausar/retomar nao
+  // toca em nenhum arquivo/segmento - so a maquina de estados e o registro de pauseIntervals no
+  // manifest. `MediaRecorder.pause()`/`.resume()` (chamados pelo renderer, nao testados aqui - ver
+  // `tests/e2e/recording.spec.ts`) sao o que de fato suspende a captura.
+  describe('pausar/retomar', () => {
+    it('pauses an active recording, transitioning RECORDING -> PAUSED and recording an open pause interval', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+
+      const pauseResult = await manager.pause(project.id)
+      expect(pauseResult.state).toBe('PAUSED')
+      expect(manager.getState()).toBe('PAUSED')
+
+      const manifestPath = join(libraryRoot, 'projects', project.id, 'manifest.json')
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+        status: string
+        pauseIntervals: Array<{ pausedAtMs: number; resumedAtMs: number | null }>
+      }
+      expect(manifest.status).toBe('PAUSED')
+      expect(manifest.pauseIntervals).toHaveLength(1)
+      expect(manifest.pauseIntervals[0]?.resumedAtMs).toBeNull()
+    })
+
+    it('resumes a paused recording, transitioning PAUSED -> RECORDING and closing the open pause interval', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+      await manager.pause(project.id)
+
+      const resumeResult = await manager.resume(project.id)
+      expect(resumeResult.state).toBe('RECORDING')
+      expect(manager.getState()).toBe('RECORDING')
+
+      const manifestPath = join(libraryRoot, 'projects', project.id, 'manifest.json')
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+        pauseIntervals: Array<{ pausedAtMs: number; resumedAtMs: number | null }>
+      }
+      expect(manifest.pauseIntervals).toHaveLength(1)
+      expect(manifest.pauseIntervals[0]?.resumedAtMs).not.toBeNull()
+    })
+
+    it('allows appendChunk to continue writing to the same segment after a pause/resume cycle (no new file)', async () => {
+      const project = createProject()
+      const { tracks } = await manager.start(project.id, ['MICROPHONE'])
+      const microphoneTrackId = findTrack(tracks, 'MICROPHONE')
+
+      await manager.appendChunk(microphoneTrackId, 1, 0, 'audio/webm', new Uint8Array([1, 1]))
+      await manager.pause(project.id)
+      await manager.resume(project.id)
+      // Mesmo segmento (indice 1) - pausar/retomar nunca fecha/abre arquivo, so a maquina de
+      // estados; o chunk seguinte continua no MESMO segmento normalmente.
+      await manager.appendChunk(microphoneTrackId, 1, 1, 'audio/webm', new Uint8Array([2, 2]))
+
+      await manager.stop(project.id)
+
+      const segments = segmentRepository.listByTrack(microphoneTrackId)
+      expect(segments).toHaveLength(1)
+      const filePath = join(
+        libraryRoot,
+        'projects',
+        project.id,
+        'source',
+        'microphone',
+        'microphone_000001.webm'
+      )
+      const fileContent = await readFile(filePath)
+      expect(fileContent).toEqual(Buffer.from([1, 1, 2, 2]))
+    })
+
+    it('records multiple closed pause intervals across repeated pause/resume cycles', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+
+      await manager.pause(project.id)
+      await manager.resume(project.id)
+      await manager.pause(project.id)
+      await manager.resume(project.id)
+
+      const manifestPath = join(libraryRoot, 'projects', project.id, 'manifest.json')
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+        pauseIntervals: Array<{ pausedAtMs: number; resumedAtMs: number | null }>
+      }
+      expect(manifest.pauseIntervals).toHaveLength(2)
+      expect(manifest.pauseIntervals.every((interval) => interval.resumedAtMs !== null)).toBe(true)
+    })
+
+    it('allows stop() while paused, leaving the trailing pause interval open in the manifest', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+      await manager.pause(project.id)
+
+      const stopResult = await manager.stop(project.id)
+      expect(stopResult.state).toBe('COMPLETED')
+
+      const manifestPath = join(libraryRoot, 'projects', project.id, 'manifest.json')
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+        status: string
+        pauseIntervals: Array<{ pausedAtMs: number; resumedAtMs: number | null }>
+      }
+      expect(manifest.status).toBe('COMPLETED')
+      expect(manifest.pauseIntervals).toHaveLength(1)
+      expect(manifest.pauseIntervals[0]?.resumedAtMs).toBeNull()
+    })
+
+    it('rejects pause() when there is no active recording for the project', async () => {
+      const project = createProject()
+      await expect(manager.pause(project.id)).rejects.toThrow()
+    })
+
+    it('rejects pause() when the recording is already paused (invalid state transition)', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+      await manager.pause(project.id)
+      await expect(manager.pause(project.id)).rejects.toThrow()
+    })
+
+    it('rejects resume() when the recording is not paused (invalid state transition)', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+      await expect(manager.resume(project.id)).rejects.toThrow()
+    })
+
+    it('rejects pause()/resume() for a mismatched projectId', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+      await expect(manager.pause(randomUUID())).rejects.toThrow()
+      await expect(manager.resume(randomUUID())).rejects.toThrow()
+    })
+  })
 })

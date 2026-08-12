@@ -3,7 +3,7 @@ import type { RecordingTrackType } from '@shared/schemas/recording.schema'
 import { RecordingPresetsSettingsSchema } from '@shared/schemas/settings.schema'
 import { shouldRotateForSize } from './segmentation-thresholds'
 
-export type RecordingSessionStatus = 'idle' | 'starting' | 'recording' | 'stopping'
+export type RecordingSessionStatus = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
 
 export interface RecordingSessionState {
   status: RecordingSessionStatus
@@ -182,6 +182,20 @@ export function useRecordingSession(sources: RecordingSources) {
   // precisa acontecer ANTES de enfileirar, nao dentro do que foi enfileirado).
   const rotationInFlightRef = useRef<Set<string>>(new Set())
 
+  // RF-010 (setimo incremento - pausar/retomar). `MediaRecorder.pause()`/`.resume()` sao APIs
+  // nativas que suspendem/retomam a MESMA gravacao - sem novo segmento, sem parar/reiniciar o
+  // recorder (diferente da rotacao). `totalPausedMsRef` acumula a duracao de TODAS as pausas da
+  // sessao, subtraida no calculo de `elapsedMs` (senao o cronometro pularia pra frente ao
+  // retomar, contando o tempo pausado como se tivesse gravado). `rotationTimerStartedAtRef`/
+  // `rotationTimerRemainingMsRef` existem para que a segmentacao por TEMPO conte duracao
+  // GRAVADA, nao tempo de parede - pausar e retomar sem isso faria o timer de rotacao continuar
+  // contando durante a pausa (rotacionando cedo demais) ou, se so reiniciado do zero ao retomar,
+  // faria o segmento crescer ate quase o DOBRO do limite configurado a cada pausa.
+  const pausedAtRef = useRef<number | null>(null)
+  const totalPausedMsRef = useRef(0)
+  const rotationTimerStartedAtRef = useRef<Map<string, number>>(new Map())
+  const rotationTimerRemainingMsRef = useRef<Map<string, number>>(new Map())
+
   const withTrackLock = useCallback((trackId: string, fn: () => Promise<void>): Promise<void> => {
     const prior = trackLocksRef.current.get(trackId) ?? Promise.resolve()
     const next = prior.then(fn, fn)
@@ -204,15 +218,20 @@ export function useRecordingSession(sources: RecordingSources) {
     [withTrackLock]
   )
 
+  // `overrideDurationMs` e usado so por `resume()`, pra retomar o timer com o tempo RESTANTE (nao
+  // reiniciar do zero) - ver comentario em `rotationTimerRemainingMsRef`. Sem argumento, agenda a
+  // duracao cheia configurada (caminho normal: inicio da gravacao ou apos uma rotacao).
   const scheduleTimeRotation = useCallback(
-    (trackId: string): void => {
+    (trackId: string, overrideDurationMs?: number): void => {
       const existing = rotationTimersRef.current.get(trackId)
       if (existing !== undefined) window.clearTimeout(existing)
       const minutes = timeSegmentationMinutesRef.current
-      if (minutes === null) return
+      const durationMs = overrideDurationMs ?? (minutes === null ? null : minutes * 60_000)
+      if (durationMs === null) return
+      rotationTimerStartedAtRef.current.set(trackId, Date.now())
       const timerId = window.setTimeout(() => {
         requestRotation(trackId)
-      }, minutes * 60_000)
+      }, durationMs)
       rotationTimersRef.current.set(trackId, timerId)
     },
     [requestRotation]
@@ -335,6 +354,10 @@ export function useRecordingSession(sources: RecordingSources) {
         timeSegmentationMinutesRef.current = presets.timeSegmentationMinutes
         sizeSegmentationMbRef.current = presets.sizeSegmentationMb
         rotationInFlightRef.current.clear()
+        pausedAtRef.current = null
+        totalPausedMsRef.current = 0
+        rotationTimerStartedAtRef.current.clear()
+        rotationTimerRemainingMsRef.current.clear()
 
         const project = await window.meetingStudio.project.create({ title })
         projectId = project.id
@@ -385,7 +408,10 @@ export function useRecordingSession(sources: RecordingSources) {
 
         startedAtRef.current = Date.now()
         elapsedIntervalRef.current = window.setInterval(() => {
-          setState((prev) => ({ ...prev, elapsedMs: Date.now() - startedAtRef.current }))
+          setState((prev) => ({
+            ...prev,
+            elapsedMs: Date.now() - startedAtRef.current - totalPausedMsRef.current
+          }))
         }, 250)
 
         setState({ status: 'recording', elapsedMs: 0, error: null })
@@ -397,6 +423,8 @@ export function useRecordingSession(sources: RecordingSources) {
         systemAudioStreamRef.current = null
         for (const timerId of rotationTimersRef.current.values()) window.clearTimeout(timerId)
         rotationTimersRef.current.clear()
+        rotationTimerStartedAtRef.current.clear()
+        rotationTimerRemainingMsRef.current.clear()
         trackLocksRef.current.clear()
         rotationInFlightRef.current.clear()
         trackRecordersRef.current.clear()
@@ -427,6 +455,103 @@ export function useRecordingSession(sources: RecordingSources) {
       scheduleTimeRotation
     ]
   )
+
+  /**
+   * RF-010 - pausa a sessao inteira (todas as trilhas juntas, nao por trilha - diferente da
+   * rotacao). Chama o main PRIMEIRO: se `recording.pause` for rejeitado (ex.: estado invalido -
+   * ja pausado, nao esta gravando), nada local e tocado, sem necessidade de desfazer nada.
+   */
+  const pause = useCallback(async () => {
+    const projectId = projectIdRef.current
+    if (!projectId || trackRecordersRef.current.size === 0) return
+
+    try {
+      await window.meetingStudio.recording.pause({ projectId })
+    } catch (error) {
+      console.error('Falha ao pausar gravacao', error)
+      setState((prev) => ({ ...prev, error: 'Falha ao pausar a gravacao.' }))
+      return
+    }
+
+    pausedAtRef.current = Date.now()
+
+    if (elapsedIntervalRef.current !== null) {
+      window.clearInterval(elapsedIntervalRef.current)
+      elapsedIntervalRef.current = null
+    }
+
+    // Guarda quanto tempo RESTAVA em cada timer de rotacao por tempo antes de zera-los - `resume`
+    // reagenda com esse restante, nao com a duracao cheia de novo (ver comentario em
+    // `rotationTimerRemainingMsRef` no topo do arquivo).
+    for (const [trackId, timerId] of rotationTimersRef.current) {
+      window.clearTimeout(timerId)
+      const startedAt = rotationTimerStartedAtRef.current.get(trackId)
+      const minutes = timeSegmentationMinutesRef.current
+      if (startedAt !== undefined && minutes !== null) {
+        const elapsed = Date.now() - startedAt
+        rotationTimerRemainingMsRef.current.set(trackId, Math.max(0, minutes * 60_000 - elapsed))
+      }
+    }
+    rotationTimersRef.current.clear()
+
+    const trackIds = Array.from(trackRecordersRef.current.keys())
+    await Promise.all(
+      trackIds.map((trackId) =>
+        withTrackLock(trackId, async () => {
+          const trackState = trackRecordersRef.current.get(trackId)
+          if (trackState?.recorder.state === 'recording') {
+            trackState.recorder.pause()
+          }
+        })
+      )
+    )
+
+    setState((prev) => ({ ...prev, status: 'paused' }))
+  }, [withTrackLock])
+
+  const resume = useCallback(async () => {
+    const projectId = projectIdRef.current
+    if (!projectId || trackRecordersRef.current.size === 0) return
+
+    try {
+      await window.meetingStudio.recording.resume({ projectId })
+    } catch (error) {
+      console.error('Falha ao retomar gravacao', error)
+      setState((prev) => ({ ...prev, error: 'Falha ao retomar a gravacao.' }))
+      return
+    }
+
+    const trackIds = Array.from(trackRecordersRef.current.keys())
+    await Promise.all(
+      trackIds.map((trackId) =>
+        withTrackLock(trackId, async () => {
+          const trackState = trackRecordersRef.current.get(trackId)
+          if (trackState?.recorder.state === 'paused') {
+            trackState.recorder.resume()
+          }
+        })
+      )
+    )
+
+    if (pausedAtRef.current !== null) {
+      totalPausedMsRef.current += Date.now() - pausedAtRef.current
+      pausedAtRef.current = null
+    }
+
+    elapsedIntervalRef.current = window.setInterval(() => {
+      setState((prev) => ({
+        ...prev,
+        elapsedMs: Date.now() - startedAtRef.current - totalPausedMsRef.current
+      }))
+    }, 250)
+
+    for (const [trackId, remainingMs] of rotationTimerRemainingMsRef.current) {
+      scheduleTimeRotation(trackId, remainingMs)
+    }
+    rotationTimerRemainingMsRef.current.clear()
+
+    setState((prev) => ({ ...prev, status: 'recording', error: null }))
+  }, [withTrackLock, scheduleTimeRotation])
 
   const stop = useCallback(async () => {
     const projectId = projectIdRef.current
@@ -476,9 +601,12 @@ export function useRecordingSession(sources: RecordingSources) {
       trackRecorders.clear()
       trackLocksRef.current.clear()
       rotationInFlightRef.current.clear()
+      rotationTimerStartedAtRef.current.clear()
+      rotationTimerRemainingMsRef.current.clear()
+      pausedAtRef.current = null
       projectIdRef.current = null
     }
   }, [withTrackLock])
 
-  return { ...state, start, stop }
+  return { ...state, start, stop, pause, resume }
 }

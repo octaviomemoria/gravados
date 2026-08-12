@@ -9,12 +9,15 @@ suporte futuro a macOS.
 A **Fase 0 — Bootstrap e Fundação Técnica** está completa: fundação arquitetural
 (Electron/React/TypeScript/Vite, IPC tipado e validado, SQLite+Drizzle, segurança de processo,
 sistema de jobs, logging, testes/CI). A **Fase 1 — Recording Core** está em andamento:
-REC-001 a REC-004 (dispositivos + preview) e um pipeline de captura real com **microfone e
-câmera simultâneos** (trilhas independentes) já funcionam de ponta a ponta (gravar → persistir
-em disco continuamente → finalizar). Ver [Dispositivos e preview](#dispositivos-e-preview-fase-1)
-e [Captura real de microfone e câmera](#captura-real-de-microfone-e-câmera-fase-1). Tela (exige API
-não-padrão do Chromium), áudio do sistema, segmentação, pausa/retomada e marcadores ainda não
-existem — próximos incrementos da Fase 1.
+REC-001 a REC-004 (dispositivos + preview) e um pipeline de captura real com as **quatro fontes
+simultâneas do MVP** (tela, câmera, microfone e áudio do sistema, trilhas independentes) já
+funcionam de ponta a ponta (gravar → persistir em disco continuamente → finalizar), com
+**segmentação automática por tempo/tamanho** e **pausar/retomar** (RF-010) já implementados. Ver
+[Dispositivos e preview](#dispositivos-e-preview-fase-1),
+[Captura real de microfone e câmera](#captura-real-de-microfone-e-câmera-fase-1),
+[Segmentação por tempo/tamanho](#segmentação-por-tempotamanho-fase-1) e
+[Pausar/retomar](#pausarretomar-fase-1). Marcadores e monitor de disco ainda não existem —
+próximos incrementos da Fase 1.
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -279,6 +282,48 @@ schema `recordingPresets` já existente desde a Fase 0, até então sem nenhuma 
   suíte 100% limpas e a terceira precisando dos retries (mesmo nível de estabilidade já aceito
   para "microphone + camera" neste mesmo ambiente).
 
+### Pausar/retomar (Fase 1)
+
+Sétimo incremento da Fase 1 — RF-010: pausar e retomar uma gravação em andamento sem criar um
+novo segmento, diferente da segmentação (que sempre fecha o arquivo atual e abre um novo).
+
+- **Mecanismo nativo, não stop/restart**: `MediaRecorder.pause()`/`.resume()` suspendem/retomam a
+  MESMA gravação dentro do MESMO container WebM — nenhum arquivo novo, nenhuma troca de handle.
+  Isso é fundamentalmente diferente do ciclo stop/start-novo-recorder usado pela rotação de
+  segmento; pausar nunca incrementa `segmentIndex`.
+- **Máquina de estados já suportava, sem alterações**: `RECORDING↔PAUSED` e `PAUSED→STOPPING` já
+  eram transições válidas em `RECORDING_TRANSITIONS` desde o scaffolding da Fase 0 — confirmado
+  por inspeção antes de escrever qualquer código; `pause()`/`resume()` em
+  `RecordingSessionManager` delegam a validade inteiramente a `stateMachine.transitionTo()`
+  (rejeita, por exemplo, pausar sem sessão ativa ou retomar sem estar pausado).
+- **`pauseIntervals` no manifest**: `{pausedAtMs, resumedAtMs}[]` — log em nível de SESSÃO (não
+  por trilha, já que pausar/retomar afeta todas as trilhas juntas), persistido em
+  `manifest.json` a cada pausa/retomada, útil para uma futura edição descartar os trechos
+  pausados automaticamente. Uma sessão finalizada com `stop()` ainda pausada fecha o
+  `pauseIntervals` deixando o último intervalo com `resumedAtMs: null` (registra que a gravação
+  terminou pausada, sem inventar um horário de retomada que nunca aconteceu).
+- **Ordem main-primeiro**: `pause()`/`resume()` no renderer chamam o IPC do main ANTES de tocar
+  em qualquer `MediaRecorder` local — se o main rejeitar a transição (estado inválido), o
+  renderer nunca chega a pausar um recorder que precisaria ser revertido depois.
+- **Timer de segmentação por tempo pausa com o tempo RESTANTE, não reinicia do zero** — reiniciar
+  o timer inteiro a cada retomada deixaria um segmento crescer até quase o dobro do limite
+  configurado ao longo de pausas repetidas. `rotationTimerStartedAtRef`/
+  `rotationTimerRemainingMsRef` (por trilha) guardam quanto já se passou; `resume()` reagenda
+  `scheduleTimeRotation` só com o tempo que faltava.
+- **Tempo decorrido congela durante a pausa**: `totalPausedMsRef` acumula a duração de cada pausa
+  fechada; o cálculo do indicador `REC HH:MM:SS` subtrai esse total, então o relógio não avança
+  enquanto `PAUSADO`.
+- **UI**: `RecordingControls` alterna entre "Pausar"/"Retomar" (mesmo botão, rótulo muda com o
+  estado) ao lado de "Parar"; o indicador de gravação mostra `PAUSADO HH:MM:SS` (ponto sem pulsar)
+  em vez de `REC HH:MM:SS` enquanto pausado. `RecordingSetupPage` trata `'paused'` como gravação
+  ativa para fins de desabilitar a troca de fontes (pausar não permite reconfigurar tela/câmera/
+  microfone no meio da sessão).
+- Testado de ponta a ponta em `tests/e2e/recording.spec.ts` (cenário "pause/resume", microfone
+  sozinho — a fonte mais simples, já que pausar/retomar não depende de qual fonte é gravada, só
+  do comportamento do `MediaRecorder` e da máquina de estados) e via 9 testes sintéticos em
+  `recording-session-manager.test.ts` (pausa/retomada simples, múltiplos ciclos, `stop()` ainda
+  pausado, e as 4 rejeições: sem sessão, pausa dupla, retomar sem pausar, `projectId` divergente).
+
 ## Estrutura de diretórios
 
 ```text
@@ -453,6 +498,28 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     documentada para a trilha de vídeo da câmera, não um bug de lógica (a rotação em si está
     provada correta via 4 testes sintéticos dedicados, sem essa restrição de hardware, e via
     execução E2E isolada e repetida após a correção do item #30).
+32. **`pauseIntervals` é por SESSÃO no manifest, não por trilha** — pausar/retomar afeta todas as
+    trilhas simultaneamente (um único par de chamadas `pause()`/`resume()` no `MediaRecorder` de
+    cada trilha, disparado pela mesma ação de UI), então um log por trilha só duplicaria o mesmo
+    intervalo de tempo N vezes sem informação nova; um log em nível de sessão é o modelo mais
+    simples que ainda captura tudo que a futura edição precisa (descartar trechos pausados).
+33. **Pausar/retomar reaproveita a máquina de estados existente sem nenhuma alteração** —
+    `RECORDING↔PAUSED`/`PAUSED→STOPPING` já eram transições válidas em `RECORDING_TRANSITIONS`
+    desde o scaffolding da Fase 0 (nunca exercitadas por código real até este incremento);
+    confirmado por inspeção antes de escrever qualquer lógica nova, evitando a tentação de
+    reimplementar validação de transição que já existia.
+34. **Timer de segmentação por tempo retoma com o tempo RESTANTE, não o total configurado de
+    novo** — decisão deliberada para evitar um bug sutil: se `resume()` reagendasse o timer
+    inteiro (ex.: 10 minutos) a cada vez, um segmento com pausas repetidas poderia crescer bem
+    além do limite configurado antes de rotacionar, quebrando a garantia de tamanho/duração
+    máxima que a segmentação existe para dar. `rotationTimerStartedAtRef`/
+    `rotationTimerRemainingMsRef` (`useRecordingSession.ts`) guardam o tempo já decorrido por
+    trilha para calcular o restante corretamente.
+35. **Ordem "main primeiro, `MediaRecorder` local depois" em `pause()`/`resume()` do renderer** —
+    evita precisar de um caminho de rollback: se o main rejeitar a transição (`InvalidRecordingTransitionError`,
+    ex.: pausar uma gravação já pausada), o renderer nunca chega a pausar um `MediaRecorder` que
+    precisaria ser revertido depois. Mesmo `withTrackLock` por trilha já usado para rotação de
+    segmento é reaproveitado aqui, evitando corrida com uma rotação em andamento.
 
 ## Testes
 
@@ -461,30 +528,34 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   sistema simultâneos e independentes, escrita em disco, manifest, DB, chunks fora de ordem,
   falhas, trilha registrada que nunca recebe chunk algum, **rotação de segmento mid-sessão,
   manifest com múltiplos segmentos por trilha, chunk de segmento já rotacionado descartado,
-  `stop()` correndo em paralelo com um `appendChunk` tardio**), filesystem/escrita atômica,
-  construção de argumentos FFmpeg, classificação de fontes de tela, cálculo de nível de áudio
-  (RMS), formatação de tempo decorrido, **limiar puro de rotação por tamanho**, wrapper de IPC
-  (validação/erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de domínio,
-  migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço de
-  configurações, store de tema, smoke test de componente (jsdom). **102 testes, 21 arquivos.**
+  `stop()` correndo em paralelo com um `appendChunk` tardio, pausar/retomar (transição de estado +
+  intervalo de manifest aberto/fechado), múltiplos ciclos de pausa/retomada, `stop()` ainda
+  pausado, e as rejeições de pausa/retomada inválida**), filesystem/escrita atômica, construção de
+  argumentos FFmpeg, classificação de fontes de tela, cálculo de nível de áudio (RMS), formatação
+  de tempo decorrido, **limiar puro de rotação por tamanho**, wrapper de IPC (validação/erro/
+  sucesso), schemas Zod (incluindo `project.openFolder`), erros de domínio, migrations (tabelas/
+  índices/FKs), repositórios (project/settings/export-job), serviço de configurações, store de
+  tema, smoke test de componente (jsdom). **111 testes, 21 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
-  do sistema + microfone** e **segmentação por tamanho (câmera, limite de 1 MB)**, cada cenário de
-  ponta a ponta com dispositivos de áudio/vídeo sintéticos do Chromium (câmera/microfone) e
-  captura real de tela/áudio do sistema, verificando os arquivos de segmento gravados em disco via
-  `expect.poll` (`recording.spec.ts`, ver decisões registradas #22 sobre não empilhar todas as
-  trilhas num único teste, #23 sobre timeouts/retries, #25 sobre o emparelhamento áudio+vídeo do
-  áudio do sistema e #28/#29 sobre rotação de segmento). **14 testes**, validados estáveis (todos
-  os testes passam, com a flakiness já conhecida e documentada do cenário microfone+câmera
-  absorvida pelos retries) em 3 execuções completas consecutivas da suíte.
+  do sistema + microfone**, **segmentação por tamanho (câmera, limite de 1 MB)** e **pausar/
+  retomar (microfone)**, cada cenário de ponta a ponta com dispositivos de áudio/vídeo sintéticos
+  do Chromium (câmera/microfone) e captura real de tela/áudio do sistema, verificando os arquivos
+  de segmento gravados em disco via `expect.poll` (`recording.spec.ts`, ver decisões registradas
+  #22 sobre não empilhar todas as trilhas num único teste, #23 sobre timeouts/retries, #25 sobre o
+  emparelhamento áudio+vídeo do áudio do sistema e #28/#29 sobre rotação de segmento). **15
+  testes**, validados estáveis (todos os testes passam, com a flakiness já conhecida e documentada
+  do cenário de segmentação/câmera sob carga cumulativa da suíte inteira absorvida pelos retries —
+  o cenário de pausar/retomar passou de forma limpa, sem nenhum retry, nas 3 execuções) em 3
+  execuções completas consecutivas da suíte.
 
 ## Pendências conhecidas
 
-- Pause/resume, marcadores, monitor de disco, editor, transcrição/IA, exportação real em múltiplos
-  formatos (mp4/mp3/wav/etc. - pedido explícito do usuário, adiado para um incremento próprio;
-  ver "Próximo passo"), empacotamento (`electron-builder`) e nuvem/colaboração — fora do escopo
-  desta fase por desenho (ver `11_ROADMAP_BACKLOG.md`).
+- Marcadores, monitor de disco, editor, transcrição/IA, exportação real em múltiplos formatos
+  (mp4/mp3/wav/etc. - pedido explícito do usuário, adiado para um incremento próprio; ver "Próximo
+  passo"), empacotamento (`electron-builder`) e nuvem/colaboração — fora do escopo desta fase por
+  desenho (ver `11_ROADMAP_BACKLOG.md`).
 - Segmentação por TEMPO não é exercitada em E2E (só a via testes unitários sintéticos, que não
   dependem de tempo real) — `timeSegmentationMinutes` é um inteiro em minutos (mínimo 1) no
   schema, sem caminho para forçar uma rotação em segundos num teste sem mudar o schema só por
@@ -535,6 +606,6 @@ Duas frentes identificadas, ambas fora do escopo desta fase de captura:
    (`main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`, nenhum binário
    instalado, `export.start` sempre lança `NotImplementedError`) - feature nova e maior,
    correspondendo à Fase 4 - Export do roadmap (EXP-001..009), a ser planejada separadamente.
-2. Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): REC-013 (pause/resume),
-   REC-014 (marcadores) e REC-015 (monitor de disco/RF-042) — as quatro fontes de captura e a
-   segmentação por tempo/tamanho já estão implementadas e testadas.
+2. Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): REC-014 (marcadores) e
+   REC-015 (monitor de disco/RF-042) — as quatro fontes de captura, a segmentação por
+   tempo/tamanho e pausar/retomar (RF-010) já estão implementados e testados.
