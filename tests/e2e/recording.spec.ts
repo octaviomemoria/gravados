@@ -97,7 +97,9 @@ async function openRecordingSetup(page: Page): Promise<void> {
     .click()
 }
 
-async function getActiveProjectPaths(page: Page): Promise<{ rootPath: string; status: string }> {
+async function getActiveProjectPaths(
+  page: Page
+): Promise<{ id: string; rootPath: string; status: string }> {
   const projects = await page.evaluate(() => window.meetingStudio.library.list())
   const active = projects[0]
   expect(active).toBeTruthy()
@@ -512,5 +514,114 @@ test.describe('recording (pause/resume)', () => {
     expect(manifest.pauseIntervals[0]?.resumedAtMs).not.toBeNull()
     const microphoneTrack = manifest.tracks.find((track) => track.type === 'microphone')
     expect(microphoneTrack?.segments).toHaveLength(1)
+  })
+})
+
+/**
+ * RF-016 (oitavo incremento - marcadores). So microfone, mesmo raciocinio do describe de
+ * pausar/retomar acima: adicionar um marcador nao depende de qual fonte esta sendo gravada, so da
+ * sessao/maquina de estados - nao ha motivo pra pagar o custo de uma fonte mais pesada (camera/
+ * tela) so pra exercitar este caminho.
+ */
+test.describe('recording (markers)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeAll(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterAll(async () => {
+    await electronApp.close()
+  })
+
+  test('adds markers during an active recording and persists them, retrievable via markers.list', async () => {
+    test.info().setTimeout(RECORDING_TEST_TIMEOUT_MS)
+    await openRecordingSetup(appWindow)
+
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+
+    await appWindow.getByLabel('Titulo da reuniao').fill('Reuniao de teste E2E - marcadores')
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const { id: projectId, rootPath } = await getActiveProjectPaths(appWindow)
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de audio ser persistido em disco'
+      })
+      .toBe(true)
+
+    // Botao "Marcador" so aparece durante gravacao ativa (nao pausada) - ver RecordingControls.
+    const markerButton = appWindow.getByRole('button', { name: 'Marcador' })
+    await expect(markerButton).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+
+    await markerButton.click()
+    await expect(appWindow.getByRole('status')).toContainText('1 marcador', { timeout: 10_000 })
+
+    await markerButton.click()
+    await expect(appWindow.getByRole('status')).toContainText('2 marcadores', { timeout: 10_000 })
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    const markers = await appWindow.evaluate(
+      (id) => window.meetingStudio.markers.list(id),
+      projectId
+    )
+    expect(markers).toHaveLength(2)
+    // Ordenado por `timestampMs` (`MarkerRepository.listByProject`) - o segundo clique nao pode
+    // ter acontecido ANTES do primeiro.
+    expect(markers[1]!.timestampMs).toBeGreaterThanOrEqual(markers[0]!.timestampMs)
+    expect(markers[0]!.projectId).toBe(projectId)
+    // Marcador instantaneo (sem titulo/nota nesta UI - ver comentario em `AddMarkerRequestSchema`).
+    expect(markers.every((marker) => marker.title === null && marker.note === null)).toBe(true)
+  })
+
+  test('rejects adding a marker while paused', async () => {
+    test.info().setTimeout(RECORDING_TEST_TIMEOUT_MS)
+    await openRecordingSetup(appWindow)
+
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+
+    await appWindow
+      .getByLabel('Titulo da reuniao')
+      .fill('Reuniao de teste E2E - marcador durante pausa')
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const { rootPath } = await getActiveProjectPaths(appWindow)
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de audio ser persistido em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Pausar' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('PAUSADO', { timeout: 10_000 })
+
+    // O botao "Marcador" fica escondido enquanto pausado (RecordingControls) - a garantia real
+    // esta no main (`RecordingSessionManager.addMarker` rejeita fora de `RECORDING`), a UI so
+    // reflete essa regra escondendo a acao.
+    await expect(appWindow.getByRole('button', { name: 'Marcador' })).toHaveCount(0)
+
+    await appWindow.getByRole('button', { name: 'Retomar' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
   })
 })

@@ -393,6 +393,12 @@ body {
   animation: none;
 }
 
+/* RF-016 - contador de marcadores, discreto (peso normal + cor neutra) ao lado do cronometro. */
+.recording-indicator__markers {
+  font-weight: 400;
+  color: var(--ms-color-text-muted);
+}
+
 @keyframes recording-indicator-pulse {
   0%,
   100% {

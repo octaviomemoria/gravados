@@ -3,6 +3,7 @@ import {
   ProjectRepository,
   TrackRepository,
   SegmentRepository,
+  MarkerRepository,
   ExportJobRepository,
   SettingsRepository
 } from './database/repositories'
@@ -23,6 +24,7 @@ export interface AppContext {
   projectRepository: ProjectRepository
   exportJobRepository: ExportJobRepository
   settingsRepository: SettingsRepository
+  markerRepository: MarkerRepository
   projectService: ProjectService
   settingsService: SettingsService
   exportJobRunner: JobRunner<ExportJobPayload, ExportJobResult>
@@ -41,6 +43,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
   const projectRepository = new ProjectRepository(databaseClient.db)
   const trackRepository = new TrackRepository(databaseClient.db)
   const segmentRepository = new SegmentRepository(databaseClient.db)
+  const markerRepository = new MarkerRepository(databaseClient.db)
   const exportJobRepository = new ExportJobRepository(databaseClient.db)
   const settingsRepository = new SettingsRepository(databaseClient.db)
 
@@ -57,6 +60,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     projectRepository,
     trackRepository,
     segmentRepository,
+    markerRepository,
     recordingStateMachine,
     libraryRootPath
   )
@@ -66,6 +70,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     projectRepository,
     exportJobRepository,
     settingsRepository,
+    markerRepository,
     projectService,
     settingsService,
     exportJobRunner,

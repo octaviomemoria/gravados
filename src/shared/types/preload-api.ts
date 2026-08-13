@@ -17,8 +17,10 @@ import type {
   AppendRecordingChunkRequest,
   StopRecordingRequest,
   PauseRecordingRequest,
-  ResumeRecordingRequest
+  ResumeRecordingRequest,
+  AddMarkerRequest
 } from '../schemas/recording.schema'
+import type { MarkerResponse } from '../schemas/markers.schema'
 import type { StartExportRequest, ExportJobResponse } from '../schemas/export.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
 import type { RecordingState } from './recording-state'
@@ -54,7 +56,14 @@ export interface RecordingApi {
   stop: (request: StopRecordingRequest) => Promise<{ state: RecordingState }>
   pause: (request: PauseRecordingRequest) => Promise<{ state: RecordingState }>
   resume: (request: ResumeRecordingRequest) => Promise<{ state: RecordingState }>
+  /** RF-016 - cria um marcador no instante atual da sessao ativa (so durante `RECORDING`). */
+  addMarker: (request: AddMarkerRequest) => Promise<{ marker: MarkerResponse }>
   getState: () => Promise<{ state: RecordingState }>
+}
+
+export interface MarkersApi {
+  /** RF-016 - marcadores de um projeto, ordenados por `timestampMs`. Nao depende de sessao ativa. */
+  list: (projectId: string) => Promise<MarkerResponse[]>
 }
 
 export interface ExportApi {
@@ -78,6 +87,7 @@ export interface MeetingStudioApi {
   library: LibraryApi
   settings: SettingsApi
   recording: RecordingApi
+  markers: MarkersApi
   export: ExportApi
   system: SystemApi
   devices: DevicesApi

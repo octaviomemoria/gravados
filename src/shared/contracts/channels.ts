@@ -20,8 +20,12 @@ export const IPC_CHANNELS = {
     appendChunk: 'recording.appendChunk',
     pause: 'recording.pause',
     resume: 'recording.resume',
+    addMarker: 'recording.addMarker',
     stop: 'recording.stop',
     getState: 'recording.getState'
+  },
+  markers: {
+    list: 'markers.list'
   },
   export: {
     start: 'export.start',

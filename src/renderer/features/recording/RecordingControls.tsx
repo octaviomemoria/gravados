@@ -8,26 +8,31 @@ export interface RecordingControlsProps {
   elapsedMs: number
   error: string | null
   canStart: boolean
+  /** RF-016 - quantidade de marcadores ja adicionados na sessao ativa. */
+  markerCount: number
   onStart: (title: string) => void
   onStop: () => void
   onPause: () => void
   onResume: () => void
+  onAddMarker: () => void
 }
 
 /**
- * RF-009/RF-010/RF-043 - iniciar/parar/pausar/retomar gravacao + indicador visual do estado.
- * `isActive` cobre `recording`/`paused`/`stopping` - qualquer estado em que uma sessao existe e o
- * campo de titulo deve ficar escondido (so faz sentido antes de `start`).
+ * RF-009/RF-010/RF-016/RF-043 - iniciar/parar/pausar/retomar/marcar gravacao + indicador visual
+ * do estado. `isActive` cobre `recording`/`paused`/`stopping` - qualquer estado em que uma sessao
+ * existe e o campo de titulo deve ficar escondido (so faz sentido antes de `start`).
  */
 export function RecordingControls({
   status,
   elapsedMs,
   error,
   canStart,
+  markerCount,
   onStart,
   onStop,
   onPause,
-  onResume
+  onResume,
+  onAddMarker
 }: RecordingControlsProps) {
   const [title, setTitle] = useState('')
   const isActive = status === 'recording' || status === 'paused' || status === 'stopping'
@@ -62,6 +67,11 @@ export function RecordingControls({
           <span>
             {isPaused ? 'PAUSADO' : 'REC'} {formatElapsed(elapsedMs)}
           </span>
+          {markerCount > 0 && (
+            <span className="recording-indicator__markers">
+              {markerCount} {markerCount === 1 ? 'marcador' : 'marcadores'}
+            </span>
+          )}
         </div>
       )}
 
@@ -81,6 +91,13 @@ export function RecordingControls({
                 onClick={isPaused ? onResume : onPause}
               >
                 {isPaused ? 'Retomar' : 'Pausar'}
+              </Button>
+            )}
+            {/* RF-016 - so durante gravacao ativa (nao pausada, ver comentario em
+                `AddMarkerRequestSchema`): enquanto pausado nao ha "instante atual" pra marcar. */}
+            {status === 'recording' && (
+              <Button variant="secondary" onClick={onAddMarker}>
+                Marcador
               </Button>
             )}
             <Button variant="secondary" onClick={onStop} disabled={status === 'stopping'}>

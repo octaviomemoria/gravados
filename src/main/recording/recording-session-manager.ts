@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto'
 import type { ProjectRepository } from '../database/repositories/project.repository'
 import type { TrackRepository } from '../database/repositories/track.repository'
 import type { SegmentRepository } from '../database/repositories/segment.repository'
+import type { MarkerRepository } from '../database/repositories/marker.repository'
+import type { MarkerEntity } from '../../shared/types/entities'
 import { RecordingStateMachine } from './recording-state-machine'
 import {
   buildProjectPaths,
@@ -141,6 +143,7 @@ export class RecordingSessionManager {
     private readonly projectRepository: ProjectRepository,
     private readonly trackRepository: TrackRepository,
     private readonly segmentRepository: SegmentRepository,
+    private readonly markerRepository: MarkerRepository,
     private readonly stateMachine: RecordingStateMachine,
     private readonly libraryRootPath: string
   ) {}
@@ -295,6 +298,48 @@ export class RecordingSessionManager {
 
     logger.info('Gravacao retomada', { projectId, operation: 'recording.resume' })
     return { state: this.stateMachine.getState() }
+  }
+
+  /**
+   * RF-016 (oitavo incremento - marcadores). `timestampMs` e relativo ao INICIO da gravacao,
+   * descontando toda pausa ja fechada (`pauseIntervals`) - mesma logica de "tempo gravado, nao
+   * tempo de parede" ja usada para o cronometro (`elapsedMs`) e para o timer de segmentacao por
+   * tempo no renderer, garantindo que o marcador aponte pro mesmo instante que o usuario via no
+   * indicador no momento do clique. So permitido durante `RECORDING` (nao `PAUSED`) - decisao
+   * registrada: durante a pausa o "instante atual" ja esta congelado (nao ha nada novo pra
+   * marcar), e a UI so mostra o botao nesse estado.
+   */
+  async addMarker(projectId: string, title?: string, note?: string): Promise<MarkerEntity> {
+    const session = this.activeSession
+    if (!session || session.projectId !== projectId) {
+      throw new ValidationError('Nenhuma gravacao ativa para este projeto.')
+    }
+    if (this.stateMachine.getState() !== 'RECORDING') {
+      throw new ValidationError('So e possivel adicionar marcadores enquanto a gravacao esta ativa.')
+    }
+
+    const totalPausedMs = session.pauseIntervals.reduce(
+      (total, interval) =>
+        interval.resumedAtMs === null ? total : total + (interval.resumedAtMs - interval.pausedAtMs),
+      0
+    )
+    const timestampMs = Math.max(0, Date.now() - session.startedAtMs - totalPausedMs)
+
+    const marker: MarkerEntity = {
+      id: randomUUID(),
+      projectId,
+      timestampMs,
+      title: title ?? null,
+      note: note ?? null
+    }
+    this.markerRepository.create(marker)
+
+    logger.info('Marcador adicionado', { projectId, operation: 'recording.addMarker' })
+    return marker
+  }
+
+  listMarkers(projectId: string): MarkerEntity[] {
+    return this.markerRepository.listByProject(projectId)
   }
 
   async stop(projectId: string): Promise<{ state: RecordingState }> {

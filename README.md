@@ -12,12 +12,13 @@ sistema de jobs, logging, testes/CI). A **Fase 1 — Recording Core** está em a
 REC-001 a REC-004 (dispositivos + preview) e um pipeline de captura real com as **quatro fontes
 simultâneas do MVP** (tela, câmera, microfone e áudio do sistema, trilhas independentes) já
 funcionam de ponta a ponta (gravar → persistir em disco continuamente → finalizar), com
-**segmentação automática por tempo/tamanho** e **pausar/retomar** (RF-010) já implementados. Ver
+**segmentação automática por tempo/tamanho**, **pausar/retomar** (RF-010) e **marcadores**
+(RF-016) já implementados. Ver
 [Dispositivos e preview](#dispositivos-e-preview-fase-1),
 [Captura real de microfone e câmera](#captura-real-de-microfone-e-câmera-fase-1),
-[Segmentação por tempo/tamanho](#segmentação-por-tempotamanho-fase-1) e
-[Pausar/retomar](#pausarretomar-fase-1). Marcadores e monitor de disco ainda não existem —
-próximos incrementos da Fase 1.
+[Segmentação por tempo/tamanho](#segmentação-por-tempotamanho-fase-1),
+[Pausar/retomar](#pausarretomar-fase-1) e [Marcadores](#marcadores-fase-1). Monitor de disco
+ainda não existe — próximo incremento da Fase 1.
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -324,6 +325,43 @@ novo segmento, diferente da segmentação (que sempre fecha o arquivo atual e ab
   `recording-session-manager.test.ts` (pausa/retomada simples, múltiplos ciclos, `stop()` ainda
   pausado, e as 4 rejeições: sem sessão, pausa dupla, retomar sem pausar, `projectId` divergente).
 
+### Marcadores (Fase 1)
+
+Oitavo incremento da Fase 1 — RF-016: durante uma gravação ativa, marcar o instante atual
+(timestamp + título/nota opcionais no modelo de dados). A tabela `markers`, o repositório
+(`MarkerRepository`) e o tipo `Marker` de `06_DATA_MODEL.md` já existiam desde o scaffolding da
+Fase 0, sem nenhum canal IPC nem UI até este incremento.
+
+- **`timestampMs` é tempo GRAVADO, não tempo de parede** — calculado como `Date.now() -
+  startedAtMs`, descontando a soma de todo intervalo de pausa já FECHADO (`pauseIntervals`),
+  mesmo raciocínio já usado para o cronômetro (`elapsedMs`) e para o timer de segmentação por
+  tempo (ver "Pausar/retomar" acima). Garante que o marcador aponte pro mesmo instante que o
+  usuário via no indicador no momento do clique, mesmo que a gravação já tenha sido pausada e
+  retomada antes.
+- **Só permitido durante `RECORDING`, nunca `PAUSED`** — decisão registrada: enquanto pausado o
+  "instante atual" já está congelado (é sempre o mesmo desde que a pausa começou), então não há
+  nada de novo pra marcar. `RecordingSessionManager.addMarker` rejeita explicitamente fora de
+  `RECORDING`; a UI reflete a mesma regra escondendo o botão "Marcador" (só aparece durante
+  gravação ativa, ao lado de "Pausar"/"Parar" — nunca durante `PAUSADO`).
+- **Canal de escrita (`recording.addMarker`) separado do de leitura (`markers.list`)** — criar um
+  marcador depende da sessão de gravação ativa (fica em `recording.handlers.ts`, junto com
+  start/stop/pause/resume); listar marcadores de um projeto não depende de nenhuma sessão em
+  andamento (funciona igual durante ou depois da gravação), então vive em seu próprio domínio
+  IPC (`markers.handlers.ts`), útil desde já para verificação de teste e para uma futura tela de
+  detalhes do projeto na Biblioteca.
+- **UI desta etapa é o "marcador instantâneo"** — clicar em "Marcador" cria um marcador sem
+  título/nota (ambos ficam `null`) e mostra um contador discreto ("N marcadores") ao lado do
+  cronômetro. O schema/IPC/banco já validam e persistem `title`/`note` corretamente (RF-016 os
+  define como opcionais no dado, não na UI) — só a captura desses campos durante uma gravação ao
+  vivo fica pra um refinamento futuro (mesmo padrão de escopo já usado para segmentação/layout na
+  tela de setup, ver README "Pendências conhecidas").
+- Testado de ponta a ponta em `tests/e2e/recording.spec.ts` (cenário "markers", microfone sozinho
+  — adicionar um marcador não depende de qual fonte é gravada; um segundo teste confirma que o
+  botão fica escondido e a ação é bloqueada durante `PAUSADO`) e via 7 testes sintéticos em
+  `recording-session-manager.test.ts` (timestamp relativo ao início com `vi.useFakeTimers()`,
+  desconto de pausa fechada, título/nota opcionais, persistência via `listMarkers`, e as 3
+  rejeições: sem sessão ativa, durante pausa, `projectId` divergente).
+
 ## Estrutura de diretórios
 
 ```text
@@ -520,6 +558,22 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     ex.: pausar uma gravação já pausada), o renderer nunca chega a pausar um `MediaRecorder` que
     precisaria ser revertido depois. Mesmo `withTrackLock` por trilha já usado para rotação de
     segmento é reaproveitado aqui, evitando corrida com uma rotação em andamento.
+36. **`timestampMs` do marcador é tempo GRAVADO, descontando pausas fechadas** — mesmo raciocínio
+    já aplicado ao cronômetro (`elapsedMs`) e ao timer de segmentação por tempo (decisão #34):
+    `Date.now() - startedAtMs` menos a soma de `pauseIntervals` já fechados, para que o marcador
+    aponte pro mesmo instante que o usuário via no indicador no momento do clique, mesmo após
+    pausar/retomar antes.
+37. **Marcador só permitido durante `RECORDING`, nunca `PAUSED`** — enquanto pausado o "instante
+    atual" já está congelado (é sempre o mesmo desde que a pausa começou), então não há nada de
+    novo pra marcar. Rejeitado explicitamente no main (`RecordingSessionManager.addMarker`); a UI
+    reflete a mesma regra escondendo o botão (só aparece durante `status === 'recording'`).
+38. **Canal de escrita (`recording.addMarker`) separado do de leitura (`markers.list`)** — criar
+    um marcador depende da sessão ativa (fica em `recording.handlers.ts`, junto com
+    start/stop/pause/resume); listar marcadores de um projeto não depende de sessão nenhuma
+    (funciona durante ou depois da gravação), então vive em seu próprio domínio IPC
+    (`markers.handlers.ts`) — o mesmo padrão de "domínio do canal segue o caso de uso, não
+    necessariamente o gerenciador que o implementa" já usado por `project.openFolder` (decisão
+    #27).
 
 ## Testes
 
@@ -530,32 +584,40 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   manifest com múltiplos segmentos por trilha, chunk de segmento já rotacionado descartado,
   `stop()` correndo em paralelo com um `appendChunk` tardio, pausar/retomar (transição de estado +
   intervalo de manifest aberto/fechado), múltiplos ciclos de pausa/retomada, `stop()` ainda
-  pausado, e as rejeições de pausa/retomada inválida**), filesystem/escrita atômica, construção de
+  pausado, as rejeições de pausa/retomada inválida, marcadores (timestamp relativo ao início com
+  `vi.useFakeTimers()`, desconto de pausa fechada, título/nota opcionais, persistência via
+  `listMarkers`, e as rejeições de marcador inválido)**), filesystem/escrita atômica, construção de
   argumentos FFmpeg, classificação de fontes de tela, cálculo de nível de áudio (RMS), formatação
   de tempo decorrido, **limiar puro de rotação por tamanho**, wrapper de IPC (validação/erro/
   sucesso), schemas Zod (incluindo `project.openFolder`), erros de domínio, migrations (tabelas/
   índices/FKs), repositórios (project/settings/export-job), serviço de configurações, store de
-  tema, smoke test de componente (jsdom). **111 testes, 21 arquivos.**
+  tema, smoke test de componente (jsdom). **118 testes, 21 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
-  do sistema + microfone**, **segmentação por tamanho (câmera, limite de 1 MB)** e **pausar/
-  retomar (microfone)**, cada cenário de ponta a ponta com dispositivos de áudio/vídeo sintéticos
-  do Chromium (câmera/microfone) e captura real de tela/áudio do sistema, verificando os arquivos
-  de segmento gravados em disco via `expect.poll` (`recording.spec.ts`, ver decisões registradas
-  #22 sobre não empilhar todas as trilhas num único teste, #23 sobre timeouts/retries, #25 sobre o
-  emparelhamento áudio+vídeo do áudio do sistema e #28/#29 sobre rotação de segmento). **15
-  testes**, validados estáveis (todos os testes passam, com a flakiness já conhecida e documentada
-  do cenário de segmentação/câmera sob carga cumulativa da suíte inteira absorvida pelos retries —
-  o cenário de pausar/retomar passou de forma limpa, sem nenhum retry, nas 3 execuções) em 3
-  execuções completas consecutivas da suíte.
+  do sistema + microfone**, **segmentação por tamanho (câmera, limite de 1 MB)**, **pausar/
+  retomar (microfone)** e **marcadores (microfone, criação durante gravação + bloqueio durante
+  pausa)**, cada cenário de ponta a ponta com dispositivos de áudio/vídeo sintéticos do Chromium
+  (câmera/microfone) e captura real de tela/áudio do sistema, verificando os arquivos de segmento
+  gravados em disco via `expect.poll` (`recording.spec.ts`, ver decisões registradas #22 sobre não
+  empilhar todas as trilhas num único teste, #23 sobre timeouts/retries, #25 sobre o emparelhamento
+  áudio+vídeo do áudio do sistema e #28/#29 sobre rotação de segmento). **17 testes**, validados
+  estáveis (todos os testes passam, com a flakiness já conhecida e documentada do cenário de
+  segmentação/câmera sob carga cumulativa da suíte inteira absorvida pelos retries — os cenários
+  de pausar/retomar e de marcadores passaram de forma limpa, sem nenhum retry, nas execuções) em
+  3 execuções completas consecutivas da suíte.
 
 ## Pendências conhecidas
 
-- Marcadores, monitor de disco, editor, transcrição/IA, exportação real em múltiplos formatos
-  (mp4/mp3/wav/etc. - pedido explícito do usuário, adiado para um incremento próprio; ver "Próximo
-  passo"), empacotamento (`electron-builder`) e nuvem/colaboração — fora do escopo desta fase por
-  desenho (ver `11_ROADMAP_BACKLOG.md`).
+- Monitor de disco, editor, transcrição/IA, exportação real em múltiplos formatos (mp4/mp3/wav/etc.
+  - pedido explícito do usuário, adiado para um incremento próprio; ver "Próximo passo"),
+  empacotamento (`electron-builder`) e nuvem/colaboração — fora do escopo desta fase por desenho
+  (ver `11_ROADMAP_BACKLOG.md`).
+- Marcadores desta etapa não capturam título/nota durante a gravação ao vivo (UI só cria o
+  "marcador instantâneo", sem título/sem nota) — o schema/IPC/banco já suportam os dois campos
+  corretamente (RF-016), só falta a UI pra preenchê-los na hora. Também não há tela/lista pra ver
+  os marcadores depois de gravados (o canal `markers.list` já existe e está testado, só sem UI
+  consumindo ainda) nem edição/exclusão de um marcador já criado.
 - Segmentação por TEMPO não é exercitada em E2E (só a via testes unitários sintéticos, que não
   dependem de tempo real) — `timeSegmentationMinutes` é um inteiro em minutos (mínimo 1) no
   schema, sem caminho para forçar uma rotação em segundos num teste sem mudar o schema só por
@@ -606,6 +668,6 @@ Duas frentes identificadas, ambas fora do escopo desta fase de captura:
    (`main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`, nenhum binário
    instalado, `export.start` sempre lança `NotImplementedError`) - feature nova e maior,
    correspondendo à Fase 4 - Export do roadmap (EXP-001..009), a ser planejada separadamente.
-2. Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): REC-014 (marcadores) e
-   REC-015 (monitor de disco/RF-042) — as quatro fontes de captura, a segmentação por
-   tempo/tamanho e pausar/retomar (RF-010) já estão implementados e testados.
+2. Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): REC-015 (monitor de
+   disco/RF-042) — última pendência da fase. As quatro fontes de captura, a segmentação por
+   tempo/tamanho, pausar/retomar (RF-010) e marcadores (RF-016) já estão implementados e testados.

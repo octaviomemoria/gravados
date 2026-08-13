@@ -10,10 +10,10 @@ import { useScreenSources } from './useScreenSources'
 import { useRecordingSession } from './useRecordingSession'
 
 /**
- * RF-002/RF-003/RF-004/RF-005/RF-006/RF-007/RF-008/RF-009/RF-010/RF-043 + MVP-AC-001. Escopo
- * deliberado (Fase 1): captura real de tela, camera, microfone E audio do sistema, simultaneas e
- * independentes, com segmentacao por tempo/tamanho e pausar/retomar (ver README "Decisoes de
- * arquitetura"). Qualidade/layout ficam para depois.
+ * RF-002/RF-003/RF-004/RF-005/RF-006/RF-007/RF-008/RF-009/RF-010/RF-016/RF-043 + MVP-AC-001.
+ * Escopo deliberado (Fase 1): captura real de tela, camera, microfone E audio do sistema,
+ * simultaneas e independentes, com segmentacao por tempo/tamanho, pausar/retomar e marcadores
+ * (ver README "Decisoes de arquitetura"). Qualidade/layout ficam para depois.
  */
 export function RecordingSetupPage() {
   const { cameras, microphones, permissionDenied, loading: devicesLoading } = useMediaDevices()
@@ -163,10 +163,12 @@ export function RecordingSetupPage() {
           Boolean(selectedScreenId) ||
           Boolean(systemAudioCarrierSourceId)
         }
+        markerCount={recordingSession.markers.length}
         onStart={(title) => void recordingSession.start(title)}
         onStop={() => void recordingSession.stop()}
         onPause={() => void recordingSession.pause()}
         onResume={() => void recordingSession.resume()}
+        onAddMarker={() => void recordingSession.addMarker()}
       />
     </div>
   )

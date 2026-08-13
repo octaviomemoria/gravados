@@ -10,6 +10,8 @@ import {
   PauseRecordingResponseSchema,
   ResumeRecordingRequestSchema,
   ResumeRecordingResponseSchema,
+  AddMarkerRequestSchema,
+  AddMarkerResponseSchema,
   GetRecordingStateRequestSchema,
   GetRecordingStateResponseSchema
 } from '../../../shared/schemas/recording.schema'
@@ -21,7 +23,8 @@ import type { AppContext } from '../../app-context'
  * ver README "Decisoes de arquitetura"). `start`/`appendChunk`/`stop` sao reais, delegando a
  * `RecordingSessionManager`. Segmentacao por tempo/tamanho (RF-012/RF-013) chegou no sexto
  * incremento - `appendChunk` agora repassa `segmentIndex`. Pausar/retomar (RF-010) chegou no
- * setimo incremento. Marcadores ficam para um incremento seguinte.
+ * setimo incremento. Marcadores (RF-016) chegaram no oitavo incremento - `addMarker` fica aqui
+ * (depende da sessao ativa); o canal de LEITURA (`markers.list`) fica em `markers.handlers.ts`.
  */
 export function registerRecordingHandlers(context: AppContext): void {
   registerHandler(
@@ -60,6 +63,18 @@ export function registerRecordingHandlers(context: AppContext): void {
     IPC_CHANNELS.recording.resume,
     { request: ResumeRecordingRequestSchema, response: ResumeRecordingResponseSchema },
     async (request) => context.recordingSessionManager.resume(request.projectId)
+  )
+
+  registerHandler(
+    IPC_CHANNELS.recording.addMarker,
+    { request: AddMarkerRequestSchema, response: AddMarkerResponseSchema },
+    async (request) => ({
+      marker: await context.recordingSessionManager.addMarker(
+        request.projectId,
+        request.title,
+        request.note
+      )
+    })
   )
 
   registerHandler(

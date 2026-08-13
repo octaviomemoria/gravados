@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,7 +7,8 @@ import { createTestDatabase } from '../../fixtures/tmp-db'
 import {
   ProjectRepository,
   TrackRepository,
-  SegmentRepository
+  SegmentRepository,
+  MarkerRepository
 } from '../../../src/main/database/repositories'
 import { RecordingStateMachine } from '../../../src/main/recording/recording-state-machine'
 import { RecordingSessionManager } from '../../../src/main/recording/recording-session-manager'
@@ -20,6 +21,7 @@ describe('RecordingSessionManager', () => {
   let manager: RecordingSessionManager
   let projectRepository: ProjectRepository
   let segmentRepository: SegmentRepository
+  let markerRepository: MarkerRepository
 
   beforeEach(async () => {
     client = createTestDatabase()
@@ -27,10 +29,12 @@ describe('RecordingSessionManager', () => {
     projectRepository = new ProjectRepository(client.db)
     const trackRepository = new TrackRepository(client.db)
     segmentRepository = new SegmentRepository(client.db)
+    markerRepository = new MarkerRepository(client.db)
     manager = new RecordingSessionManager(
       projectRepository,
       trackRepository,
       segmentRepository,
+      markerRepository,
       new RecordingStateMachine(),
       libraryRoot
     )
@@ -589,6 +593,91 @@ describe('RecordingSessionManager', () => {
       await manager.start(project.id, ['MICROPHONE'])
       await expect(manager.pause(randomUUID())).rejects.toThrow()
       await expect(manager.resume(randomUUID())).rejects.toThrow()
+    })
+  })
+
+  describe('marcadores', () => {
+    afterEach(() => {
+      // So afeta os testes deste describe que optam por `vi.useFakeTimers()` (para controlar
+      // `Date.now()` de forma deterministica no calculo de `timestampMs`) - inofensivo/no-op nos
+      // demais, que continuam usando o tempo real.
+      vi.useRealTimers()
+    })
+
+    it('records a marker with timestampMs relative to the recording start (recorded time, not wall time)', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(0)
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+
+      vi.setSystemTime(5_000)
+      const marker = await manager.addMarker(project.id)
+
+      expect(marker.timestampMs).toBe(5_000)
+      expect(marker.projectId).toBe(project.id)
+      expect(marker.title).toBeNull()
+      expect(marker.note).toBeNull()
+    })
+
+    it('stores optional title/note when provided', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+
+      const marker = await manager.addMarker(project.id, 'Decisao importante', 'Revisar depois')
+
+      expect(marker.title).toBe('Decisao importante')
+      expect(marker.note).toBe('Revisar depois')
+    })
+
+    it('discounts closed pause intervals from timestampMs (counts recorded time, not wall time)', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(0)
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+
+      vi.setSystemTime(2_000)
+      await manager.pause(project.id)
+      vi.setSystemTime(12_000) // 10s de pausa - nao deve contar no timestamp do marcador.
+      await manager.resume(project.id)
+      vi.setSystemTime(13_000)
+
+      const marker = await manager.addMarker(project.id)
+
+      // 2s antes da pausa + 1s depois de retomar = 3s de tempo GRAVADO, descontando os 10s pausados.
+      expect(marker.timestampMs).toBe(3_000)
+    })
+
+    it('persists the marker via MarkerRepository, retrievable through listMarkers()', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+
+      await manager.addMarker(project.id, 'Primeiro')
+      await manager.addMarker(project.id, 'Segundo')
+
+      const markers = manager.listMarkers(project.id)
+      expect(markers).toHaveLength(2)
+      expect(markers.map((marker) => marker.title)).toEqual(['Primeiro', 'Segundo'])
+      // Mesma fonte de verdade que `MarkerRepository.listByProject` usa diretamente.
+      expect(markerRepository.listByProject(project.id)).toHaveLength(2)
+    })
+
+    it('rejects addMarker() while paused (no clear "current instant" to mark)', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+      await manager.pause(project.id)
+
+      await expect(manager.addMarker(project.id)).rejects.toThrow()
+    })
+
+    it('rejects addMarker() when there is no active recording for the project', async () => {
+      const project = createProject()
+      await expect(manager.addMarker(project.id)).rejects.toThrow()
+    })
+
+    it('rejects addMarker() for a mismatched projectId', async () => {
+      const project = createProject()
+      await manager.start(project.id, ['MICROPHONE'])
+      await expect(manager.addMarker(randomUUID())).rejects.toThrow()
     })
   })
 })

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { RECORDING_STATES } from '../types/recording-state'
 import { EmptyRequestSchema, IdSchema } from './common.schema'
+import { MarkerResponseSchema } from './markers.schema'
 
 export const RecordingStateSchema = z.enum(RECORDING_STATES)
 
@@ -78,6 +79,23 @@ export const PauseRecordingResponseSchema = z.object({ state: RecordingStateSche
 export const ResumeRecordingRequestSchema = z.object({ projectId: IdSchema })
 export type ResumeRecordingRequest = z.infer<typeof ResumeRecordingRequestSchema>
 export const ResumeRecordingResponseSchema = z.object({ state: RecordingStateSchema })
+
+/**
+ * RF-016 (oitavo incremento - marcadores). So valido durante `RECORDING` (nao `PAUSED`) - decisao
+ * registrada: enquanto pausado nao ha "momento atual" claro para marcar (o cronometro ja esta
+ * congelado, ver `pausedAtRef`/`totalPausedMsRef` em `useRecordingSession.ts`), e a UI so mostra o
+ * botao de marcador nesse estado (ver `RecordingControls.tsx`). `title`/`note` sao opcionais no
+ * schema de dados (06_DATA_MODEL.md), mas este incremento so expoe o "marcador instantaneo" (sem
+ * titulo/nota) na UI - o campo continua validado/persistido corretamente para uso futuro (ver
+ * README "Pendencias conhecidas").
+ */
+export const AddMarkerRequestSchema = z.object({
+  projectId: IdSchema,
+  title: z.string().min(1).max(200).optional(),
+  note: z.string().min(1).max(2000).optional()
+})
+export type AddMarkerRequest = z.infer<typeof AddMarkerRequestSchema>
+export const AddMarkerResponseSchema = z.object({ marker: MarkerResponseSchema })
 
 export const GetRecordingStateRequestSchema = EmptyRequestSchema
 export const GetRecordingStateResponseSchema = z.object({ state: RecordingStateSchema })

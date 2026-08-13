@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RecordingTrackType } from '@shared/schemas/recording.schema'
+import type { MarkerResponse } from '@shared/schemas/markers.schema'
 import { RecordingPresetsSettingsSchema } from '@shared/schemas/settings.schema'
 import { shouldRotateForSize } from './segmentation-thresholds'
 
@@ -9,6 +10,8 @@ export interface RecordingSessionState {
   status: RecordingSessionStatus
   elapsedMs: number
   error: string | null
+  /** RF-016 (oitavo incremento - marcadores) - acumulados em memoria durante a sessao ativa. */
+  markers: MarkerResponse[]
 }
 
 export interface RecordingSources {
@@ -148,7 +151,8 @@ export function useRecordingSession(sources: RecordingSources) {
   const [state, setState] = useState<RecordingSessionState>({
     status: 'idle',
     elapsedMs: 0,
-    error: null
+    error: null,
+    markers: []
   })
 
   const projectIdRef = useRef<string | null>(null)
@@ -343,7 +347,7 @@ export function useRecordingSession(sources: RecordingSources) {
         return
       }
 
-      setState({ status: 'starting', elapsedMs: 0, error: null })
+      setState({ status: 'starting', elapsedMs: 0, error: null, markers: [] })
       stoppedRef.current = false
 
       let projectId: string | null = null
@@ -414,7 +418,7 @@ export function useRecordingSession(sources: RecordingSources) {
           }))
         }, 250)
 
-        setState({ status: 'recording', elapsedMs: 0, error: null })
+        setState({ status: 'recording', elapsedMs: 0, error: null, markers: [] })
       } catch (error) {
         console.error('Falha ao iniciar gravacao', error)
         screenStreamRef.current?.getTracks().forEach((track) => track.stop())
@@ -439,7 +443,8 @@ export function useRecordingSession(sources: RecordingSources) {
         setState({
           status: 'idle',
           elapsedMs: 0,
-          error: 'Nao foi possivel iniciar a gravacao. Tente novamente.'
+          error: 'Nao foi possivel iniciar a gravacao. Tente novamente.',
+          markers: []
         })
       }
     },
@@ -553,6 +558,25 @@ export function useRecordingSession(sources: RecordingSources) {
     setState((prev) => ({ ...prev, status: 'recording', error: null }))
   }, [withTrackLock, scheduleTimeRotation])
 
+  /**
+   * RF-016 - marcador instantaneo (sem titulo/nota nesta UI, ver comentario em
+   * `AddMarkerRequestSchema`). So chama o main quando `status === 'recording'` - o mesmo guard
+   * que o main aplica (rejeita durante `PAUSED`), checado aqui tambem pra nao fazer uma chamada
+   * IPC fadada a falhar quando o botao, por algum motivo, ainda estiver visivel/habilitado.
+   */
+  const addMarker = useCallback(async () => {
+    const projectId = projectIdRef.current
+    if (!projectId || state.status !== 'recording') return
+
+    try {
+      const { marker } = await window.meetingStudio.recording.addMarker({ projectId })
+      setState((prev) => ({ ...prev, markers: [...prev.markers, marker] }))
+    } catch (error) {
+      console.error('Falha ao adicionar marcador', error)
+      setState((prev) => ({ ...prev, error: 'Falha ao adicionar marcador.' }))
+    }
+  }, [state.status])
+
   const stop = useCallback(async () => {
     const projectId = projectIdRef.current
     const trackRecorders = trackRecordersRef.current
@@ -593,10 +617,10 @@ export function useRecordingSession(sources: RecordingSources) {
 
     try {
       await window.meetingStudio.recording.stop({ projectId })
-      setState({ status: 'idle', elapsedMs: 0, error: null })
+      setState({ status: 'idle', elapsedMs: 0, error: null, markers: [] })
     } catch (error) {
       console.error('Falha ao finalizar gravacao', error)
-      setState({ status: 'idle', elapsedMs: 0, error: 'Falha ao finalizar a gravacao.' })
+      setState({ status: 'idle', elapsedMs: 0, error: 'Falha ao finalizar a gravacao.', markers: [] })
     } finally {
       trackRecorders.clear()
       trackLocksRef.current.clear()
@@ -608,5 +632,5 @@ export function useRecordingSession(sources: RecordingSources) {
     }
   }, [withTrackLock])
 
-  return { ...state, start, stop, pause, resume }
+  return { ...state, start, stop, pause, resume, addMarker }
 }

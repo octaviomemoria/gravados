@@ -10,13 +10,16 @@ import {
   PauseRecordingResponseSchema,
   ResumeRecordingRequestSchema,
   ResumeRecordingResponseSchema,
+  AddMarkerRequestSchema,
+  AddMarkerResponseSchema,
   GetRecordingStateRequestSchema,
   GetRecordingStateResponseSchema,
   type StartRecordingRequest,
   type AppendRecordingChunkRequest,
   type StopRecordingRequest,
   type PauseRecordingRequest,
-  type ResumeRecordingRequest
+  type ResumeRecordingRequest,
+  type AddMarkerRequest
 } from '../../shared/schemas/recording.schema'
 import type { RecordingApi } from '../../shared/types/preload-api'
 import { invokeChannel } from '../invoke'
@@ -51,6 +54,12 @@ export function createRecordingApi(): RecordingApi {
       invokeChannel(
         IPC_CHANNELS.recording.resume,
         { request: ResumeRecordingRequestSchema, response: ResumeRecordingResponseSchema },
+        request
+      ),
+    addMarker: (request: AddMarkerRequest) =>
+      invokeChannel(
+        IPC_CHANNELS.recording.addMarker,
+        { request: AddMarkerRequestSchema, response: AddMarkerResponseSchema },
         request
       ),
     getState: () =>
