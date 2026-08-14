@@ -680,4 +680,70 @@ describe('RecordingSessionManager', () => {
       await expect(manager.addMarker(randomUUID())).rejects.toThrow()
     })
   })
+
+  describe('monitor de espaco em disco (RF-042)', () => {
+    // `checkDiskSpace` (pacote `check-disk-space`) faz uma checagem REAL do disco (no Windows,
+    // via WMI) - mais lento e mais sujeito a variacao sob carga da maquina do que o resto desta
+    // suite (que so toca um banco/filesystem em memoria/temp). Timeout elevado so nestes testes,
+    // mesmo espirito ja usado nos testes E2E de gravacao para operacoes genuinamente mais lentas.
+    const DISK_CHECK_TEST_TIMEOUT_MS = 30_000
+
+    it(
+      'starts normally when minimumFreeBytes is omitted (no disk check performed)',
+      async () => {
+        const project = createProject()
+        const { state } = await manager.start(project.id, ['MICROPHONE'])
+        expect(state).toBe('RECORDING')
+      },
+      DISK_CHECK_TEST_TIMEOUT_MS
+    )
+
+    it(
+      'starts normally when minimumFreeBytes is trivially satisfied by real free space',
+      async () => {
+        const project = createProject()
+        const { state } = await manager.start(project.id, ['MICROPHONE'], 1)
+        expect(state).toBe('RECORDING')
+      },
+      DISK_CHECK_TEST_TIMEOUT_MS
+    )
+
+    it(
+      'rejects start() when minimumFreeBytes exceeds real available disk space',
+      async () => {
+        const project = createProject()
+        await expect(
+          manager.start(project.id, ['MICROPHONE'], Number.MAX_SAFE_INTEGER)
+        ).rejects.toThrow('Espaco em disco insuficiente')
+      },
+      DISK_CHECK_TEST_TIMEOUT_MS
+    )
+
+    it(
+      'leaves the state machine at IDLE (not stuck at PREPARING) after a rejected start()',
+      async () => {
+        const project = createProject()
+        await expect(
+          manager.start(project.id, ['MICROPHONE'], Number.MAX_SAFE_INTEGER)
+        ).rejects.toThrow()
+        expect(manager.getState()).toBe('IDLE')
+      },
+      DISK_CHECK_TEST_TIMEOUT_MS
+    )
+
+    it(
+      'allows a subsequent start() to succeed after an earlier rejection due to insufficient disk space',
+      async () => {
+        const rejectedProject = createProject()
+        await expect(
+          manager.start(rejectedProject.id, ['MICROPHONE'], Number.MAX_SAFE_INTEGER)
+        ).rejects.toThrow()
+
+        const project = createProject()
+        const { state } = await manager.start(project.id, ['MICROPHONE'])
+        expect(state).toBe('RECORDING')
+      },
+      DISK_CHECK_TEST_TIMEOUT_MS
+    )
+  })
 })

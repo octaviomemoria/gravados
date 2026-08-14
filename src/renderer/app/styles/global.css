@@ -399,6 +399,22 @@ body {
   color: var(--ms-color-text-muted);
 }
 
+/* RF-042 - espaco livre em disco, mesmo tratamento discreto do contador de marcadores. */
+.recording-indicator__disk-space {
+  font-weight: 400;
+  color: var(--ms-color-text-muted);
+}
+
+/* RF-042 - aviso de espaco em disco baixo (nao bloqueia a gravacao, so chama atencao). */
+.disk-space-warning {
+  margin-top: var(--ms-space-2);
+  padding: var(--ms-space-2) var(--ms-space-3);
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-color-warning);
+  color: var(--ms-color-warning);
+  font-size: 0.9em;
+}
+
 @keyframes recording-indicator-pulse {
   0%,
   100% {

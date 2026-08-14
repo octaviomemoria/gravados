@@ -1,12 +1,9 @@
 import { useEffect, useState } from 'react'
+import { formatGb } from '../features/recording/format-bytes'
 
 interface DiskSpaceState {
   freeBytes: number
   totalBytes: number
-}
-
-function formatGb(bytes: number): string {
-  return `${(bytes / 1024 ** 3).toFixed(1)} GB`
 }
 
 /** RF-042: exibir espaco em disco disponivel. Consulta real via IPC (`system.getDiskSpace`). */

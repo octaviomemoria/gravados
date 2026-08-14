@@ -21,6 +21,14 @@ const RECORDING_TEST_TIMEOUT_MS = 90_000
 // simplesmente precisava de mais tempo de parede para o segundo segmento aparecer.
 const SEGMENTATION_POLL_TIMEOUT_MS = 90_000
 const SEGMENTATION_TEST_TIMEOUT_MS = 120_000
+// So para o monitor de espaco em disco (RF-042): `check-disk-space` faz uma checagem REAL do
+// disco (no Windows, via WMI) a cada `recording.start` - medido empiricamente como ocasionalmente
+// mais lento que os 90s padrao sob carga variavel da maquina de teste (preso em "Iniciando..."
+// sem erro, so mais devagar; ou o `afterEach` - que tambem depende de IPC real - estourando o
+// timeout do teste inteiro). Mesmo padrao ja usado para segmentacao: timeout mais generoso +
+// retries, nao e flakiness de logica (a logica em si esta provada correta pelos testes sinteticos
+// em `recording-session-manager.test.ts`, sem essa restricao de I/O real).
+const DISK_SPACE_TEST_TIMEOUT_MS = 120_000
 
 function fileHasBytes(path: string): boolean {
   return existsSync(path) && statSync(path).size > 0
@@ -623,5 +631,149 @@ test.describe('recording (markers)', () => {
     await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
       timeout: SELECT_TIMEOUT_MS
     })
+  })
+})
+
+const DEFAULT_RECORDING_PRESETS = {
+  qualityPreset: 'STANDARD' as const,
+  timeSegmentationMinutes: 15,
+  sizeSegmentationMb: null,
+  diskSpaceWarningThresholdMb: 2048,
+  diskSpaceCriticalThresholdMb: 512
+}
+
+/**
+ * RF-042 (nono incremento - monitor de espaco em disco). Simula "disco cheio" via configuracao
+ * (limiares absurdamente altos, ver `10_TESTING_QA.md` T-REC-007 "Encher disco simulado") em vez
+ * de literalmente esgotar o disco real da maquina de teste - exercita o mesmo caminho de codigo de
+ * ponta a ponta (IPC real, `check-disk-space` real, `settings` real) sem nenhum mock interno.
+ * `beforeEach`/`afterEach` (nao `beforeAll`/`afterAll`, diferente de pausar/retomar e marcadores)
+ * porque cada teste MUTA `recordingPresets` - e este ambiente compartilha o mesmo `userData`/banco
+ * entre execucoes, entao um limiar absurdo deixado para tras quebraria QUALQUER outro teste desta
+ * suite que chame `recording.start` depois (mesmo padrao ja usado no describe "segmentation").
+ */
+test.describe('recording (disk space monitor)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await appWindow
+      .evaluate(async (defaults) => {
+        await window.meetingStudio.settings.update('recordingPresets', defaults)
+      }, DEFAULT_RECORDING_PRESETS)
+      .catch(() => {})
+    await electronApp.close()
+  })
+
+  test('rejects starting a recording when free disk space is below the configured minimum margin', async () => {
+    test.info().setTimeout(DISK_SPACE_TEST_TIMEOUT_MS)
+    await openRecordingSetup(appWindow)
+
+    // Limiar critico absurdo - qualquer espaco real em disco fica abaixo dele, forcando a
+    // rejeicao de `recording.start` (RF-042: "evitar iniciar sessao quando nao houver margem
+    // minima configurada").
+    await appWindow.evaluate(async (defaults) => {
+      await window.meetingStudio.settings.update('recordingPresets', {
+        ...defaults,
+        diskSpaceWarningThresholdMb: 999_999_999,
+        diskSpaceCriticalThresholdMb: 999_999_999
+      })
+    }, DEFAULT_RECORDING_PRESETS)
+
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+
+    await appWindow
+      .getByLabel('Titulo da reuniao')
+      .fill('Reuniao de teste E2E - disco insuficiente')
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+
+    await expect(
+      appWindow.getByText('Espaco em disco insuficiente', { exact: false })
+    ).toBeVisible({ timeout: 10_000 })
+    // Nunca deve ter entrado no estado "gravando" - o indicador (role="status") so existe
+    // enquanto uma sessao esta ativa.
+    await expect(appWindow.getByRole('status')).toHaveCount(0)
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible()
+  })
+
+  test('shows a warning banner below the warning threshold, and auto-stops safely below the critical threshold', async () => {
+    test.info().setTimeout(DISK_SPACE_TEST_TIMEOUT_MS)
+    await openRecordingSetup(appWindow)
+
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+
+    await appWindow
+      .getByLabel('Titulo da reuniao')
+      .fill('Reuniao de teste E2E - monitor de disco')
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    // Timeout mais generoso que o padrao de 10s usado no resto do arquivo: RF-042 adiciona uma
+    // checagem REAL de disco (`check-disk-space`, via WMI no Windows) a todo `recording.start`,
+    // que se mostrou ocasionalmente mais lenta que 10s sob carga variavel da maquina de teste
+    // (observado empiricamente durante este incremento - preso em "Iniciando..." sem erro algum,
+    // so mais devagar).
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: POLL_TIMEOUT_MS })
+
+    const { rootPath } = await getActiveProjectPaths(appWindow)
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de audio ser persistido em disco'
+      })
+      .toBe(true)
+
+    // Eleva SO o limiar de aviso (mantem o critico baixo) - o proximo tick do polling continuo
+    // (a cada 5s, ver `DISK_SPACE_POLL_INTERVAL_MS` em `useRecordingSession.ts`) deve classificar
+    // o espaco real como "warning".
+    await appWindow.evaluate(async (defaults) => {
+      await window.meetingStudio.settings.update('recordingPresets', {
+        ...defaults,
+        diskSpaceWarningThresholdMb: 999_999_999,
+        diskSpaceCriticalThresholdMb: 1
+      })
+    }, DEFAULT_RECORDING_PRESETS)
+
+    await expect(
+      appWindow.getByText('Aviso: espaco em disco baixo', { exact: false })
+    ).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    // So "warning" (nao "critical") - a gravacao continua normalmente, sem parar sozinha.
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 5_000 })
+
+    // Agora eleva o limiar CRITICO tambem - o proximo tick deve disparar o "stop-safe"
+    // (04_RECORDING_ENGINE.md secao 11: avisar, finalizar segmentos corretamente, encerrar a
+    // captura de forma controlada) automaticamente, sem nenhuma acao do usuario.
+    await appWindow.evaluate(async (defaults) => {
+      await window.meetingStudio.settings.update('recordingPresets', {
+        ...defaults,
+        diskSpaceWarningThresholdMb: 999_999_999,
+        diskSpaceCriticalThresholdMb: 999_999_999
+      })
+    }, DEFAULT_RECORDING_PRESETS)
+
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(
+      appWindow.getByText('Gravacao encerrada automaticamente', { exact: false })
+    ).toBeVisible()
+
+    // O stop automatico usa o MESMO caminho de finalizacao de um stop manual - um unico segmento
+    // continuo, nunca uma rotacao/segmento novo nem um arquivo corrompido.
+    const secondSegmentPath = join(rootPath, 'source', 'microphone', 'microphone_000002.webm')
+    expect(fileHasBytes(secondSegmentPath)).toBe(false)
+
+    const finalized = await getActiveProjectPaths(appWindow)
+    expect(finalized.status).toBe('COMPLETED')
   })
 })

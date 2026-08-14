@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RecordingTrackType } from '@shared/schemas/recording.schema'
 import type { MarkerResponse } from '@shared/schemas/markers.schema'
 import { RecordingPresetsSettingsSchema } from '@shared/schemas/settings.schema'
+import { getFriendlyErrorMessage } from '@shared/constants/error-messages'
 import { shouldRotateForSize } from './segmentation-thresholds'
+import { classifyDiskSpace, type DiskSpaceStatus } from './disk-space-thresholds'
 
 export type RecordingSessionStatus = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping'
 
@@ -12,6 +14,47 @@ export interface RecordingSessionState {
   error: string | null
   /** RF-016 (oitavo incremento - marcadores) - acumulados em memoria durante a sessao ativa. */
   markers: MarkerResponse[]
+  /**
+   * RF-042 (nono incremento - monitor de espaco em disco). `null` fora de uma sessao ativa (ainda
+   * nao verificado / sessao encerrada). Ver `disk-space-thresholds.ts`.
+   */
+  diskSpaceStatus: DiskSpaceStatus | null
+  freeDiskBytes: number | null
+}
+
+/**
+ * RF-042 - intervalo do polling continuo de espaco em disco durante uma sessao ativa (gravando OU
+ * pausada - o monitor nao pausa junto com o cronometro, o espaco em disco pode cair por qualquer
+ * motivo enquanto a sessao segue aberta). 5s equilibra responsividade (o nivel critico dispara um
+ * stop automatico) contra custo de IPC - nao precisa ser tao fino quanto o timeslice de chunk
+ * (1s).
+ */
+const DISK_SPACE_POLL_INTERVAL_MS = 5000
+
+/**
+ * Extrai o codigo de erro de dominio de um erro IPC (`IpcError` em `preload/invoke.ts`) - faz o
+ * parse do prefixo `[CODE]` no INICIO de `.message`, nao le `.name`/`.code` diretamente. Achado
+ * empirico (dois testes E2E instrumentados durante este incremento, ver comentario em `IpcError`):
+ * o `contextBridge` do Electron, ao propagar uma excecao lancada no preload ate o mundo isolado do
+ * renderer, preserva SO `.message` - nem `.name` (sempre chega como o generico `'Error'`, mesmo
+ * apos `IpcError` seta-lo explicitamente no preload) nem propriedades customizadas (`.code`/
+ * `.metadata`) sobrevivem ao clone. `.message`, por ser o UNICO campo confirmado a sobreviver, e
+ * onde `IpcError` codifica o `code` (prefixo `[CODE] `) para o renderer conseguir recupera-lo.
+ * Usado para trocar a mensagem generica de falha por uma mensagem amigavel especifica
+ * (`getFriendlyErrorMessage`, ja definida desde a Fase 0 mas nunca consumida pelo renderer ate este
+ * incremento) quando o main rejeita `recording.start` por um motivo conhecido (ex.: `DISK_SPACE_ERROR`).
+ */
+function extractIpcErrorCode(error: unknown): string | undefined {
+  if (
+    error &&
+    typeof error === 'object' &&
+    'message' in error &&
+    typeof (error as { message: unknown }).message === 'string'
+  ) {
+    const match = /^\[([A-Z_]+)\]/.exec((error as { message: string }).message)
+    return match?.[1]
+  }
+  return undefined
 }
 
 export interface RecordingSources {
@@ -152,7 +195,9 @@ export function useRecordingSession(sources: RecordingSources) {
     status: 'idle',
     elapsedMs: 0,
     error: null,
-    markers: []
+    markers: [],
+    diskSpaceStatus: null,
+    freeDiskBytes: null
   })
 
   const projectIdRef = useRef<string | null>(null)
@@ -199,6 +244,17 @@ export function useRecordingSession(sources: RecordingSources) {
   const totalPausedMsRef = useRef(0)
   const rotationTimerStartedAtRef = useRef<Map<string, number>>(new Map())
   const rotationTimerRemainingMsRef = useRef<Map<string, number>>(new Map())
+
+  // RF-042 (nono incremento - monitor de espaco em disco). `pollDiskSpaceRef` quebra o mesmo tipo
+  // de ciclo de dependencias que `rotateTrackRef` ja resolve acima: o timer iniciado dentro de
+  // `start()` precisa chamar a versao mais recente de `pollDiskSpace` (definida so depois de
+  // `stop`, que ela propria chama no nivel critico) sem forcar `start` a depender de `stop`
+  // diretamente. `autoStopReasonRef` carrega a mensagem amigavel do stop AUTOMATICO (disco cheio)
+  // para dentro de `stop()`, que por padrao (stop manual, pelo usuario) sempre limpa `error` para
+  // `null` - sem isso o motivo do stop automatico se perderia.
+  const diskSpaceIntervalRef = useRef<number | null>(null)
+  const pollDiskSpaceRef = useRef<() => Promise<void>>(async () => {})
+  const autoStopReasonRef = useRef<string | null>(null)
 
   const withTrackLock = useCallback((trackId: string, fn: () => Promise<void>): Promise<void> => {
     const prior = trackLocksRef.current.get(trackId) ?? Promise.resolve()
@@ -347,7 +403,14 @@ export function useRecordingSession(sources: RecordingSources) {
         return
       }
 
-      setState({ status: 'starting', elapsedMs: 0, error: null, markers: [] })
+      setState({
+        status: 'starting',
+        elapsedMs: 0,
+        error: null,
+        markers: [],
+        diskSpaceStatus: null,
+        freeDiskBytes: null
+      })
       stoppedRef.current = false
 
       let projectId: string | null = null
@@ -362,6 +425,7 @@ export function useRecordingSession(sources: RecordingSources) {
         totalPausedMsRef.current = 0
         rotationTimerStartedAtRef.current.clear()
         rotationTimerRemainingMsRef.current.clear()
+        autoStopReasonRef.current = null
 
         const project = await window.meetingStudio.project.create({ title })
         projectId = project.id
@@ -418,7 +482,21 @@ export function useRecordingSession(sources: RecordingSources) {
           }))
         }, 250)
 
-        setState({ status: 'recording', elapsedMs: 0, error: null, markers: [] })
+        // RF-042: primeira leitura imediata (nao esperar o primeiro tick do intervalo) para o
+        // espaco em disco ja aparecer assim que a gravacao comeca, nao alguns segundos depois.
+        diskSpaceIntervalRef.current = window.setInterval(() => {
+          void pollDiskSpaceRef.current()
+        }, DISK_SPACE_POLL_INTERVAL_MS)
+        void pollDiskSpaceRef.current()
+
+        setState({
+          status: 'recording',
+          elapsedMs: 0,
+          error: null,
+          markers: [],
+          diskSpaceStatus: null,
+          freeDiskBytes: null
+        })
       } catch (error) {
         console.error('Falha ao iniciar gravacao', error)
         screenStreamRef.current?.getTracks().forEach((track) => track.stop())
@@ -429,6 +507,10 @@ export function useRecordingSession(sources: RecordingSources) {
         rotationTimersRef.current.clear()
         rotationTimerStartedAtRef.current.clear()
         rotationTimerRemainingMsRef.current.clear()
+        if (diskSpaceIntervalRef.current !== null) {
+          window.clearInterval(diskSpaceIntervalRef.current)
+          diskSpaceIntervalRef.current = null
+        }
         trackLocksRef.current.clear()
         rotationInFlightRef.current.clear()
         trackRecordersRef.current.clear()
@@ -440,11 +522,19 @@ export function useRecordingSession(sources: RecordingSources) {
           await window.meetingStudio.recording.stop({ projectId }).catch(() => {})
         }
         projectIdRef.current = null
+        // RF-042: quando o main rejeita `recording.start` por um motivo conhecido (ex.: espaco em
+        // disco abaixo da margem minima - `DISK_SPACE_ERROR`), mostra a mensagem amigavel especifica
+        // (`getFriendlyErrorMessage`) em vez do fallback generico.
+        const errorCode = extractIpcErrorCode(error)
         setState({
           status: 'idle',
           elapsedMs: 0,
-          error: 'Nao foi possivel iniciar a gravacao. Tente novamente.',
-          markers: []
+          error: errorCode
+            ? getFriendlyErrorMessage(errorCode)
+            : 'Nao foi possivel iniciar a gravacao. Tente novamente.',
+          markers: [],
+          diskSpaceStatus: null,
+          freeDiskBytes: null
         })
       }
     },
@@ -592,6 +682,10 @@ export function useRecordingSession(sources: RecordingSources) {
       window.clearInterval(elapsedIntervalRef.current)
       elapsedIntervalRef.current = null
     }
+    if (diskSpaceIntervalRef.current !== null) {
+      window.clearInterval(diskSpaceIntervalRef.current)
+      diskSpaceIntervalRef.current = null
+    }
     for (const timerId of rotationTimersRef.current.values()) window.clearTimeout(timerId)
     rotationTimersRef.current.clear()
 
@@ -617,10 +711,27 @@ export function useRecordingSession(sources: RecordingSources) {
 
     try {
       await window.meetingStudio.recording.stop({ projectId })
-      setState({ status: 'idle', elapsedMs: 0, error: null, markers: [] })
+      // RF-042: `autoStopReasonRef` carrega a mensagem amigavel quando este `stop()` foi disparado
+      // automaticamente pelo monitor de disco (nao pelo usuario clicando "Parar") - `null` no
+      // caminho normal, preservando o comportamento existente (sem erro apos parar manualmente).
+      setState({
+        status: 'idle',
+        elapsedMs: 0,
+        error: autoStopReasonRef.current,
+        markers: [],
+        diskSpaceStatus: null,
+        freeDiskBytes: null
+      })
     } catch (error) {
       console.error('Falha ao finalizar gravacao', error)
-      setState({ status: 'idle', elapsedMs: 0, error: 'Falha ao finalizar a gravacao.', markers: [] })
+      setState({
+        status: 'idle',
+        elapsedMs: 0,
+        error: 'Falha ao finalizar a gravacao.',
+        markers: [],
+        diskSpaceStatus: null,
+        freeDiskBytes: null
+      })
     } finally {
       trackRecorders.clear()
       trackLocksRef.current.clear()
@@ -629,8 +740,56 @@ export function useRecordingSession(sources: RecordingSources) {
       rotationTimerRemainingMsRef.current.clear()
       pausedAtRef.current = null
       projectIdRef.current = null
+      autoStopReasonRef.current = null
     }
   }, [withTrackLock])
+
+  /**
+   * RF-042 - roda a cada `DISK_SPACE_POLL_INTERVAL_MS` durante uma sessao ativa (gravando OU
+   * pausada). Le os limiares de Configuracoes A CADA tick (nao cacheados em refs uma unica vez no
+   * `start()`, diferente da segmentacao) - decisao deliberada: um monitor de seguranca deve
+   * reagir a uma mudanca de configuracao imediatamente, mesmo no meio de uma gravacao ja em
+   * andamento, ao contrario de um parametro de formato do artefato (segmentacao) que faz mais
+   * sentido fixo pelo resto da sessao.
+   */
+  const pollDiskSpace = useCallback(async () => {
+    if (!projectIdRef.current) return
+    try {
+      const [diskSpace, presetsRaw] = await Promise.all([
+        window.meetingStudio.system.getDiskSpace(),
+        window.meetingStudio.settings.get('recordingPresets')
+      ])
+      const presets = RecordingPresetsSettingsSchema.parse(presetsRaw)
+      const diskSpaceStatus = classifyDiskSpace(
+        diskSpace.freeBytes,
+        presets.diskSpaceWarningThresholdMb,
+        presets.diskSpaceCriticalThresholdMb
+      )
+      setState((prev) => ({ ...prev, diskSpaceStatus, freeDiskBytes: diskSpace.freeBytes }))
+
+      if (diskSpaceStatus === 'critical') {
+        // 04_RECORDING_ENGINE.md secao 11 ("Falta de disco"): nivel critico = "stop-safe" - avisar,
+        // finalizar segmentos corretamente, encerrar captura de forma controlada. `stop()` ja faz
+        // exatamente isso (mesmo caminho de finalizacao usado por um stop manual).
+        autoStopReasonRef.current =
+          'Gravacao encerrada automaticamente: espaco em disco insuficiente. Libere espaco e inicie uma nova gravacao.'
+        await stop()
+      }
+    } catch (error) {
+      // Falha ao VERIFICAR o espaco em disco (ex.: IPC indisponivel momentaneamente) nunca deve
+      // interromper a gravacao em andamento - so tenta de novo no proximo tick.
+      console.error('Falha ao verificar espaco em disco durante a gravacao', error)
+    }
+  }, [stop])
+
+  // Mantem `pollDiskSpaceRef` sempre apontando para a versao mais recente (mesmo padrao de
+  // `rotateTrackRef` no topo do arquivo) - o timer criado dentro de `start()` chama
+  // `pollDiskSpaceRef.current()`, nunca `pollDiskSpace` diretamente, quebrando o ciclo de
+  // dependencias entre `start` (definida antes) e `stop`/`pollDiskSpace` (definidas depois, e das
+  // quais `pollDiskSpace` depende).
+  useEffect(() => {
+    pollDiskSpaceRef.current = pollDiskSpace
+  }, [pollDiskSpace])
 
   return { ...state, start, stop, pause, resume, addMarker }
 }

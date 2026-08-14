@@ -164,6 +164,8 @@ export function RecordingSetupPage() {
           Boolean(systemAudioCarrierSourceId)
         }
         markerCount={recordingSession.markers.length}
+        diskSpaceStatus={recordingSession.diskSpaceStatus}
+        freeDiskBytes={recordingSession.freeDiskBytes}
         onStart={(title) => void recordingSession.start(title)}
         onStop={() => void recordingSession.stop()}
         onPause={() => void recordingSession.pause()}

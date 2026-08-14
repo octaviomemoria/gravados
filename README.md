@@ -8,17 +8,17 @@ suporte futuro a macOS.
 
 A **Fase 0 — Bootstrap e Fundação Técnica** está completa: fundação arquitetural
 (Electron/React/TypeScript/Vite, IPC tipado e validado, SQLite+Drizzle, segurança de processo,
-sistema de jobs, logging, testes/CI). A **Fase 1 — Recording Core** está em andamento:
-REC-001 a REC-004 (dispositivos + preview) e um pipeline de captura real com as **quatro fontes
-simultâneas do MVP** (tela, câmera, microfone e áudio do sistema, trilhas independentes) já
-funcionam de ponta a ponta (gravar → persistir em disco continuamente → finalizar), com
-**segmentação automática por tempo/tamanho**, **pausar/retomar** (RF-010) e **marcadores**
-(RF-016) já implementados. Ver
+sistema de jobs, logging, testes/CI). A **Fase 1 — Recording Core** está completa: REC-001 a
+REC-004 (dispositivos + preview) e um pipeline de captura real com as **quatro fontes simultâneas
+do MVP** (tela, câmera, microfone e áudio do sistema, trilhas independentes) funcionam de ponta a
+ponta (gravar → persistir em disco continuamente → finalizar), com **segmentação automática por
+tempo/tamanho**, **pausar/retomar** (RF-010), **marcadores** (RF-016) e **monitor de espaço em
+disco** (RF-042) implementados. Ver
 [Dispositivos e preview](#dispositivos-e-preview-fase-1),
 [Captura real de microfone e câmera](#captura-real-de-microfone-e-câmera-fase-1),
 [Segmentação por tempo/tamanho](#segmentação-por-tempotamanho-fase-1),
-[Pausar/retomar](#pausarretomar-fase-1) e [Marcadores](#marcadores-fase-1). Monitor de disco
-ainda não existe — próximo incremento da Fase 1.
+[Pausar/retomar](#pausarretomar-fase-1), [Marcadores](#marcadores-fase-1) e
+[Monitor de espaço em disco](#monitor-de-espaço-em-disco-fase-1).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -362,6 +362,63 @@ Fase 0, sem nenhum canal IPC nem UI até este incremento.
   desconto de pausa fechada, título/nota opcionais, persistência via `listMarkers`, e as 3
   rejeições: sem sessão ativa, durante pausa, `projectId` divergente).
 
+### Monitor de espaço em disco (Fase 1)
+
+Nono e último incremento da Fase 1 — RF-042: impedir que uma gravação comece sem espaço mínimo
+disponível, avisar durante a gravação quando o espaço estiver ficando baixo, e encerrar a gravação
+com segurança (sem corromper segmentos) se o disco chegar perto de esgotar. `disk-space.service.ts`
+(`getDiskSpace`/`assertMinimumDiskSpace`) já existia desde a Fase 0 mas nunca era exercitado por
+nenhum teste real; os dois limiares (`diskSpaceWarningThresholdMb`/`diskSpaceCriticalThresholdMb`)
+já existiam em `recordingPresets` sem nenhuma UI.
+
+- **Verificação prévia bloqueia o início, não só avisa** — `RecordingSessionManager.start()` ganhou
+  um terceiro parâmetro opcional `minimumFreeBytes`; quando informado, roda `assertMinimumDiskSpace`
+  ANTES de `stateMachine.transitionTo('PREPARING')`, então uma rejeição nunca deixa a máquina de
+  estados travada nem chega a criar a árvore de diretórios do projeto. O parâmetro é
+  deliberadamente opcional e resolvido pelo handler IPC (`diskSpaceCriticalThresholdMb` convertido
+  para bytes), não lido internamente pelo manager — mantém os testes unitários existentes rápidos e
+  determinísticos (omitir o parâmetro pula a checagem inteiramente).
+- **Limiar crítico faz dupla função**: é o piso mínimo pra começar a gravar E o gatilho de
+  auto-stop durante o monitoramento contínuo — mesmo número, duas checagens.
+- **Limiares lidos a cada tick de polling, não cacheados no início da sessão** — ao contrário da
+  segmentação por tempo/tamanho (que trava os valores em refs no `start()`), um monitor de
+  segurança deve reagir a uma mudança de configuração feita no meio de uma gravação em andamento.
+- **Polling contínuo no renderer** (`useRecordingSession.ts`, `DISK_SPACE_POLL_INTERVAL_MS = 5000`)
+  roda durante `recording` E `paused` (diferente do cronômetro, que congela na pausa — espaço em
+  disco pode continuar caindo por outros processos mesmo com a gravação pausada). Banner de aviso
+  (`role="alert"`) aparece só no estado `warning`; o estado `critical` não tem banner dedicado —
+  dispara quase imediatamente um `stop()` automático, cuja mensagem amigável chega pelo mesmo campo
+  `error` já usado para falhas normais (via um `autoStopReasonRef` que sobrevive até o `setState`
+  final de `stop()`).
+- **Bug real encontrado e corrigido: interop CJS/ESM do pacote `check-disk-space` sob o
+  `externalizeDepsPlugin()` do electron-vite.** `import checkDiskSpace from 'check-disk-space'`
+  compila para `const checkDiskSpace = require("check-disk-space")` sem desembrulhar `.default`,
+  mas o formato real do pacote é `{ default: fn, ... }` — chamar o objeto como função lança
+  `TypeError: checkDiskSpace is not a function`. Isso já quebrava silenciosamente o handler
+  `system.getDiskSpace` (usado pelo `DiskSpaceIndicator` da Home) desde a Fase 0, sem nenhum teste
+  que exercitasse o caminho real para pegar o problema. Corrigido de forma defensiva em
+  `disk-space.service.ts`, resolvendo `.default` apenas quando o import não é diretamente chamável
+  (funciona com qualquer bundler).
+- **Bug real encontrado e corrigido: `contextBridge` do Electron não preserva `.name` nem
+  propriedades customizadas de um `Error` ao cruzar do preload isolado pro mundo do renderer** —
+  só `.message` sobrevive (achado empírico, confirmado por dois rounds de teste diagnóstico
+  temporário). O design original de `IpcError` (com `.code`/`.metadata` como propriedades próprias)
+  chegava ao renderer sempre como um `Error` genérico sem o código. Corrigido codificando o código
+  como prefixo `[CODIGO] ` dentro de `.message`, com `extractIpcErrorCode` no renderer extraindo o
+  prefixo de volta via regex — a única representação comprovadamente estável através da fronteira.
+- Testado via 5 testes sintéticos em `recording-session-manager.test.ts` (inicia normalmente sem o
+  parâmetro, inicia normalmente quando o limite é trivialmente satisfeito, rejeita quando o limite
+  excede o espaço real disponível, máquina de estados permanece em `IDLE` após rejeição, um novo
+  `start()` funciona depois de uma rejeição anterior) e 6 testes de `classifyDiskSpace` em
+  `disk-space-thresholds.test.ts` (limites exatos contam como o lado mais seguro). Ponta a ponta em
+  `tests/e2e/recording.spec.ts` (cenário "disk space monitor", 2 testes): configurar os dois
+  limiares para um valor absurdo (`999_999_999` MB) via `settings.update` simula "disco cheio" sem
+  precisar esgotar disco real, exercitando o caminho completo real (IPC real, syscall real via
+  `check-disk-space`, persistência real de settings) sem nenhum mock interno — mesmo espírito do
+  T-REC-007 de `10_TESTING_QA.md`. Testes reais de syscall são mais lentos sob carga; seguindo o
+  padrão já estabelecido para os testes de câmera (decisões #23/#31), o describe usa
+  `retries: 2` e timeouts generosos (`DISK_SPACE_TEST_TIMEOUT_MS`/`DISK_CHECK_TEST_TIMEOUT_MS`).
+
 ## Estrutura de diretórios
 
 ```text
@@ -574,6 +631,42 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     (`markers.handlers.ts`) — o mesmo padrão de "domínio do canal segue o caso de uso, não
     necessariamente o gerenciador que o implementa" já usado por `project.openFolder` (decisão
     #27).
+39. **Bug real: interop CJS/ESM do `check-disk-space` sob `externalizeDepsPlugin()` do
+    electron-vite** — `import checkDiskSpace from 'check-disk-space'` compila no bundle do main
+    para `require("check-disk-space")` sem desembrulhar `.default`, mas o pacote exporta
+    `{default: fn, ...}`; chamar o objeto direto lança `TypeError: checkDiskSpace is not a
+    function`. Já quebrava silenciosamente `system.getDiskSpace` (usado pelo `DiskSpaceIndicator`
+    da Home) desde a Fase 0 — nenhum teste anterior exercitava o caminho real. Corrigido de forma
+    defensiva (`typeof checkDiskSpaceImport === 'function' ? ... : ....default`), funcionando
+    independente de bundler.
+40. **Bug real: `contextBridge` do Electron não preserva `.name` nem propriedades customizadas de
+    um `Error` cruzando do preload isolado pro renderer — só `.message` sobrevive** (achado
+    empírico, dois rounds de teste diagnóstico temporário via piping de stdout/stderr do processo
+    main e de `console.error` do renderer para o runner de teste). `IpcError` foi redesenhado para
+    codificar o código como prefixo `[CODIGO] ` dentro de `.message`; `extractIpcErrorCode` no
+    renderer extrai o prefixo de volta via regex — a única representação comprovadamente estável
+    através da fronteira.
+41. **`minimumFreeBytes` é opcional e resolvido pelo handler IPC, não lido internamente pelo
+    `RecordingSessionManager`** — o manager não depende de `SettingsService`; omitir o parâmetro
+    (como todos os testes unitários existentes fazem) pula a checagem inteiramente, mantendo os
+    testes rápidos e determinísticos, desacoplados do estado real de disco.
+42. **Limiares de disco lidos a cada tick de polling, não cacheados no início da sessão** —
+    diferente da segmentação por tempo/tamanho (valores travados em refs no `start()`, decisão
+    #29), um monitor de segurança deve reagir a uma mudança de configuração feita no meio de uma
+    gravação em andamento.
+43. **Limiar crítico faz dupla função**: piso mínimo pra começar a gravar (`start()`) E gatilho de
+    auto-stop durante o monitoramento contínuo (`pollDiskSpace`) — mesmo número, duas checagens,
+    evitando um terceiro valor de configuração sem necessidade real.
+44. **Sem banner dedicado para o estado `critical`** — só existe o banner de `warning`; o estado
+    crítico dispara quase imediatamente um `stop()` automático, cuja mensagem amigável chega pelo
+    mesmo campo `error` já usado para falhas normais (via `autoStopReasonRef`, que sobrevive até o
+    `setState` final de `stop()` e é resetado no `finally`).
+45. **`retries: 2` + timeouts generosos (`DISK_SPACE_TEST_TIMEOUT_MS`/`DISK_CHECK_TEST_TIMEOUT_MS`)
+    para os testes de disco** — mesma classe de flakiness ambiental já documentada para os testes
+    de câmera (decisões #23/#31): o syscall real do `check-disk-space` (WMI no Windows) é
+    ocasionalmente lento sob a carga cumulativa desta sessão de testes, não um bug de lógica (a
+    lógica em si está provada correta e passou de forma limpa, sem nenhum retry, em múltiplas
+    execuções completas da suíte).
 
 ## Testes
 
@@ -586,33 +679,45 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   intervalo de manifest aberto/fechado), múltiplos ciclos de pausa/retomada, `stop()` ainda
   pausado, as rejeições de pausa/retomada inválida, marcadores (timestamp relativo ao início com
   `vi.useFakeTimers()`, desconto de pausa fechada, título/nota opcionais, persistência via
-  `listMarkers`, e as rejeições de marcador inválido)**), filesystem/escrita atômica, construção de
-  argumentos FFmpeg, classificação de fontes de tela, cálculo de nível de áudio (RMS), formatação
-  de tempo decorrido, **limiar puro de rotação por tamanho**, wrapper de IPC (validação/erro/
-  sucesso), schemas Zod (incluindo `project.openFolder`), erros de domínio, migrations (tabelas/
-  índices/FKs), repositórios (project/settings/export-job), serviço de configurações, store de
-  tema, smoke test de componente (jsdom). **118 testes, 21 arquivos.**
+  `listMarkers`, e as rejeições de marcador inválido, **monitor de espaço em disco: inicia
+  normalmente sem/com o parâmetro satisfeito, rejeita quando o limite excede o espaço real, máquina
+  de estados permanece em `IDLE` após rejeição, novo `start()` funciona após rejeição anterior**)**),
+  filesystem/escrita atômica, construção de argumentos FFmpeg, classificação de fontes de tela,
+  cálculo de nível de áudio (RMS), formatação de tempo decorrido, **limiar puro de rotação por
+  tamanho**, **limiar puro de classificação de espaço em disco (`classifyDiskSpace`, ok/warning/
+  critical, limite exato conta como o lado mais seguro)**, wrapper de IPC (validação/erro/sucesso),
+  schemas Zod (incluindo `project.openFolder`), erros de domínio, migrations (tabelas/índices/FKs),
+  repositórios (project/settings/export-job), serviço de configurações, store de tema, smoke test
+  de componente (jsdom). **129 testes, 22 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
   do sistema + microfone**, **segmentação por tamanho (câmera, limite de 1 MB)**, **pausar/
-  retomar (microfone)** e **marcadores (microfone, criação durante gravação + bloqueio durante
-  pausa)**, cada cenário de ponta a ponta com dispositivos de áudio/vídeo sintéticos do Chromium
-  (câmera/microfone) e captura real de tela/áudio do sistema, verificando os arquivos de segmento
-  gravados em disco via `expect.poll` (`recording.spec.ts`, ver decisões registradas #22 sobre não
-  empilhar todas as trilhas num único teste, #23 sobre timeouts/retries, #25 sobre o emparelhamento
-  áudio+vídeo do áudio do sistema e #28/#29 sobre rotação de segmento). **17 testes**, validados
-  estáveis (todos os testes passam, com a flakiness já conhecida e documentada do cenário de
-  segmentação/câmera sob carga cumulativa da suíte inteira absorvida pelos retries — os cenários
-  de pausar/retomar e de marcadores passaram de forma limpa, sem nenhum retry, nas execuções) em
-  3 execuções completas consecutivas da suíte.
+  retomar (microfone)**, **marcadores (microfone, criação durante gravação + bloqueio durante
+  pausa)** e **monitor de espaço em disco (rejeição de início abaixo do limite mínimo; banner de
+  aviso + auto-stop seguro abaixo do limite crítico, confirmando um único segmento finalizado e
+  manifest `COMPLETED`)**, cada cenário de ponta a ponta com dispositivos de áudio/vídeo sintéticos
+  do Chromium (câmera/microfone) e captura real de tela/áudio do sistema, verificando os arquivos
+  de segmento gravados em disco via `expect.poll` (`recording.spec.ts`, ver decisões registradas
+  #22 sobre não empilhar todas as trilhas num único teste, #23 sobre timeouts/retries, #25 sobre o
+  emparelhamento áudio+vídeo do áudio do sistema, #28/#29 sobre rotação de segmento e #45 sobre a
+  mesma classe de timeout/retry aplicada ao syscall real de disco). **19 testes**, validados
+  estáveis em 2 execuções completas consecutivas da suíte inteira: ambas confirmam os dois cenários
+  de monitor de disco passando de forma limpa, sem nenhum retry, em toda execução; a única
+  flakiness observada (recuperada via retry numa das execuções, ausente na outra) foi a já
+  conhecida e documentada contenção de recursos da trilha de câmera (decisão #23) — não relacionada
+  a este incremento.
 
 ## Pendências conhecidas
 
-- Monitor de disco, editor, transcrição/IA, exportação real em múltiplos formatos (mp4/mp3/wav/etc.
-  - pedido explícito do usuário, adiado para um incremento próprio; ver "Próximo passo"),
-  empacotamento (`electron-builder`) e nuvem/colaboração — fora do escopo desta fase por desenho
-  (ver `11_ROADMAP_BACKLOG.md`).
+- Editor, transcrição/IA, exportação real em múltiplos formatos (mp4/mp3/wav/etc. - pedido
+  explícito do usuário, adiado para um incremento próprio; ver "Próximo passo"), empacotamento
+  (`electron-builder`) e nuvem/colaboração — fora do escopo desta fase por desenho (ver
+  `11_ROADMAP_BACKLOG.md`).
+- Monitor de espaço em disco não tem indicador visual de "espaço OK" explícito, só o texto de
+  espaço livre sempre visível e o banner de aviso quando baixo (refinamento futuro cosmético, não
+  bloqueante). Correção do bug do `check-disk-space` (ver decisão #39) foi um benefício colateral
+  para o indicador pré-existente da Home, que estava silenciosamente quebrado desde a Fase 0.
 - Marcadores desta etapa não capturam título/nota durante a gravação ao vivo (UI só cria o
   "marcador instantâneo", sem título/sem nota) — o schema/IPC/banco já suportam os dois campos
   corretamente (RF-016), só falta a UI pra preenchê-los na hora. Também não há tela/lista pra ver
@@ -660,14 +765,16 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 
 ## Próximo passo
 
-Duas frentes identificadas, ambas fora do escopo desta fase de captura:
+A **Fase 1 — Recording Core** está completa (`11_ROADMAP_BACKLOG.md`, REC-001 a REC-015): as
+quatro fontes de captura simultâneas, segmentação por tempo/tamanho, pausar/retomar (RF-010),
+marcadores (RF-016) e monitor de espaço em disco (RF-042) estão implementados e testados de ponta a
+ponta. A única frente identificada para o próximo incremento, fora do escopo desta fase:
 
 1. **Exportação em múltiplos formatos** (pedido explícito do usuário) — hoje a gravação é sempre
    `.webm` (único formato que o `MediaRecorder` do Chromium produz de forma confiável); entregar
    um arquivo em MP4/MP3/WAV/M4A-AAC/AVI/MPEG/OGG exige uma etapa real de conversão via FFmpeg
    (`main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`, nenhum binário
    instalado, `export.start` sempre lança `NotImplementedError`) - feature nova e maior,
-   correspondendo à Fase 4 - Export do roadmap (EXP-001..009), a ser planejada separadamente.
-2. Continuar a **Fase 1 — Recording Core** (`11_ROADMAP_BACKLOG.md`): REC-015 (monitor de
-   disco/RF-042) — última pendência da fase. As quatro fontes de captura, a segmentação por
-   tempo/tamanho, pausar/retomar (RF-010) e marcadores (RF-016) já estão implementados e testados.
+   correspondendo à Fase 4 - Export do roadmap (EXP-001..009), a ser planejada separadamente e só
+   iniciada com autorização explícita do usuário (o mesmo padrão já seguido para não começá-la
+   junto com a segmentação, ver plano registrado no início deste incremento de segmentação).

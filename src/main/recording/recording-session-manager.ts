@@ -21,6 +21,7 @@ import {
 import { SOURCE_ROOT_FOLDER_NAME } from '../../shared/constants/filesystem'
 import { MANIFEST_SCHEMA_VERSION } from '../../shared/constants/app-info'
 import { ValidationError, MediaFinalizeError, NotFoundError } from '../../shared/types/domain-errors'
+import { assertMinimumDiskSpace } from '../services/disk-space.service'
 import type { RecordingState } from '../../shared/types/recording-state'
 import type { RecordingTrackType, RecordingTrackHandle } from '../../shared/schemas/recording.schema'
 import { createScopedLogger } from '../services/logger'
@@ -152,7 +153,23 @@ export class RecordingSessionManager {
     return this.stateMachine.getState()
   }
 
-  async start(projectId: string, trackTypes: RecordingTrackType[]): Promise<StartRecordingResult> {
+  /**
+   * RF-042 (nono incremento - monitor de espaco em disco). `minimumFreeBytes` e OPCIONAL e
+   * deliberadamente nao lido internamente de `SettingsService` (o manager nao tem essa
+   * dependencia) - quem chama (o handler IPC) resolve o valor configurado
+   * (`recordingPresets.diskSpaceCriticalThresholdMb`) e passa aqui, mesmo espirito de "quem chama
+   * decide o parametro, o manager so aplica" ja usado para `segmentIndex`. Omitir o parametro
+   * (como todos os testes sinteticos existentes fazem) pula a checagem inteiramente - evita que
+   * testes unitarios fiquem acoplados ao espaco real em disco da maquina que roda a suite.
+   * "Evitar iniciar sessao quando nao houver margem minima configurada" (RF-042) - checado ANTES
+   * de transicionar para PREPARING, entao uma rejeicao aqui nunca deixa a maquina de estados presa
+   * nem cria a arvore de pastas do projeto.
+   */
+  async start(
+    projectId: string,
+    trackTypes: RecordingTrackType[],
+    minimumFreeBytes?: number
+  ): Promise<StartRecordingResult> {
     if (this.activeSession) {
       throw new ValidationError('Ja existe uma gravacao em andamento.')
     }
@@ -163,6 +180,10 @@ export class RecordingSessionManager {
     const project = this.projectRepository.findById(projectId)
     if (!project) {
       throw new NotFoundError(`Projeto nao encontrado: ${projectId}`)
+    }
+
+    if (minimumFreeBytes !== undefined) {
+      await assertMinimumDiskSpace(this.libraryRootPath, minimumFreeBytes)
     }
 
     this.stateMachine.transitionTo('PREPARING')

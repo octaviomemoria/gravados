@@ -12,6 +12,16 @@ function parseOptionalPositiveInt(raw: string): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }
 
+/**
+ * RF-042 - os dois limiares de disco sao OBRIGATORIOS no schema (`z.number().int().positive()`,
+ * sem `.nullable()` como a segmentacao) - um campo vazio/invalido mantem o ultimo valor valido em
+ * vez de virar `null` (que quebraria a validacao Zod ao salvar).
+ */
+function parseRequiredPositiveInt(raw: string, fallback: number): number {
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
 /** RF-041: configuracoes locais. Tema e persistido de verdade via IPC (`settings.app`). */
 export function SettingsPage() {
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null)
@@ -112,6 +122,55 @@ export function SettingsPage() {
                 onChange={(event) =>
                   void patchRecordingPresets({
                     sizeSegmentationMb: parseOptionalPositiveInt(event.target.value)
+                  })
+                }
+              />
+            </label>
+          </div>
+        )}
+      </section>
+
+      <section className="settings-section">
+        <h2>Espaco em disco</h2>
+        <p className="settings-section__hint">
+          RF-042. Abaixo do limite de aviso, a gravacao mostra um alerta discreto mas continua
+          normalmente. Abaixo do limite critico, a gravacao para automaticamente de forma segura
+          (segmentos finalizados corretamente) - o mesmo limite critico tambem e exigido como
+          margem minima para COMECAR uma gravacao nova.
+        </p>
+        {!recordingPresets && <p className="empty-state">Carregando...</p>}
+        {recordingPresets && (
+          <div className="settings-field-group">
+            <label className="settings-field">
+              <span>Limite de aviso (MB)</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={recordingPresets.diskSpaceWarningThresholdMb}
+                onChange={(event) =>
+                  void patchRecordingPresets({
+                    diskSpaceWarningThresholdMb: parseRequiredPositiveInt(
+                      event.target.value,
+                      recordingPresets.diskSpaceWarningThresholdMb
+                    )
+                  })
+                }
+              />
+            </label>
+            <label className="settings-field">
+              <span>Limite critico (MB)</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={recordingPresets.diskSpaceCriticalThresholdMb}
+                onChange={(event) =>
+                  void patchRecordingPresets({
+                    diskSpaceCriticalThresholdMb: parseRequiredPositiveInt(
+                      event.target.value,
+                      recordingPresets.diskSpaceCriticalThresholdMb
+                    )
                   })
                 }
               />
