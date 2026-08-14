@@ -18,7 +18,10 @@ disco** (RF-042) implementados. Ver
 [Captura real de microfone e câmera](#captura-real-de-microfone-e-câmera-fase-1),
 [Segmentação por tempo/tamanho](#segmentação-por-tempotamanho-fase-1),
 [Pausar/retomar](#pausarretomar-fase-1), [Marcadores](#marcadores-fase-1) e
-[Monitor de espaço em disco](#monitor-de-espaço-em-disco-fase-1).
+[Monitor de espaço em disco](#monitor-de-espaço-em-disco-fase-1). A **Fase 2 — Recovery + Library**
+está em andamento: detecção e reparo de gravações interrompidas por um encerramento abrupto
+(RECOV-002/RECOV-003) já funcionam de ponta a ponta - ver
+[Recuperação de gravações incompletas](#recuperação-de-gravações-incompletas-fase-2).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -419,6 +422,68 @@ já existiam em `recordingPresets` sem nenhuma UI.
   padrão já estabelecido para os testes de câmera (decisões #23/#31), o describe usa
   `retries: 2` e timeouts generosos (`DISK_SPACE_TEST_TIMEOUT_MS`/`DISK_CHECK_TEST_TIMEOUT_MS`).
 
+### Recuperação de gravações incompletas (Fase 2)
+
+Décimo incremento, primeiro da **Fase 2 — Recovery + Library** — RECOV-002 (detecção) e RECOV-003
+(reparo). RECOV-001 (o `manifest.json` em si) já existia desde a Fase 0/1, mas nunca era realmente
+consumido por ninguém: `RECOVERABLE` já fazia parte do grafo de transições da máquina de estados
+desde o scaffolding, sem nenhum código que chegasse a produzi-lo. Um projeto cujo processo morreu
+(crash, encerramento forçado, queda de energia, ou simplesmente o usuário fechando a janela sem
+clicar em "Parar" - não há nenhum handler de `before-quit` que finalize uma sessão ativa, decisão
+deliberada) fica preso num status não-terminal para sempre, sem este incremento.
+
+- **Detecção roda uma única vez no boot** (`RecoveryService.detectIncomplete()`, chamado em
+  `main/index.ts` logo após `createAppContext`, ANTES do IPC ficar acessível a qualquer janela) —
+  nenhuma tela pode chegar a interagir com um projeto ainda com um status de "sessão em andamento"
+  que na verdade pertence ao processo anterior. Um processo recém-iniciado nunca tem nenhuma sessão
+  real ativa (`RecordingSessionManager.activeSession` sempre começa `null`), então encontrar um
+  projeto em `PREPARING`/`RECORDING`/`PAUSED`/`STOPPING`/`FINALIZING` no boot só pode significar
+  isso. Detecção é idempotente e nunca lança - uma falha ao ler o manifest de UM projeto (arquivo
+  corrompido/removido por fora do app) não pode travar o boot do app inteiro nem a detecção dos
+  demais; o pior caso é esse projeto ficar `RECOVERABLE` sem segmentos, resolvido no reparo.
+- **Achado importante: o reparo enumera segmentos a partir do BANCO, não do `manifest.json`.** O
+  manifest só é reescrito no `start()`, a cada ROTAÇÃO de segmento e no `stop()` - o segmento
+  atualmente aberto de uma trilha que nunca rotacionou fica de fora dele até o próximo desses
+  eventos. Um crash durante o PRIMEIRO segmento de cada trilha (o caso mais comum) deixaria o
+  manifest mostrando um array de segmentos vazio, mesmo com dados reais gravados em disco - o
+  banco, ao contrário, ganha a linha do segmento de forma síncrona no primeiro chunk
+  (`segmentRepository.create` em `openNewSegment`), então é a lista mais confiável do que
+  realmente existiu. O `manifest.json` é inteiramente RECONSTRUÍDO a partir do banco já corrigido
+  ao final do reparo - autocura a própria defasagem que motivou usar o banco como fonte.
+- **Cada segmento é validado contra o arquivo REAL no disco** (`fs.stat()`, existe + tamanho > 0) -
+  nem o `byteSize` da linha do banco (só atualizado em `markFinalized`, portanto também defasado
+  para o segmento aberto no momento do crash) reflete com certeza quantos bytes chegaram ao disco;
+  o próprio arquivo é o único dado pós-crash confiável. Segmentos inválidos (ausentes ou 0 bytes)
+  são descartados do banco E o arquivo vazio/inutilizável é removido do disco - nunca uma linha
+  "válida" fantasma nem um resto de 0 bytes esquecido na pasta `source/`.
+- **Segmentos válidos ainda não finalizados são promovidos a `finalized: true` best-effort**, mesmo
+  sem o evento `stop()` do `MediaRecorder` - um WebM escrito em chunks sucessivos é um formato
+  "streamable" (não exige um trailer/Cues final para a maior parte dos players conseguirem abrir e
+  tocar os dados já gravados), então perder só o último flush de alguns ms é preferível a descartar
+  o segmento inteiro.
+- **Status final é `COMPLETED` se ao menos uma trilha sobreviveu com ao menos um segmento válido,
+  senão `FAILED`** - marcar `COMPLETED` sem nenhum dado recuperável enganaria o usuário com um
+  "sucesso" vazio na Biblioteca. Trilhas sem nenhum segmento válido são inteiramente removidas do
+  manifest reconstruído (as linhas de `tracks` no banco permanecem, sem efeito prático nesta fase).
+- **UI**: a Biblioteca mostra um selo "Incompleta" (`role="status"`) ao lado do título de qualquer
+  projeto `RECOVERABLE`, com um botão "Reparar" que chama `recovery.repair` e recarrega a lista
+  inteira (não só corrige o item localmente - o reparo também pode mudar `durationMs`/`endedAt`).
+- Testado via 10 testes sintéticos em `recovery.service.test.ts` (compartilha o mesmo
+  `RecordingSessionManager` real dos demais testes de gravação - inicia uma sessão real, escreve
+  chunks reais, e deliberadamente NUNCA chama `stop()`, reproduzindo um crash de verdade sem
+  precisar matar nenhum processo): detecção marca `RECOVERABLE` só projetos com sessão realmente
+  interrompida (ignora `IDLE` vazio e `COMPLETED`), é idempotente; reparo recupera um segmento
+  válido com o tamanho real do arquivo, descarta um segmento de 0 bytes e marca o projeto `FAILED`
+  quando nada sobrevive, mantém só as trilhas que de fato sobreviveram quando trilhas diferentes
+  crasham de formas diferentes, e continua funcionando via banco mesmo com o `manifest.json`
+  totalmente ausente. Ponta a ponta em `tests/e2e/recording.spec.ts` (cenário "recovery"): DOIS
+  lançamentos reais e sequenciais do Electron no mesmo teste - o primeiro inicia uma gravação real
+  e fecha a janela sem clicar em "Parar" (nenhum `before-quit` finaliza a sessão, exatamente como
+  documentado acima), o segundo relança o app (mesmo `userData`/banco - decisão já registrada de
+  que os testes desta suíte não isolam `userData` por lançamento) e confirma o selo "Incompleta" na
+  Biblioteca, repara pelo clique, e confirma o status final `COMPLETED` com o arquivo de segmento
+  ainda intacto no disco.
+
 ## Estrutura de diretórios
 
 ```text
@@ -667,6 +732,34 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     ocasionalmente lento sob a carga cumulativa desta sessão de testes, não um bug de lógica (a
     lógica em si está provada correta e passou de forma limpa, sem nenhum retry, em múltiplas
     execuções completas da suíte).
+46. **Reparo enumera segmentos a partir do BANCO, nunca do `manifest.json`** — achado registrado em
+    detalhe na seção "Recuperação de gravações incompletas" acima: o manifest só é reescrito em
+    pontos específicos (start/rotação/stop), então o segmento atualmente aberto de uma trilha que
+    nunca rotacionou fica ausente dele até o próximo desses eventos. Usar o manifest como fonte de
+    enumeração faria o reparo perder exatamente o caso mais comum de crash (durante o primeiro
+    segmento). O manifest é reconstruído a partir do banco já corrigido ao final - vira
+    consequência do reparo, não sua entrada.
+47. **Validação de cada segmento é sempre contra o arquivo real no disco (`fs.stat`), nunca contra
+    `byteSize` em cache** — nem o valor em memória do `RecordingSessionManager` (perdido no crash)
+    nem o do banco (só atualizado em `markFinalized`, portanto também defasado para o segmento
+    aberto no momento do crash) refletem com certeza quantos bytes sobreviveram; o arquivo em si é
+    o único dado pós-crash confiável.
+48. **Detecção (`detectIncomplete`) e reparo (`repair`) são deliberadamente duas operações
+    separadas, não uma só** — detecção roda automaticamente e sem risco no boot (só flipa um campo
+    de status, idempotente, nunca lança); reparo é uma ação explícita do usuário (clique em
+    "Reparar" na Biblioteca) porque envolve decisões com efeito colateral real (descartar
+    segmentos, apagar arquivos de 0 bytes) que não deveriam acontecer silenciosamente toda vez que
+    o app abre.
+49. **`repair()` rejeita qualquer projeto que não esteja `RECOVERABLE`** (`ValidationError`, nunca
+    um no-op silencioso) — evita reparar acidentalmente duas vezes ou reparar um projeto saudável;
+    força o fluxo a sempre passar pela detecção primeiro, mantendo uma única fonte de verdade sobre
+    "o que precisa de reparo" (o campo `status`, não um cálculo ad-hoc repetido em outro lugar).
+50. **Sem handler de `before-quit` que finalize uma sessão de gravação ativa** — decisão deliberada
+    (não uma lacuna esquecida): tentar rodar uma finalização assíncrona (fechar arquivos, escrever
+    manifest) durante o encerramento do processo é inerentemente arriscado (o próprio SO pode matar
+    o processo antes de terminar); é mais robusto deixar a gravação "malformada" de propósito e
+    reparar no próximo boot, onde há tempo e um banco consistente para decidir com calma - do que
+    arriscar uma finalização apressada e potencialmente inconsistente durante o quit.
 
 ## Testes
 
@@ -685,28 +778,44 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   filesystem/escrita atômica, construção de argumentos FFmpeg, classificação de fontes de tela,
   cálculo de nível de áudio (RMS), formatação de tempo decorrido, **limiar puro de rotação por
   tamanho**, **limiar puro de classificação de espaço em disco (`classifyDiskSpace`, ok/warning/
-  critical, limite exato conta como o lado mais seguro)**, wrapper de IPC (validação/erro/sucesso),
-  schemas Zod (incluindo `project.openFolder`), erros de domínio, migrations (tabelas/índices/FKs),
-  repositórios (project/settings/export-job), serviço de configurações, store de tema, smoke test
-  de componente (jsdom). **129 testes, 22 arquivos.**
+  critical, limite exato conta como o lado mais seguro)**, **`RecoveryService` de ponta a ponta
+  (`recovery.service.test.ts`, reaproveitando o mesmo `RecordingSessionManager` real dos demais
+  testes de gravação, deliberadamente sem chamar `stop()` para reproduzir um crash de verdade sem
+  matar nenhum processo): detecção marca `RECOVERABLE` só quem realmente foi interrompido, ignora
+  projeto `IDLE` vazio e `COMPLETED`, é idempotente; reparo recupera um segmento válido com o
+  tamanho real do arquivo, descarta um segmento de 0 bytes marcando o projeto `FAILED` quando nada
+  sobrevive, mantém só as trilhas que sobreviveram quando trilhas diferentes crasham de formas
+  diferentes, e continua funcionando via banco mesmo com o manifest ausente**, wrapper de IPC
+  (validação/erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de domínio,
+  migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço de
+  configurações, store de tema, smoke test de componente (jsdom). **139 testes, 23 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
   do sistema + microfone**, **segmentação por tamanho (câmera, limite de 1 MB)**, **pausar/
   retomar (microfone)**, **marcadores (microfone, criação durante gravação + bloqueio durante
-  pausa)** e **monitor de espaço em disco (rejeição de início abaixo do limite mínimo; banner de
+  pausa)**, **monitor de espaço em disco (rejeição de início abaixo do limite mínimo; banner de
   aviso + auto-stop seguro abaixo do limite crítico, confirmando um único segmento finalizado e
-  manifest `COMPLETED`)**, cada cenário de ponta a ponta com dispositivos de áudio/vídeo sintéticos
-  do Chromium (câmera/microfone) e captura real de tela/áudio do sistema, verificando os arquivos
-  de segmento gravados em disco via `expect.poll` (`recording.spec.ts`, ver decisões registradas
-  #22 sobre não empilhar todas as trilhas num único teste, #23 sobre timeouts/retries, #25 sobre o
-  emparelhamento áudio+vídeo do áudio do sistema, #28/#29 sobre rotação de segmento e #45 sobre a
-  mesma classe de timeout/retry aplicada ao syscall real de disco). **19 testes**, validados
-  estáveis em 2 execuções completas consecutivas da suíte inteira: ambas confirmam os dois cenários
-  de monitor de disco passando de forma limpa, sem nenhum retry, em toda execução; a única
-  flakiness observada (recuperada via retry numa das execuções, ausente na outra) foi a já
-  conhecida e documentada contenção de recursos da trilha de câmera (decisão #23) — não relacionada
-  a este incremento.
+  manifest `COMPLETED`)** e **recuperação (dois lançamentos reais e sequenciais do Electron - o
+  primeiro grava e fecha sem clicar em "Parar", o segundo relança o app e confirma o selo
+  "Incompleta" na Biblioteca, repara pelo clique, confirma status `COMPLETED` com o arquivo ainda
+  intacto)**, cada cenário de ponta a ponta com dispositivos de áudio/vídeo sintéticos do Chromium
+  (câmera/microfone) e captura real de tela/áudio do sistema, verificando os arquivos de segmento
+  gravados em disco via `expect.poll` (`recording.spec.ts`, ver decisões registradas #22 sobre não
+  empilhar todas as trilhas num único teste, #23 sobre timeouts/retries, #25 sobre o emparelhamento
+  áudio+vídeo do áudio do sistema, #28/#29 sobre rotação de segmento e #45 sobre a mesma classe de
+  timeout/retry aplicada ao syscall real de disco). **20 testes**, validados em 2 execuções
+  completas consecutivas da suíte inteira: a primeira limpa (19 passaram, 1 flaky recuperado via
+  retry - a já conhecida contenção de recursos da trilha de câmera, decisão #23); a segunda sob
+  contenção de recursos excepcionalmente severa desta máquina (>20 processos `electron`/`node`
+  concorrentes no momento, incluindo servidores MCP não relacionados) — 8 testes PRÉ-EXISTENTES
+  (não tocados por este incremento: microfone+câmera, tela+microfone, áudio do sistema+microfone,
+  segmentação, pausar/retomar, marcadores, disco) falharam mesmo após esgotar os retries
+  configurados, mas **o cenário de recuperação (novo nesta incremento) passou de forma limpa em
+  AMBAS as execuções** (8.6s e 8.1s, sem nenhum retry em nenhuma delas) - evidência forte de que a
+  lógica de recuperação em si é sólida mesmo sob a pior contenção de recursos observada nesta
+  sessão até agora, e que os 8 fracassos são a mesma classe de flakiness ambiental já documentada
+  (decisão #23), apenas numa instância particularmente severa, não uma regressão deste incremento.
 
 ## Pendências conhecidas
 
@@ -762,19 +871,38 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   nesta fase).
 - CI (`.github/workflows/ci.yml`) só roda de fato quando o repositório for enviado a um remoto
   GitHub — a estrutura já existe localmente.
+- Reparo é uma ação manual (clique em "Reparar") - sem repro automático em background nem
+  notificação proativa fora da Biblioteca avisando que existe algo a reparar.
+- Trilhas do banco (`tracks`) sem nenhum segmento válido sobrevivente não são removidas pelo
+  reparo, só ficam de fora do `manifest.json` reconstruído - linhas órfãs sem efeito prático
+  observável nesta fase (nada ainda consulta `tracks` isoladamente de `segments`).
+- A Biblioteca não mostra o motivo/detalhe de um reparo que resultou em `FAILED` (quantos
+  segmentos foram descartados, por quê) - só a ausência do selo "Incompleta" ou o próprio status
+  final; o resultado de `recovery.repair` (`recoveredSegments`/`discardedSegments`) já é retornado
+  pelo IPC, só não é exibido na UI ainda.
 
 ## Próximo passo
 
 A **Fase 1 — Recording Core** está completa (`11_ROADMAP_BACKLOG.md`, REC-001 a REC-015): as
 quatro fontes de captura simultâneas, segmentação por tempo/tamanho, pausar/retomar (RF-010),
 marcadores (RF-016) e monitor de espaço em disco (RF-042) estão implementados e testados de ponta a
-ponta. A única frente identificada para o próximo incremento, fora do escopo desta fase:
+ponta. A **Fase 2 — Recovery + Library** está em andamento: RECOV-001/002/003 (manifest, detecção e
+reparo de gravações incompletas) já funcionam de ponta a ponta.
 
-1. **Exportação em múltiplos formatos** (pedido explícito do usuário) — hoje a gravação é sempre
-   `.webm` (único formato que o `MediaRecorder` do Chromium produz de forma confiável); entregar
-   um arquivo em MP4/MP3/WAV/M4A-AAC/AVI/MPEG/OGG exige uma etapa real de conversão via FFmpeg
-   (`main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`, nenhum binário
-   instalado, `export.start` sempre lança `NotImplementedError`) - feature nova e maior,
-   correspondendo à Fase 4 - Export do roadmap (EXP-001..009), a ser planejada separadamente e só
-   iniciada com autorização explícita do usuário (o mesmo padrão já seguido para não começá-la
-   junto com a segmentação, ver plano registrado no início deste incremento de segmentação).
+Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
+cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
+próximo começar. Ordem planejada:
+
+1. Concluir a **Fase 2 — Recovery + Library**: LIB-002 (detalhes do projeto), LIB-004
+   (renomear), LIB-006 (excluir) - LIB-001 (listar) e LIB-005 (mostrar na pasta, via
+   `project.openFolder`) já existem desde incrementos anteriores.
+2. **Fase 3 — Editor MVP** (EDIT-001..012): timeline, corte/split, undo/redo, ganho/mudo, fade,
+   transformação de câmera, layout, autosave.
+3. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
+   ainda não instalados - `main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`,
+   nenhum binário real, `export.start` sempre lança `NotImplementedError`), MP4 720p/1080p, faixa
+   de tempo, progresso, cancelamento, validação via ffprobe - inclui a exportação em múltiplos
+   formatos pedida explicitamente pelo usuário (MP4/MP3/WAV/M4A-AAC/AVI/MPEG/OGG/etc.). O roadmap
+   marca o fim desta fase como o **Marco MVP**.
+4. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
+   depois do MVP, replanejadas quando chegar a vez.

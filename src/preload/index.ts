@@ -3,6 +3,7 @@ import { createProjectApi } from './api/project.api'
 import { createSettingsApi } from './api/settings.api'
 import { createRecordingApi } from './api/recording.api'
 import { createMarkersApi } from './api/markers.api'
+import { createRecoveryApi } from './api/recovery.api'
 import { createExportApi } from './api/export.api'
 import { createSystemApi } from './api/system.api'
 import { createDevicesApi } from './api/devices.api'
@@ -24,6 +25,7 @@ const meetingStudioApi: MeetingStudioApi = {
   settings: createSettingsApi(),
   recording: createRecordingApi(),
   markers: createMarkersApi(),
+  recovery: createRecoveryApi(),
   export: createExportApi(),
   system: createSystemApi(),
   devices: createDevicesApi()

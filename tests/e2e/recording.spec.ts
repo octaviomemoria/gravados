@@ -29,6 +29,10 @@ const SEGMENTATION_TEST_TIMEOUT_MS = 120_000
 // retries, nao e flakiness de logica (a logica em si esta provada correta pelos testes sinteticos
 // em `recording-session-manager.test.ts`, sem essa restricao de I/O real).
 const DISK_SPACE_TEST_TIMEOUT_MS = 120_000
+// RECOV-002/RECOV-003 (decimo incremento - Fase 2, recuperacao): abrange DOIS lancamentos
+// sequenciais do Electron (o "crash" simulado + a reabertura que detecta/repara), cada um ja
+// sujeito a mesma variabilidade documentada acima para os demais cenarios reais desta suite.
+const RECOVERY_TEST_TIMEOUT_MS = 120_000
 
 function fileHasBytes(path: string): boolean {
   return existsSync(path) && statSync(path).size > 0
@@ -776,4 +780,83 @@ test.describe('recording (disk space monitor)', () => {
     const finalized = await getActiveProjectPaths(appWindow)
     expect(finalized.status).toBe('COMPLETED')
   })
+})
+
+test.describe('recording (recovery)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  // Mesmo padrao ja usado para camera/segmentacao/disco (decisoes #23/#31/#45) - este cenario e
+  // particularmente sensivel por envolver DOIS lancamentos reais do Electron em sequencia.
+  test.describe.configure({ retries: 2 })
+
+  test(
+    'detects a recording abandoned by an unclean shutdown on the next launch, and repairs it back to a playable state',
+    async () => {
+      test.info().setTimeout(RECOVERY_TEST_TIMEOUT_MS)
+      const title = `Reuniao de teste E2E - recovery ${Date.now()}`
+
+      // --- Lancamento 1: inicia uma gravacao real e fecha o app SEM clicar em "Parar" - o
+      // equivalente, do ponto de vista do banco/manifest, a um crash no meio da sessao (nada
+      // nunca transiciona o projeto para COMPLETED/FAILED).
+      const first = await launchApp()
+      await openRecordingSetup(first.window)
+
+      const micSelect = first.window.getByLabel('Microfone', { exact: true })
+      await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+      await micSelect.selectOption({ index: 1 })
+
+      await first.window.getByLabel('Titulo da reuniao').fill(title)
+      await first.window.getByRole('button', { name: 'Iniciar gravacao' }).click()
+      await expect(first.window.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+      const { id: projectId, rootPath } = await getActiveProjectPaths(first.window)
+      const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+
+      await expect
+        .poll(() => fileHasBytes(microphonePath), {
+          timeout: POLL_TIMEOUT_MS,
+          message: 'aguardando primeiro chunk de audio ser persistido em disco'
+        })
+        .toBe(true)
+
+      // Fecha sem parar a gravacao - nao ha nenhum handler de "before-quit" que finalize uma
+      // sessao ativa (decisao deliberada, ver `main/index.ts`/README), entao o projeto fica preso
+      // em `RECORDING` no banco E no manifest, exatamente como apos um crash real.
+      await first.app.close()
+
+      // --- Lancamento 2: o boot do novo processo roda `RecoveryService.detectIncomplete()` ANTES
+      // de qualquer janela ficar interativa - o projeto deve aparecer na Biblioteca ja marcado.
+      const second = await launchApp()
+      await second.window
+        .getByRole('navigation', { name: 'Navegacao principal' })
+        .getByRole('link', { name: 'Biblioteca' })
+        .click()
+
+      // `.library-list__item` (nao `getByRole('listitem')`) - `<ul>`/`<li>` com `list-style: none`
+      // tem o role implicito de lista removido em algumas versoes do Chromium, entao a classe CSS
+      // real da UI e o seletor mais confiavel aqui.
+      const listItem = second.window.locator('.library-list__item').filter({ hasText: title })
+      await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+      await expect(listItem.getByRole('status')).toContainText('Incompleta')
+
+      const beforeRepair = await second.window.evaluate(
+        (id) => window.meetingStudio.library.get(id),
+        projectId
+      )
+      expect(beforeRepair.status).toBe('RECOVERABLE')
+
+      // --- Reparo: clicar "Reparar" deve promover o segmento real (com bytes no disco) a
+      // finalizado e o projeto inteiro a COMPLETED - nunca perder o arquivo ja gravado.
+      await listItem.getByRole('button', { name: 'Reparar' }).click()
+      await expect(listItem.getByRole('status')).not.toBeVisible({ timeout: POLL_TIMEOUT_MS })
+
+      const afterRepair = await second.window.evaluate(
+        (id) => window.meetingStudio.library.get(id),
+        projectId
+      )
+      expect(afterRepair.status).toBe('COMPLETED')
+      expect(fileHasBytes(microphonePath)).toBe(true)
+
+      await second.app.close()
+    }
+  )
 })

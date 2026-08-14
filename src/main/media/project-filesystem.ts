@@ -1,4 +1,4 @@
-import { mkdir, open, rename } from 'node:fs/promises'
+import { mkdir, open, readFile, rename } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
@@ -10,6 +10,7 @@ import {
 import { MANIFEST_SCHEMA_VERSION } from '../../shared/constants/app-info'
 import { PermissionDeniedError, ValidationError } from '../../shared/types/domain-errors'
 import type { RecordingState } from '../../shared/types/recording-state'
+import type { TrackType } from '../../shared/types/entities'
 
 /**
  * Arvore exata de 03_TECHNICAL_ARCHITECTURE.md secao 5. Nesta fase apenas a arvore de pastas e o
@@ -92,6 +93,24 @@ export async function createProjectDirectoryTree(paths: ProjectPaths): Promise<v
  */
 export type ManifestTrackType = 'screen' | 'camera' | 'microphone' | 'system_audio'
 
+/**
+ * Unica tabela de traducao `TrackType` (banco, maiusculo) -> `ManifestTrackType` (manifest,
+ * minusculo) - reaproveitada pelo reparo (`recovery.service.ts`) para reconstruir o manifest a
+ * partir do banco. Deliberadamente NAO reaproveitada por `recording-session-manager.ts` (cujo
+ * `TRACK_TYPE_INFO` interno tambem carrega `sourceName`/`getSourcePath`, acoplados ao ciclo de
+ * vida de uma sessao ativa) - evita acoplar aquele modulo, ja estavel e testado, a esta.
+ */
+const TRACK_TYPE_TO_MANIFEST_TYPE: Record<TrackType, ManifestTrackType> = {
+  SCREEN: 'screen',
+  CAMERA: 'camera',
+  MICROPHONE: 'microphone',
+  SYSTEM_AUDIO: 'system_audio'
+}
+
+export function toManifestTrackType(type: TrackType): ManifestTrackType {
+  return TRACK_TYPE_TO_MANIFEST_TYPE[type]
+}
+
 export interface ManifestSegment {
   index: number
   relativePath: string
@@ -160,6 +179,33 @@ export async function writeManifestAtomic(
     await handle.close()
   }
   await rename(tempPath, manifestPath)
+}
+
+/**
+ * RECOV-002/RECOV-003 (decimo incremento - recuperacao). Le e valida minimamente o manifest.json
+ * de um projeto (usado pelo boot para detectar gravacoes interrompidas e pelo reparo para ler o
+ * estado a corrigir). Retorna `null` em vez de lancar para QUALQUER falha (arquivo ausente, JSON
+ * invalido, shape inesperado) - um manifest ilegivel e um caso esperado de recuperacao (nao uma
+ * excecao de programacao), tratado pelo chamador como "sem dados para recuperar", nunca travando
+ * o boot do app inteiro.
+ */
+export async function readManifest(manifestPath: string): Promise<ProjectManifest | null> {
+  try {
+    const raw = await readFile(manifestPath, 'utf-8')
+    const parsed: unknown = JSON.parse(raw)
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !('schemaVersion' in parsed) ||
+      !('tracks' in parsed) ||
+      !Array.isArray((parsed as { tracks: unknown }).tracks)
+    ) {
+      return null
+    }
+    return parsed as ProjectManifest
+  } catch {
+    return null
+  }
 }
 
 export async function initializeProjectOnDisk(

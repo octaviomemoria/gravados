@@ -30,4 +30,11 @@ export class SegmentRepository {
       .where(eq(segments.id, id))
       .run()
   }
+
+  /** RECOV-003 (decimo incremento - reparo): remove um segmento cujo arquivo no disco nao
+   * sobreviveu ao crash (ausente ou 0 bytes) - nunca deixado como uma linha "finalizada" fantasma
+   * que um editor/exportacao futuro tentaria abrir. */
+  deleteById(id: string): void {
+    this.db.delete(segments).where(eq(segments.id, id)).run()
+  }
 }

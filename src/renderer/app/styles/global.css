@@ -241,6 +241,18 @@ body {
   flex: 1 1 auto;
 }
 
+.library-list__badge {
+  display: inline-block;
+  margin-left: var(--ms-space-2);
+  padding: 0.1rem 0.5rem;
+  border-radius: var(--ms-radius-sm);
+  background: var(--ms-color-warning);
+  color: var(--ms-color-surface);
+  font-size: 0.75rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
 .library-list__error {
   flex-basis: 100%;
   margin: 0;

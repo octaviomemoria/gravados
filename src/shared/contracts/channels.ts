@@ -27,6 +27,9 @@ export const IPC_CHANNELS = {
   markers: {
     list: 'markers.list'
   },
+  recovery: {
+    repair: 'recovery.repair'
+  },
   export: {
     start: 'export.start',
     list: 'export.list',

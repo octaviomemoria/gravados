@@ -8,6 +8,7 @@ import {
   SettingsRepository
 } from './database/repositories'
 import { ProjectService } from './services/project.service'
+import { RecoveryService } from './services/recovery.service'
 import { SettingsService, buildDefaultSettings } from './services/settings.service'
 import { JobRunner } from './jobs/job-runner'
 import { ExportJobStore, type ExportJobPayload, type ExportJobResult } from './jobs/export-job-store'
@@ -26,6 +27,7 @@ export interface AppContext {
   settingsRepository: SettingsRepository
   markerRepository: MarkerRepository
   projectService: ProjectService
+  recoveryService: RecoveryService
   settingsService: SettingsService
   exportJobRunner: JobRunner<ExportJobPayload, ExportJobResult>
   recordingStateMachine: RecordingStateMachine
@@ -48,6 +50,12 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
   const settingsRepository = new SettingsRepository(databaseClient.db)
 
   const projectService = new ProjectService(projectRepository, libraryRootPath)
+  const recoveryService = new RecoveryService(
+    projectRepository,
+    trackRepository,
+    segmentRepository,
+    libraryRootPath
+  )
   const settingsService = new SettingsService(
     settingsRepository,
     buildDefaultSettings(libraryRootPath)
@@ -72,6 +80,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     settingsRepository,
     markerRepository,
     projectService,
+    recoveryService,
     settingsService,
     exportJobRunner,
     recordingStateMachine,

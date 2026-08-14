@@ -64,6 +64,25 @@ async function bootstrap(): Promise<void> {
     libraryRootPath: getDefaultLibraryRootPath()
   })
 
+  // RECOV-002: roda ANTES do IPC ficar acessivel - nenhuma tela pode chegar a interagir com um
+  // projeto ainda marcado com um status de sessao "em andamento" que na verdade morreu com o
+  // processo anterior (AGENTS.md: confiabilidade e recuperacao vem antes de qualquer outra coisa).
+  try {
+    const recovered = await appContext.recoveryService.detectIncomplete()
+    if (recovered.length > 0) {
+      logger.info(`${recovered.length} gravacao(oes) incompleta(s) detectada(s) no boot`, {
+        operation: 'bootstrap.detectIncomplete'
+      })
+    }
+  } catch (error) {
+    // Nunca impede o boot - na pior hipotese, um projeto interrompido so aparece como
+    // "recuperavel" numa proxima abertura do app.
+    logger.error('Falha ao detectar gravacoes incompletas no boot', {
+      operation: 'bootstrap.detectIncomplete',
+      errorCode: error instanceof Error ? error.name : 'UNKNOWN'
+    })
+  }
+
   registerAllIpcHandlers(appContext)
   createMainWindow()
 }

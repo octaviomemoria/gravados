@@ -21,6 +21,7 @@ import type {
   AddMarkerRequest
 } from '../schemas/recording.schema'
 import type { MarkerResponse } from '../schemas/markers.schema'
+import type { RepairProjectResponse } from '../schemas/recovery.schema'
 import type { StartExportRequest, ExportJobResponse } from '../schemas/export.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
 import type { RecordingState } from './recording-state'
@@ -66,6 +67,12 @@ export interface MarkersApi {
   list: (projectId: string) => Promise<MarkerResponse[]>
 }
 
+export interface RecoveryApi {
+  /** RECOV-003 - repara um projeto `RECOVERABLE` (detectado no boot), validando cada segmento
+   * contra o arquivo real no disco. Rejeita se o projeto nao estiver `RECOVERABLE`. */
+  repair: (id: string) => Promise<RepairProjectResponse>
+}
+
 export interface ExportApi {
   start: (request: StartExportRequest) => Promise<ExportJobResponse>
   list: () => Promise<ExportJobResponse[]>
@@ -88,6 +95,7 @@ export interface MeetingStudioApi {
   settings: SettingsApi
   recording: RecordingApi
   markers: MarkersApi
+  recovery: RecoveryApi
   export: ExportApi
   system: SystemApi
   devices: DevicesApi
