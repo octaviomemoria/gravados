@@ -26,7 +26,7 @@ import type {
 } from '../schemas/recording.schema'
 import type { MarkerResponse } from '../schemas/markers.schema'
 import type { RepairProjectResponse } from '../schemas/recovery.schema'
-import type { EditProjectResponse } from '../schemas/editor.schema'
+import type { EditProjectResponse, GetTimelineResponse } from '../schemas/editor.schema'
 import type { StartExportRequest, ExportJobResponse } from '../schemas/export.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
 import type { RecordingState } from './recording-state'
@@ -93,6 +93,9 @@ export interface EditorApi {
   get: (id: string) => Promise<EditProjectResponse>
   /** Lista TODOS os projetos de edicao (de qualquer gravacao) - visao geral da tela "/editor". */
   list: () => Promise<EditProjectResponse[]>
+  /** EDIT-002 - timeline compilada (cada clip 1:1 com um segmento gravado, nenhuma operacao de
+   * edicao ainda aplicada), posicionada num eixo 0-based ancorado no inicio da sessao. */
+  getTimeline: (editProjectId: string) => Promise<GetTimelineResponse>
 }
 
 export interface ExportApi {

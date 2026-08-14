@@ -24,8 +24,10 @@ está completa: detecção e reparo de gravações interrompidas por um encerram
 ponta a ponta - ver [Recuperação de gravações incompletas](#recuperação-de-gravações-incompletas-fase-2)
 e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-excluir-fase-2). A
 **Fase 3 — Editor MVP** está em andamento: criar/abrir um projeto de edição vinculado a uma
-gravação concluída (EDIT-001) já funciona de ponta a ponta - ver
-[Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3).
+gravação concluída (EDIT-001) e a timeline compilada somente-leitura (EDIT-002) já funcionam de
+ponta a ponta - ver
+[Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3) e
+[Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -559,6 +561,42 @@ tamanho da Fase 3 (12 sub-itens no roadmap).
   navegação e o resumo da gravação vinculada, reabre pela lista geral "/editor"; segundo teste
   confirma a rejeição ao tentar editar uma gravação que nunca chegou a `COMPLETED`.
 
+### Timeline: dados e visualização somente-leitura (Fase 3)
+
+Décimo terceiro incremento - EDIT-002. Ainda sem nenhuma operação de edição (`edit_operations`,
+tabela já existente desde a Fase 0, segue sem consumidor) - cada clip nesta etapa é sempre 1:1 com
+um segmento gravado. Sem playhead/scrubber/preview de vídeo (isso é EDIT-003), sem
+arrastar/cortar/dividir (EDIT-004/005) - só a estrutura da gravação posicionada no tempo, a base
+visual sobre a qual os próximos incrementos constroem interatividade.
+
+- **Eixo 0-based ancorado em `project.startedAt`** (início da SESSÃO inteira), não no início de
+  cada segmento/trilha individualmente - mesmo raciocínio já usado por marcadores/cronômetro
+  durante a gravação (`timestampMs` relativo ao início, não tempo de parede, ver decisão #36).
+  Garante que trilhas que começaram a gravar alguns ms depois uma da outra (câmera pronta antes do
+  microfone, por exemplo) fiquem alinhadas no mesmo referencial visual, não cada uma "começando do
+  zero" na tela.
+- **Timeline compilada no `EditorService`, direto do banco (`tracks`/`segments`)** - mesmo
+  raciocínio já usado por `getProjectDetails` (LIB-002, decisão #51): o banco já é a fonte
+  confiável para essa agregação, sem precisar reler nenhum arquivo do disco.
+- **Só segmentos `finalized` entram na timeline** - um segmento não finalizado só poderia existir
+  aqui via um bug (o reparo, RECOV-003, sempre finaliza ou descarta, nunca deixa
+  `finalized: false` para trás); o filtro é uma defesa, não um caminho esperado.
+- **Trilha sem nenhum clip sobrevivente não aparece** (ex.: áudio do sistema sem suporte na
+  plataforma, RF-005) - nada para desenhar, só ruído visual.
+- **UI (`Timeline.tsx`)**: posicionamento por porcentagem (`left`/`width` relativos a
+  `totalDurationMs`), não por pixel fixo - responsivo à largura do container sem recalcular nada em
+  JS ao redimensionar a janela. Régua com marcações em intervalos "redondos" (1/2/5/10/15/30/60s
+  etc.), nunca uma casa decimal de milissegundo arbitrária.
+- Testado via 6 novos testes sintéticos em `editor.service.test.ts` (reaproveitando o mesmo
+  `RecordingSessionManager` real já usado por `recovery.service.test.ts`/`project.service.test.ts`
+  para gerar trilhas/segmentos reais): projeto de edição inexistente, timeline vazia (gravação sem
+  trilhas), um clip posicionado próximo do início, múltiplas trilhas ancoradas na mesma sessão
+  (não cada uma no seu próprio zero), segmentos rotacionados como clips separados e ordenados
+  corretamente, segmento nunca finalizado excluído (e a trilha inteira também, se nada sobrevive).
+  Ponta a ponta em novo `test.describe('editor (timeline)')` dentro de `editor.spec.ts`: grava
+  microfone + câmera, cria o projeto de edição, confirma duas faixas (uma por trilha) com um clip
+  cada.
+
 ## Estrutura de diretórios
 
 ```text
@@ -867,6 +905,19 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     (LIB-002) para mostrar um resumo da gravação vinculada** — em vez de duplicar a mesma lógica
     de agregação de trilhas/segmentos/bytes já testada e correta; o editor não precisa de uma
     visão diferente dos dados da gravação nesta etapa (sem timeline ainda).
+58. **A timeline usa `project.startedAt` (início da SESSÃO) como âncora, não o início de cada
+    segmento/trilha individualmente** — mesmo raciocínio já usado por marcadores/cronômetro
+    durante a gravação (decisão #36): trilhas que começaram a gravar alguns ms depois uma da
+    outra ficam alinhadas no mesmo referencial visual, nunca cada uma "começando do zero".
+59. **Timeline compilada direto do banco (`tracks`/`segments`), nunca reescaneando o disco** —
+    mesmo raciocínio de `getProjectDetails` (decisão #51): o banco já é a fonte confiável.
+60. **Só segmentos `finalized` entram na timeline** — um segmento não finalizado só existiria
+    aqui via bug (o reparo, RECOV-003, sempre finaliza ou descarta - nunca deixa
+    `finalized: false` para trás); o filtro é defesa, não um caminho esperado no uso normal.
+61. **Posicionamento da timeline por porcentagem (`left`/`width` relativos a `totalDurationMs`),
+    não por pixel fixo** — responsivo à largura do container sem recalcular nada em JS ao
+    redimensionar a janela; a régua usa intervalos "redondos" pré-definidos (1/2/5/10/15/30/60s
+    etc.), nunca uma casa decimal de milissegundo ilegível.
 
 ## Testes
 
@@ -900,10 +951,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   de ponta a ponta (`editor.service.test.ts`): cria com nome padrão (título da gravação) ou
   customizado, rejeita gravação inexistente e qualquer status que não seja `COMPLETED` (via
   `it.each`), permite múltiplos projetos de edição independentes para a mesma gravação, busca por
-  id/rejeita id inexistente, lista vazia ou com múltiplas gravações**, wrapper de IPC (validação/
-  erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de domínio, migrations
-  (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço de configurações,
-  store de tema, smoke test de componente (jsdom). **161 testes, 25 arquivos.**
+  id/rejeita id inexistente, lista vazia ou com múltiplas gravações, **timeline: projeto de edição
+  inexistente, timeline vazia, um clip próximo do início, múltiplas trilhas ancoradas na mesma
+  sessão (não cada uma no seu próprio zero), segmentos rotacionados como clips separados e
+  ordenados, segmento nunca finalizado excluído (e a trilha inteira junto, se nada sobrevive)**,
+  wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de
+  domínio, migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço
+  de configurações, store de tema, smoke test de componente (jsdom). **167 testes, 25 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -940,8 +994,12 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   uma sessão real curta, cria o projeto de edição pelo botão "Editar" na Biblioteca, confirma a
   navegação e o resumo da gravação vinculada na página de detalhe, reabre pela lista geral
   "/editor"; segundo teste confirma a rejeição ao tentar criar um projeto de edição para uma
-  gravação que nunca chegou a `COMPLETED`. **2 testes**, validados limpos e rápidos (8.9-12.3s) em
-  múltiplas execuções isoladas consecutivas.
+  gravação que nunca chegou a `COMPLETED`; terceiro teste (`test.describe('editor (timeline)')`,
+  EDIT-002) grava microfone + câmera, cria o projeto de edição, confirma duas faixas (uma por
+  trilha) com um clip cada. **3 testes**, validados estáveis em múltiplas execuções isoladas
+  consecutivas - a flakiness observada uma vez no terceiro teste (`getByLabel('Camera')` sem
+  aparecer a tempo) é a mesma classe já documentada para a trilha de câmera (decisão #23),
+  recuperada limpo no retry.
 
 ## Pendências conhecidas
 
@@ -1015,13 +1073,20 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - `getProjectDetails` não expõe a lista de segmentos individualmente (só o resumo por trilha:
   contagem + bytes totais) - suficiente para o MVP, mas insuficiente para uma futura timeline de
   edição, que precisará dos segmentos um a um.
-- Projeto de edição ainda não tem timeline (playhead, corte, split, undo/redo, layout, preview -
-  EDIT-002 em diante), renomear, nem excluir - só criar (a partir de uma gravação `COMPLETED`),
-  listar e ver um resumo somente-leitura da gravação vinculada. `edit_operations` (tabela já
-  existente desde a Fase 0) segue sem nenhum canal IPC/uso - chega junto com a timeline.
+- Projeto de edição ainda não tem renomear nem excluir (só a Biblioteca tem essas ações, para
+  gravações - não para projetos de edição). A timeline (EDIT-002) é só leitura: sem playhead,
+  preview de vídeo, corte/split, undo/redo, gain/fade, transformação de câmera nem layout ainda
+  (EDIT-003 em diante). `edit_operations` (tabela já existente desde a Fase 0) segue sem nenhum
+  canal IPC/uso - chega junto com a primeira operação de edição real.
 - `EditorProjectPage` não trata um `id` de projeto de edição inexistente/inválido na URL de forma
   amigável (`editor.get` lança `NotFoundError`, capturado só como um estado de erro genérico) -
   refinamento futuro, não bloqueante.
+- A timeline não tem zoom nem scroll horizontal - para uma gravação muito longa, os clips ficam
+  proporcionalmente pequenos na régua inteira (`totalDurationMs`); zoom é um requisito explícito
+  do editor (`05_MEDIA_EDITOR.md` §14) que ainda não foi implementado.
+- Sem indicação visual de gaps entre clips na mesma trilha (ex.: um pause/resume real deixaria
+  dois segmentos consecutivos sem intervalo, mas uma trilha que só rotacionou por tamanho/tempo
+  também não tem gap perceptível hoje) - refinamento futuro, não bloqueante para esta etapa.
 
 ## Próximo passo
 
@@ -1031,16 +1096,18 @@ marcadores (RF-016) e monitor de espaço em disco (RF-042) estão implementados 
 ponta. A **Fase 2 — Recovery + Library** também está completa: RECOV-001/002/003 (manifest,
 detecção e reparo de gravações incompletas) e LIB-001/002/004/005/006 (listar, detalhes, renomear,
 mostrar na pasta, excluir) funcionam de ponta a ponta. A **Fase 3 — Editor MVP** está em andamento:
-EDIT-001 (criar/abrir projeto de edição) já funciona de ponta a ponta.
+EDIT-001 (criar/abrir projeto de edição) e EDIT-002 (timeline compilada somente-leitura) já
+funcionam de ponta a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 3 — Editor MVP** (EDIT-002..012): timeline (dados + UI: playhead, zoom,
-   seleção), preview, corte/split, remover intervalo, undo/redo, ganho/mudo, fade, visibilidade/
-   transformação de câmera, layout (PiP/lado-a-lado/só-tela/só-câmera), autosave - cada operação
-   provavelmente seu próprio incremento, dado o tamanho desta fase (05_MEDIA_EDITOR.md).
+1. Continuar a **Fase 3 — Editor MVP**: preview de vídeo com playhead/scrubber (EDIT-003),
+   corte/split/remover intervalo (EDIT-004/005/006), undo/redo (EDIT-007), ganho/mudo/fade
+   (EDIT-008/009), visibilidade/transformação de câmera (EDIT-010), layout (PiP/lado-a-lado/
+   só-tela/só-câmera, EDIT-011), autosave (EDIT-012) - cada operação provavelmente seu próprio
+   incremento, dado o tamanho desta fase (05_MEDIA_EDITOR.md).
 2. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
    ainda não instalados - `main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`,
    nenhum binário real, `export.start` sempre lança `NotImplementedError`), MP4 720p/1080p, faixa

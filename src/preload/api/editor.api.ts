@@ -5,7 +5,9 @@ import {
   GetEditProjectRequestSchema,
   GetEditProjectResponseSchema,
   ListEditProjectsRequestSchema,
-  ListEditProjectsResponseSchema
+  ListEditProjectsResponseSchema,
+  GetTimelineRequestSchema,
+  GetTimelineResponseSchema
 } from '../../shared/schemas/editor.schema'
 import type { EditorApi } from '../../shared/types/preload-api'
 import { invokeChannel } from '../invoke'
@@ -29,6 +31,12 @@ export function createEditorApi(): EditorApi {
         IPC_CHANNELS.editor.list,
         { request: ListEditProjectsRequestSchema, response: ListEditProjectsResponseSchema },
         undefined
+      ),
+    getTimeline: (editProjectId: string) =>
+      invokeChannel(
+        IPC_CHANNELS.editor.getTimeline,
+        { request: GetTimelineRequestSchema, response: GetTimelineResponseSchema },
+        { editProjectId }
       )
   }
 }

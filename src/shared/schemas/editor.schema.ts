@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { TRACK_TYPES } from '../types/entities'
 import { IdSchema, IsoDateTimeSchema, EmptyRequestSchema } from './common.schema'
 
 /**
@@ -37,3 +38,39 @@ export const GetEditProjectResponseSchema = EditProjectResponseSchema
  * equivalente a Biblioteca para gravacoes. */
 export const ListEditProjectsRequestSchema = EmptyRequestSchema
 export const ListEditProjectsResponseSchema = z.array(EditProjectResponseSchema)
+
+/**
+ * EDIT-002 (decimo terceiro incremento - Fase 3, timeline). Um "clip" nesta etapa e sempre 1:1
+ * com um segmento gravado (nenhuma operacao de edicao - trim/split/remove - ainda existe, ver
+ * `edit_operations`, tabela ja existente mas sem consumidor ate um incremento futuro). `startMs`/
+ * `endMs` sao relativos ao INICIO DA SESSAO DE GRAVACAO (`project.startedAt`), nao ao inicio do
+ * segmento em si - a mesma posicao 0-based usada pelo cronometro/marcadores durante a gravacao
+ * (ver `RecordingControls`/decisao sobre `timestampMs` de marcadores), reaproveitada aqui como o
+ * eixo de tempo canonico da timeline de edicao.
+ */
+export const TimelineClipSchema = z.object({
+  segmentId: IdSchema,
+  seqIndex: z.number().int().positive(),
+  relativePath: z.string(),
+  startMs: z.number().int().nonnegative(),
+  endMs: z.number().int().nonnegative(),
+  byteSize: z.number().int().nonnegative()
+})
+export type TimelineClip = z.infer<typeof TimelineClipSchema>
+
+export const TimelineTrackSchema = z.object({
+  id: IdSchema,
+  type: z.enum(TRACK_TYPES),
+  clips: z.array(TimelineClipSchema)
+})
+export type TimelineTrack = z.infer<typeof TimelineTrackSchema>
+
+export const GetTimelineRequestSchema = z.object({ editProjectId: IdSchema })
+export type GetTimelineRequest = z.infer<typeof GetTimelineRequestSchema>
+export const GetTimelineResponseSchema = z.object({
+  editProjectId: IdSchema,
+  projectId: IdSchema,
+  totalDurationMs: z.number().int().nonnegative(),
+  tracks: z.array(TimelineTrackSchema)
+})
+export type GetTimelineResponse = z.infer<typeof GetTimelineResponseSchema>

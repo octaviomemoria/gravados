@@ -66,7 +66,12 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     segmentRepository,
     libraryRootPath
   )
-  const editorService = new EditorService(editProjectRepository, projectRepository)
+  const editorService = new EditorService(
+    editProjectRepository,
+    projectRepository,
+    trackRepository,
+    segmentRepository
+  )
   const settingsService = new SettingsService(
     settingsRepository,
     buildDefaultSettings(libraryRootPath)

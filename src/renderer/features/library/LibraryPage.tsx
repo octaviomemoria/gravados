@@ -4,8 +4,8 @@ import { EmptyState } from '../../components/EmptyState'
 import { Button } from '../../components/Button'
 import { formatFileSize } from './format-file-size'
 import { formatElapsed } from '../recording/format-elapsed'
+import { TRACK_TYPE_LABELS } from './track-type-labels'
 import type { ProjectResponse, ProjectDetailsResponse } from '@shared/schemas/project.schema'
-import type { TrackType } from '@shared/types/entities'
 
 /**
  * RECOV-002/RECOV-003 (decimo incremento - Fase 2, recuperacao). Um projeto chega com
@@ -22,13 +22,6 @@ function isRecoverable(status: ProjectResponse['status']): boolean {
  * editar uma gravacao ainda em andamento ou incompleta corromperia arquivos ainda em uso. */
 function isCompleted(status: ProjectResponse['status']): boolean {
   return status === 'COMPLETED'
-}
-
-const TRACK_TYPE_LABELS: Record<TrackType, string> = {
-  SCREEN: 'Tela',
-  CAMERA: 'Câmera',
-  MICROPHONE: 'Microfone',
-  SYSTEM_AUDIO: 'Áudio do sistema'
 }
 
 /** RF-017: lista de reunioes. Consulta real via IPC (`library.list`, alias de `project.list`). */

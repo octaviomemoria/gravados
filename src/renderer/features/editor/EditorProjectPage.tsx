@@ -3,21 +3,23 @@ import { useParams } from 'react-router-dom'
 import { EmptyState } from '../../components/EmptyState'
 import { formatFileSize } from '../library/format-file-size'
 import { formatElapsed } from '../recording/format-elapsed'
-import type { EditProjectResponse } from '@shared/schemas/editor.schema'
+import { Timeline } from './Timeline'
+import type { EditProjectResponse, GetTimelineResponse } from '@shared/schemas/editor.schema'
 import type { ProjectDetailsResponse } from '@shared/schemas/project.schema'
 
 /**
- * EDIT-001 (decimo segundo incremento - Fase 3, Editor MVP). Pagina de detalhe de UM projeto de
- * edicao (`/editor/:id`) - por enquanto so metadados + um resumo somente-leitura da gravacao
- * vinculada (reaproveitando `library.getDetails`, ja existente desde LIB-002). A timeline em si
- * (EDIT-002+: playhead, corte, split, undo/redo, layout, preview) e um incremento futuro
- * deliberadamente separado - este e so o "abrir/criar projeto de edicao", a base sobre a qual a
- * timeline sera construida.
+ * EDIT-001/EDIT-002 (decimo segundo/decimo terceiro incrementos - Fase 3, Editor MVP). Pagina de
+ * detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura da
+ * gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a timeline compilada
+ * (`Timeline.tsx`, EDIT-002). Ainda sem playhead/preview de video (EDIT-003) nem
+ * corte/split/undo-redo/layout (EDIT-004 em diante) - incrementos futuros deliberadamente
+ * separados dado o tamanho da Fase 3.
  */
 export function EditorProjectPage() {
   const { id } = useParams<{ id: string }>()
   const [editProject, setEditProject] = useState<EditProjectResponse | null>(null)
   const [recording, setRecording] = useState<ProjectDetailsResponse | null>(null)
+  const [timeline, setTimeline] = useState<GetTimelineResponse | null>(null)
   const [error, setError] = useState(false)
 
   useEffect(() => {
@@ -28,10 +30,16 @@ export function EditorProjectPage() {
       .then((result) => {
         if (cancelled) return
         setEditProject(result)
-        return window.meetingStudio.library.getDetails(result.projectId)
+        return Promise.all([
+          window.meetingStudio.library.getDetails(result.projectId),
+          window.meetingStudio.editor.getTimeline(result.id)
+        ])
       })
-      .then((details) => {
-        if (!cancelled && details) setRecording(details)
+      .then((results) => {
+        if (cancelled || !results) return
+        const [details, timelineResult] = results
+        setRecording(details)
+        setTimeline(timelineResult)
       })
       .catch(() => {
         if (!cancelled) setError(true)
@@ -74,7 +82,13 @@ export function EditorProjectPage() {
           {formatFileSize(recording.totalBytes)}
         </p>
       )}
-      <EmptyState message="A timeline de edicao (cortar, dividir, desfazer/refazer, layout) chega nos proximos incrementos da Fase 3." />
+      <h2>Timeline</h2>
+      {timeline ? (
+        <Timeline timeline={timeline} />
+      ) : (
+        <p>Carregando timeline...</p>
+      )}
+      <EmptyState message="Cortar, dividir, desfazer/refazer e layout chegam nos proximos incrementos da Fase 3." />
     </div>
   )
 }

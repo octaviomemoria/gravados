@@ -36,7 +36,8 @@ export const IPC_CHANNELS = {
   editor: {
     create: 'editor.create',
     get: 'editor.get',
-    list: 'editor.list'
+    list: 'editor.list',
+    getTimeline: 'editor.getTimeline'
   },
   export: {
     start: 'export.start',

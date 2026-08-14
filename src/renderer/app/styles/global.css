@@ -475,3 +475,63 @@ body {
     opacity: 0.35;
   }
 }
+
+/* EDIT-002 - timeline somente-leitura (Fase 3, Editor MVP). */
+.timeline {
+  margin-top: var(--ms-space-2);
+  padding: var(--ms-space-3);
+  background: var(--ms-color-surface);
+  border: 1px solid var(--ms-color-border);
+  border-radius: var(--ms-radius-md);
+}
+
+.timeline__empty {
+  color: var(--ms-color-text-muted);
+}
+
+.timeline__ruler {
+  position: relative;
+  height: 20px;
+  margin-bottom: var(--ms-space-2);
+  border-bottom: 1px solid var(--ms-color-border);
+}
+
+.timeline__ruler-mark {
+  position: absolute;
+  top: 0;
+  font-size: 0.75rem;
+  color: var(--ms-color-text-muted);
+  transform: translateX(-2px);
+  white-space: nowrap;
+}
+
+.timeline__track {
+  display: flex;
+  align-items: center;
+  gap: var(--ms-space-3);
+  margin-bottom: var(--ms-space-2);
+}
+
+.timeline__track-label {
+  flex: 0 0 110px;
+  font-size: 0.85rem;
+  color: var(--ms-color-text-muted);
+}
+
+.timeline__track-lane {
+  position: relative;
+  flex: 1 1 auto;
+  height: 28px;
+  background: var(--ms-color-bg);
+  border-radius: var(--ms-radius-sm);
+  overflow: hidden;
+}
+
+.timeline__clip {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  background: var(--ms-color-primary);
+  border-radius: var(--ms-radius-sm);
+  min-width: 2px;
+}

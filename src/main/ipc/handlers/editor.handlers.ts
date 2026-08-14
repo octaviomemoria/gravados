@@ -5,7 +5,9 @@ import {
   GetEditProjectRequestSchema,
   GetEditProjectResponseSchema,
   ListEditProjectsRequestSchema,
-  ListEditProjectsResponseSchema
+  ListEditProjectsResponseSchema,
+  GetTimelineRequestSchema,
+  GetTimelineResponseSchema
 } from '../../../shared/schemas/editor.schema'
 import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
@@ -29,5 +31,11 @@ export function registerEditorHandlers(context: AppContext): void {
     IPC_CHANNELS.editor.list,
     { request: ListEditProjectsRequestSchema, response: ListEditProjectsResponseSchema },
     async () => context.editorService.listEditProjects()
+  )
+
+  registerHandler(
+    IPC_CHANNELS.editor.getTimeline,
+    { request: GetTimelineRequestSchema, response: GetTimelineResponseSchema },
+    async (request) => context.editorService.getTimeline(request.editProjectId)
   )
 }
