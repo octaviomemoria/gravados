@@ -118,6 +118,15 @@ export interface EditorApi {
   /** EDIT-007 - refaz a proxima operacao pendente (move o cursor pra frente). Rejeita se nao
    * houver nada pra refazer (nenhuma operacao criada depois do undo que a invalidaria). */
   redo: (editProjectId: string) => Promise<GetEditedTimelineResponse>
+  /** EDIT-008 - ajusta ganho ([-60, 0] dB) e/ou mudo de uma trilha. Substitui o estado inteiro da
+   * trilha (nao acumula com ajustes anteriores) - poda qualquer "refazer" pendente, igual
+   * `removeRange`. Rejeita se `trackId` nao existir na timeline editada atual. */
+  setTrackGain: (
+    editProjectId: string,
+    trackId: string,
+    gainDb: number,
+    muted: boolean
+  ) => Promise<GetEditedTimelineResponse>
 }
 
 export interface ExportApi {

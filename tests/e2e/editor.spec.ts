@@ -704,3 +704,130 @@ test.describe('editor (undo/redo)', () => {
     await expect(redoButton).toBeDisabled({ timeout: POLL_TIMEOUT_MS })
   })
 })
+
+/**
+ * EDIT-008 (decimo nono incremento - Fase 3, ganho/mudo). Grava microfone + camera (duas trilhas
+ * independentes) para confirmar que mutar/ajustar o ganho de UMA trilha nao afeta a outra -
+ * verificado via chamada direta a `editor.getEditedTimeline` (mesmo padrao ja estabelecido pelos
+ * testes de corte/undo/redo), nao por inspecao de audio real.
+ */
+test.describe('editor (gain/mute)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await electronApp.close()
+  })
+
+  test('mutes and adjusts gain per track independently, via the mute button and the gain slider', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - gain ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+    const cameraSelect = appWindow.getByLabel('Camera', { exact: true })
+    await expect(cameraSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cameraSelect.selectOption({ index: 1 })
+    await expect(appWindow.locator('video.camera-preview')).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    const cameraPath = join(rootPath, 'source', 'camera', 'camera_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath) && fileHasBytes(cameraPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando os primeiros chunks de audio e video serem persistidos em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(appWindow.locator('.timeline__track')).toHaveCount(2, { timeout: POLL_TIMEOUT_MS })
+
+    const editProjectId = await appWindow.evaluate(async () => {
+      const list = await window.meetingStudio.editor.list()
+      return list[0]!.id
+    })
+    const original = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(original.tracks.every((track) => track.gainDb === 0 && !track.muted)).toBe(true)
+
+    // --- Muta a trilha de MICROFONE (primeiro rotulo na coluna de trilhas) via o botao de mudo.
+    const micTrackRow = appWindow.locator('.timeline__track').filter({ hasText: 'Microfone' })
+    await micTrackRow.getByRole('button', { name: 'Silenciar trilha' }).click()
+
+    const afterMute = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    const micTrackAfterMute = afterMute.tracks.find((track) => track.type === 'MICROPHONE')!
+    const cameraTrackAfterMute = afterMute.tracks.find((track) => track.type === 'CAMERA')!
+    expect(micTrackAfterMute.muted).toBe(true)
+    expect(cameraTrackAfterMute.muted).toBe(false)
+    await expect(micTrackRow.getByRole('button', { name: 'Reativar som' })).toBeVisible()
+
+    // --- Ajusta o ganho da trilha de CAMERA via o slider (bypassa o rastreador de valor do React
+    // usando o setter nativo, mesma tecnica padrao para simular um `<input>` controlado mudando de
+    // valor por script em vez de arrasto real de mouse).
+    const cameraTrackRow = appWindow.locator('.timeline__track').filter({ hasText: 'Câmera' })
+    const cameraSlider = cameraTrackRow.locator('input[type="range"]')
+    await cameraSlider.evaluate((el: HTMLInputElement) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!
+      setter.call(el, '-24')
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    const afterGain = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    const cameraTrackAfterGain = afterGain.tracks.find((track) => track.type === 'CAMERA')!
+    const micTrackAfterGain = afterGain.tracks.find((track) => track.type === 'MICROPHONE')!
+    expect(cameraTrackAfterGain.gainDb).toBe(-24)
+    expect(cameraTrackAfterGain.muted).toBe(false)
+    // Mudo do microfone continua intacto - ajustar o ganho de OUTRA trilha nao interfere.
+    expect(micTrackAfterGain.muted).toBe(true)
+    expect(micTrackAfterGain.gainDb).toBe(0)
+
+    // --- Desfazer (Ctrl+Z) reverte so a ULTIMA operacao do log (o ajuste de ganho da camera) -
+    // o mudo do microfone, uma operacao anterior no log, continua ativo.
+    await appWindow.keyboard.down('Control')
+    await appWindow.keyboard.press('z')
+    await appWindow.keyboard.up('Control')
+    const afterUndo = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    const cameraTrackAfterUndo = afterUndo.tracks.find((track) => track.type === 'CAMERA')!
+    const micTrackAfterUndo = afterUndo.tracks.find((track) => track.type === 'MICROPHONE')!
+    expect(cameraTrackAfterUndo.gainDb).toBe(0)
+    expect(micTrackAfterUndo.muted).toBe(true)
+  })
+})

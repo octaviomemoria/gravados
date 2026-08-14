@@ -75,7 +75,20 @@ export type TimelineClip = z.infer<typeof TimelineClipSchema>
 export const TimelineTrackSchema = z.object({
   id: IdSchema,
   type: z.enum(TRACK_TYPES),
-  clips: z.array(TimelineClipSchema)
+  clips: z.array(TimelineClipSchema),
+  /**
+   * EDIT-008 (decimo nono incremento - Fase 3, ganho/mudo). `gainDb: 0` e `muted: false` na
+   * timeline BRUTA (`getTimeline`) e sempre que uma trilha nao tem nenhum `SET_GAIN` ativo no log.
+   * Faixa limitada a [-60, 0] deliberadamente: os elementos nativos `<video>`/`<audio>` usados
+   * pelo player (`useMultiTrackPlayback`) so suportam `volume` linear 0..1 (sem amplificacao
+   * alem do volume original gravado) - permitir um `gainDb` positivo exigiria trocar para a Web
+   * Audio API (`GainNode`), fora do escopo deste incremento (ver "Pendencias conhecidas" no
+   * README). `muted` e independente de `gainDb` de proposito: alternar mudo nao deve apagar o
+   * ganho ja ajustado pelo usuario - a mesma semantica nativa de `HTMLMediaElement.muted`/
+   * `.volume` (duas propriedades independentes).
+   */
+  gainDb: z.number().min(-60).max(0),
+  muted: z.boolean()
 })
 export type TimelineTrack = z.infer<typeof TimelineTrackSchema>
 
@@ -93,10 +106,10 @@ export type GetTimelineResponse = z.infer<typeof GetTimelineResponseSchema>
  * EDIT-004/005/006 (decimo setimo incremento - Fase 3, primeira operacao de edicao real). A
  * timeline EDITADA - a bruta (`getTimeline`) com o LOG ordenado de `edit_operations` ja aplicado
  * por cima, ate o cursor ativo (`edit_projects.activeOperationSequence` - EDIT-007, undo/redo).
- * Tipos de operacao futuros (gain/fade/camera transform, EDIT-008 em diante) sao ignorados pelo
- * compilador sem quebrar, ate ganharem seu proprio incremento. `canUndo`/`canRedo` poupam a UI de
- * replicar a logica de "existe operacao ativa pra desfazer" / "existe operacao alem do cursor pra
- * refazer" sozinha.
+ * `SET_GAIN` (EDIT-008) tambem e aplicado aqui. Tipos de operacao futuros (fade/camera transform,
+ * EDIT-009 em diante) sao ignorados pelo compilador sem quebrar, ate ganharem seu proprio
+ * incremento. `canUndo`/`canRedo` poupam a UI de replicar a logica de "existe operacao ativa pra
+ * desfazer" / "existe operacao alem do cursor pra refazer" sozinha.
  */
 export const GetEditedTimelineRequestSchema = GetTimelineRequestSchema
 export type GetEditedTimelineRequest = GetTimelineRequest
@@ -147,3 +160,23 @@ export const RedoRequestSchema = z.object({ editProjectId: IdSchema })
 export type RedoRequest = z.infer<typeof RedoRequestSchema>
 export const RedoResponseSchema = GetEditedTimelineResponseSchema
 export type RedoResponse = GetEditedTimelineResponse
+
+/**
+ * EDIT-008 (decimo nono incremento - Fase 3, ganho/mudo, `05_MEDIA_EDITOR.md` §4). Mesmo
+ * primitivo de operacao do log (`edit_operations`, coluna `trackId`/`payloadJson` ja existiam
+ * desde a Fase 0 especificamente para isto - ver comentario em `edit-operations.schema.ts`) que
+ * `REMOVE_RANGE` usa, so que um `SET_GAIN` NAO acumula com os anteriores da mesma trilha - o mais
+ * recente ATIVO (`sequence <= activeOperationSequence`) simplesmente substitui o estado inteiro
+ * (`gainDb`+`muted`) daquela trilha, ao contrario de `REMOVE_RANGE`, onde cada operacao se compoe
+ * sobre o resultado da anterior. Ganha undo/redo/poda-de-ramo-abandonado de graca, por reusar o
+ * mesmo log com cursor de EDIT-007 - nenhuma tabela/coluna nova.
+ */
+export const SetTrackGainRequestSchema = z.object({
+  editProjectId: IdSchema,
+  trackId: IdSchema,
+  gainDb: z.number().min(-60).max(0),
+  muted: z.boolean()
+})
+export type SetTrackGainRequest = z.infer<typeof SetTrackGainRequestSchema>
+export const SetTrackGainResponseSchema = GetEditedTimelineResponseSchema
+export type SetTrackGainResponse = GetEditedTimelineResponse

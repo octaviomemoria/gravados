@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { buildMeetingMediaUrl } from '@shared/constants/media-protocol'
-import { findClipAtTime, clipLocalTimeSeconds, isDrifting } from './timeline-playback'
+import { findClipAtTime, clipLocalTimeSeconds, isDrifting, dbToLinearVolume } from './timeline-playback'
 import type { GetTimelineResponse, TimelineTrack } from '@shared/schemas/editor.schema'
 
 /**
@@ -183,6 +183,21 @@ export function useMultiTrackPlayback(timeline: GetTimelineResponse | null): Mul
     applyTimeToAllTracks(0, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeline?.editProjectId])
+
+  // EDIT-008 - aplica ganho/mudo de cada trilha no elemento correspondente sempre que a timeline
+  // mudar (montagem inicial - `getTrackRef` ja populou `elementsRef` antes deste efeito rodar, no
+  // mesmo commit - ou apos um `setTrackGain`/`undo`/`redo` recalcular a timeline editada). Efeito
+  // separado de `applyTimeToAllTracks` de proposito: ganho/mudo nao dependem da posicao do
+  // playhead, so do estado atual de CADA trilha.
+  useEffect(() => {
+    if (!timeline) return
+    for (const track of timeline.tracks) {
+      const el = elementsRef.current.get(track.id)
+      if (!el) continue
+      el.muted = track.muted
+      el.volume = dbToLinearVolume(track.gainDb)
+    }
+  }, [timeline])
 
   useEffect(() => {
     return () => {

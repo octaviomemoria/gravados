@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { EmptyState } from '../../components/EmptyState'
 import { formatFileSize } from '../library/format-file-size'
@@ -13,13 +13,14 @@ import type {
 import type { ProjectDetailsResponse } from '@shared/schemas/project.schema'
 
 /**
- * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007 (Fase 3, Editor MVP). Pagina de detalhe de
- * UM projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura da gravacao vinculada
- * (reaproveitando `library.getDetails`, LIB-002) + a timeline EDITADA (`Timeline.tsx`, EDIT-002/
- * EDIT-004-005-006) + o player multi-trilha sincronizado (`useMultiTrackPlayback`, EDIT-003 parte
- * 2) + corte/split/remover-intervalo (EDIT-004/005/006 - todos o mesmo primitivo `REMOVE_RANGE`,
- * ver `RemoveRangeRequestSchema`) + desfazer/refazer (EDIT-007). Sem gain/mudo/fade/layout ainda
- * (EDIT-008 em diante).
+ * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007/EDIT-008 (Fase 3, Editor MVP). Pagina de
+ * detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura da
+ * gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a timeline EDITADA
+ * (`Timeline.tsx`, EDIT-002/EDIT-004-005-006/EDIT-008) + o player multi-trilha sincronizado
+ * (`useMultiTrackPlayback`, EDIT-003 parte 2) + corte/split/remover-intervalo (EDIT-004/005/006 -
+ * todos o mesmo primitivo `REMOVE_RANGE`, ver `RemoveRangeRequestSchema`) + desfazer/refazer
+ * (EDIT-007) + ganho/mudo por trilha (EDIT-008). Sem fade/camera transform/layout ainda (EDIT-009
+ * em diante).
  */
 export function EditorProjectPage() {
   const { id } = useParams<{ id: string }>()
@@ -200,6 +201,37 @@ function EditorProjectView({
     }
   }, [editProject.id, timeline?.canRedo, applyTimelineMutation])
 
+  // EDIT-008 - NAO usa `applyTimelineMutation`: ajustar ganho/mudo nao invalida a posicao do
+  // playhead nem a selecao em andamento (ao contrario de corte/desfazer/refazer, que podem
+  // encurtar/reestruturar a timeline) - resetar o preview pro inicio a cada arrasto do slider
+  // seria uma experiencia ruim. Tambem nao usa `busy` (desabilitaria a toolbar inteira a cada
+  // evento de um `<input type="range">`, que dispara muitos eventos rapidos durante o arrasto).
+  // Guard de sequencia (`gainRequestSeqRef`) descarta uma resposta desatualizada se o usuario
+  // arrastar o slider mais rapido que o round-trip IPC - sem isso, uma resposta antiga chegando
+  // DEPOIS de uma mais nova poderia sobrescrever o valor certo com um mais velho.
+  const gainRequestSeqRef = useRef(0)
+  const setTrackGain = useCallback(
+    async (trackId: string, gainDb: number, muted: boolean) => {
+      setActionError(null)
+      const requestSeq = ++gainRequestSeqRef.current
+      try {
+        const updated = await window.meetingStudio.editor.setTrackGain(
+          editProject.id,
+          trackId,
+          gainDb,
+          muted
+        )
+        if (requestSeq !== gainRequestSeqRef.current) return
+        setTimeline(updated)
+      } catch {
+        if (requestSeq === gainRequestSeqRef.current) {
+          setActionError('Nao foi possivel ajustar o ganho da trilha.')
+        }
+      }
+    },
+    [editProject.id]
+  )
+
   // `05_MEDIA_EDITOR.md` §15 - Ctrl+Z desfaz, Ctrl+Shift+Z refaz; atalhos nunca disparam com o
   // foco num campo de texto (aqui so o nome do projeto seria editavel num incremento futuro, mas
   // o guard ja fica pronto pra quando existir).
@@ -352,11 +384,12 @@ function EditorProjectView({
           currentTimeMs={playback.playheadMs}
           onSeek={playback.seek}
           selection={selection}
+          onSetTrackGain={(trackId, gainDb, muted) => void setTrackGain(trackId, gainDb, muted)}
         />
       ) : (
         <p>Carregando timeline...</p>
       )}
-      <EmptyState message="Ganho/mudo/fade, transformacao de camera e layout chegam nos proximos incrementos da Fase 3." />
+      <EmptyState message="Fade, transformacao de camera e layout chegam nos proximos incrementos da Fase 3." />
     </div>
   )
 }

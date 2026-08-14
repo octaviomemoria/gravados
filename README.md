@@ -26,14 +26,15 @@ e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-exclui
 **Fase 3 — Editor MVP** está em andamento: criar/abrir um projeto de edição vinculado a uma
 gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002), o preview
 completo com playhead sincronizado e reprodução multi-trilha (EDIT-003, partes 1 e 2), corte/
-split/remover-intervalo (EDIT-004/005/006) e desfazer/refazer (EDIT-007) já funcionam de ponta a
-ponta - ver
+split/remover-intervalo (EDIT-004/005/006), desfazer/refazer (EDIT-007) e ganho/mudo por trilha
+(EDIT-008) já funcionam de ponta a ponta - ver
 [Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3),
 [Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3),
 [Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3),
 [Playhead sincronizado e reprodução multi-trilha](#playhead-sincronizado-e-reprodução-multi-trilha-fase-3),
-[Corte, split e remover intervalo](#corte-split-e-remover-intervalo-fase-3)
-e [Desfazer e refazer](#desfazer-e-refazer-fase-3).
+[Corte, split e remover intervalo](#corte-split-e-remover-intervalo-fase-3),
+[Desfazer e refazer](#desfazer-e-refazer-fase-3) e
+[Ganho e mudo por trilha](#ganho-e-mudo-por-trilha-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -791,6 +792,50 @@ virarem possíveis sem reescrever nada do que já existia.
   atalho Ctrl+Z e corta um trecho DIFERENTE, confirmando que "Refazer" fica desabilitado (o ramo
   antigo foi podado).
 
+### Ganho e mudo por trilha (Fase 3)
+
+Décimo nono incremento - EDIT-008. `edit_operations.trackId`/`payloadJson` (colunas ja existentes
+desde a Fase 0, comentadas especificamente para isto) reusados sem NENHUMA mudanca de schema/
+migration - a mesma infraestrutura de log+cursor do undo/redo (EDIT-007) ganha um segundo tipo de
+operacao, herdando desfazer/refazer/poda-de-ramo-abandonado de graca.
+
+- **`SET_GAIN` NAO acumula com o anterior da mesma trilha, ao contrario de `REMOVE_RANGE`** - o
+  mais recente ATIVO simplesmente SUBSTITUI o `gainDb`+`muted` inteiro daquela trilha
+  (`EditorService.getEditedTimeline`, segunda passagem de fold apos aplicar os `REMOVE_RANGE`).
+  Semantica diferente de proposito: ajustar o volume e um estado atual, nao uma transformacao
+  cumulativa sobre a timeline.
+- **`gainDb` limitado a [-60, 0]** - so atenuacao/mudo, sem amplificacao acima do volume original.
+  Os elementos `<video>`/`<audio>` nativos usados pelo player (`useMultiTrackPlayback`) so
+  suportam `volume` linear 0..1; permitir `gainDb > 0` exigiria trocar para a Web Audio API
+  (`GainNode`), fora do escopo deste incremento (ver "Pendências conhecidas").
+- **`muted` e `gainDb` sao campos independentes**, igual a semantica nativa de
+  `HTMLMediaElement.muted`/`.volume` - alternar mudo preserva o ganho ja ajustado (nao precisa de
+  logica extra pra "lembrar" o volume anterior ao desmutar).
+- Conversao dB→volume linear (`10^(dB/20)`) extraida como funcao pura
+  (`dbToLinearVolume`, `timeline-playback.ts`) e testada isoladamente; aplicada num `useEffect`
+  dedicado em `useMultiTrackPlayback` (separado do relogio mestre de reproducao - ganho/mudo nao
+  dependem da posicao do playhead).
+- **UI**: botao de mudo (`Som`/`Mudo`, `aria-pressed`) + slider de ganho (`-60`..`0`, step 1) na
+  coluna de rotulo de cada trilha na timeline (`Timeline.tsx`, prop opcional `onSetTrackGain` -
+  omitida = so o rotulo, sem controles, mantendo o componente reutilizavel). O handler no
+  componente pai (`EditorProjectPage`) deliberadamente NAO reseta o playhead/selecao (ao contrario
+  de corte/undo/redo) e NAO usa o estado `busy` global (um `<input type="range">` dispara muitos
+  eventos durante o arrasto) - so um guard de sequencia (`gainRequestSeqRef`) descarta uma
+  resposta IPC desatualizada se o usuario arrastar mais rapido que o round-trip.
+- Testado via 9 novos testes de integracao do `EditorService.setTrackGain`
+  (`tests/unit/main/editor.service.test.ts`: aplica a trilha certa sem afetar as outras, um
+  segundo `SET_GAIN` na mesma trilha SUBSTITUI em vez de acumular, rejeita trackId inexistente na
+  timeline atual, revision incrementa, undo/redo funcionam sobre esta operacao igual a qualquer
+  outra do log, uma operacao nova apos um undo poda o ramo abandonado, um `SET_GAIN` mirando uma
+  trilha depois totalmente removida por `REMOVE_RANGE` nao quebra nada) + 5 testes de
+  `dbToLinearVolume` (0dB=1, -60dB≈0.001, -6dB≈meia amplitude, clamps defensivos fora da faixa) e
+  um novo teste E2E (`test.describe('editor (gain/mute)')`): grava microfone+camera, muta a
+  trilha de microfone pelo botao, ajusta o ganho da camera pelo slider (setter nativo bypassando o
+  rastreador de valor do React, mesma tecnica padrao pra simular um input controlado mudando por
+  script), confirma via `editor.getEditedTimeline` que as duas trilhas sao ajustadas de forma
+  independente, e que Ctrl+Z desfaz so a ULTIMA operacao do log (o ganho da camera), preservando o
+  mudo do microfone (uma operacao anterior).
+
 ## Estrutura de diretórios
 
 ```text
@@ -1264,6 +1309,24 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     via IPC, seguida de `playback.seek(0)`); um helper único (`applyTimelineMutation`) evita
     triplicar a lógica de "atualiza timeline + limpa seleção + resincroniza o player" nos três
     handlers.
+89. **`SET_GAIN` reusa o log de `edit_operations` do EDIT-007 sem nenhuma tabela/coluna nova** —
+    `trackId`/`payloadJson` já existiam desde a Fase 0 comentados especificamente para isto;
+    ganho/mudo herdam undo/redo/poda-de-ramo de graça em vez de precisar de uma implementação
+    paralela.
+90. **`SET_GAIN` SUBSTITUI o estado da trilha, não acumula** (diferente de `REMOVE_RANGE`,
+    que sempre se compõe sobre o resultado da operação anterior) — ajustar volume é um estado
+    atual da trilha, não uma transformação cumulativa; o fold em `getEditedTimeline` sobrescreve
+    a cada ocorrência ativa em vez de somar.
+91. **`gainDb` limitado a [-60, 0], sem amplificação** — os elementos `<video>`/`<audio>` nativos
+    usados pelo player só suportam `volume` linear 0..1; amplificar acima do original exigiria
+    Web Audio API (`GainNode`), fora do escopo deste incremento (registrado como pendência).
+92. **`muted` e `gainDb` são campos independentes**, mesma semântica de
+    `HTMLMediaElement.muted`/`.volume` — alternar mudo preserva o ganho ajustado, sem lógica extra
+    de "lembrar" o volume anterior.
+93. **`setTrackGain` não usa `applyTimelineMutation`/`busy`** — ajustar ganho não invalida o
+    playhead/seleção (ao contrário de corte/undo/redo, que podem reestruturar a timeline), e um
+    slider de range dispara eventos rápidos demais para o padrão de `busy` global fazer sentido;
+    um guard de sequência (`gainRequestSeqRef`) descarta respostas IPC desatualizadas em vez disso.
 
 ## Testes
 
@@ -1318,10 +1381,15 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   fim atual, corte simultâneo em múltiplas trilhas)**, **`EditorService.undo`/`redo` de ponta a
   ponta (rejeita sem nada pendente, reverte sem apagar a operação, reaplica, múltiplos ciclos em
   duas operações NA ORDEM CORRETA, criar uma operação nova depois de um undo poda o ramo abandonado
-  permanentemente, revision incrementa em ambos)**, wrapper de IPC (validação/erro/sucesso),
-  schemas Zod (incluindo `project.openFolder`), erros de domínio, migrations (tabelas/índices/FKs),
-  repositórios (project/settings/export-job), serviço de configurações, store de tema, smoke test
-  de componente (jsdom). **238 testes, 30 arquivos.**
+  permanentemente, revision incrementa em ambos)**, **`EditorService.setTrackGain` de ponta a
+  ponta (aplica a trilha certa sem afetar as outras, um segundo `SET_GAIN` na mesma trilha
+  SUBSTITUI em vez de acumular, rejeita trackId inexistente na timeline atual, revision
+  incrementa, undo/redo funcionam sobre esta operação igual a qualquer outra do log, poda de ramo
+  abandonado, uma trilha depois totalmente removida por `REMOVE_RANGE` não quebra nada)**,
+  **`dbToLinearVolume` puro (0dB=1, -60dB≈0.001, -6dB≈meia amplitude, clamps defensivos)**,
+  wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de
+  domínio, migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço
+  de configurações, store de tema, smoke test de componente (jsdom). **252 testes, 30 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -1382,25 +1450,29 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   EDIT-007) grava com câmera, corta um trecho, desfaz pelo botão "Desfazer" (duração volta ao
   original, "Refazer" habilita), refaz pelo atalho Ctrl+Shift+Z (duração encolhe de novo), desfaz
   de novo pelo atalho Ctrl+Z e corta um trecho DIFERENTE, confirmando que "Refazer" fica
-  desabilitado (o ramo antigo foi podado). **7 testes**. Validação deste incremento caiu num
-  episódio de contenção de recursos excepcionalmente severo desta máquina, confirmado via métricas
-  do SO (não só contagem de processos como nas decisões anteriores): **74% de CPU e apenas 1,9 GB
-  de RAM livre de 15,8 GB (88,3% em uso)** no momento da validação, com 3 processos `claude`
-  concorrentes, Chrome, Google Drive e outros aplicativos disputando memória - o suficiente para
-  fazer o próprio Electron/Chromium sob teste demorar mais que os timeouts do Playwright pra
-  renderizar a prévia de câmera/atualizar o indicador "REC", mesmo isolado (sem nenhum outro teste
-  rodando junto). `editor (undo/redo)` falhou em 2 das 3 tentativas na primeira execução completa
-  da suíte (recuperou no retry #1) e nas 3 tentativas da segunda execução completa E de uma
-  execução isolada subsequente - mas **toda falha, sem exceção, ocorreu na etapa de setup
-  compartilhada por praticamente todo o arquivo** (aguardar `getByLabel('Camera')` ficar visível ou
-  `getByRole('status')` conter "REC"), nunca dentro do código de desfazer/refazer em si; a mesma
-  classe de falha (timeout de renderização, não de lógica) atingiu simultaneamente testes sem
-  nenhuma relação de código com undo/redo (`library`, `recording microphone+camera`,
-  `recording segmentation`) nas mesmas execuções. Correção de lógica confirmada pelos 9 testes de
-  integração dedicados do `EditorService.undo`/`redo` (100% verdes, incluindo o teste crítico de
-  poda de ramo abandonado) e por uma execução completa anterior da suíte (run 1) em que o cenário
-  passou de forma limpa após 1 retry - evidência de que o problema é a pressão real de memória da
-  máquina no momento da validação, não uma regressão deste incremento.
+  desabilitado (o ramo antigo foi podado); oitavo teste (`test.describe('editor (gain/mute)')`,
+  EDIT-008) grava microfone+câmera, muta a trilha de microfone pelo botão, ajusta o ganho da
+  câmera pelo slider (setter nativo bypassando o rastreador de valor do React), confirma via
+  `editor.getEditedTimeline` que as duas trilhas são ajustadas de forma independente, e que
+  Ctrl+Z desfaz só a ÚLTIMA operação do log (o ganho da câmera), preservando o mudo do microfone.
+  **8 testes**, isolado `editor (gain/mute)` passou de forma limpa (sem retry, 24,8s). Validação
+  deste incremento caiu no episódio de contenção de recursos MAIS severo já observado nesta sessão
+  - confirmado via métricas diretas do SO (`Get-CimInstance Win32_OperatingSystem`), não só
+  contagem de processos: RAM livre chegou a **0,4-0,5 GB de 15,8 GB** em vários pontos da
+  validação (>99% em uso), recuperando e caindo repetidamente entre 0,4 GB e 3,7 GB ao longo de
+  ~30 minutos de execuções. `editor (gain/mute)` recuperou no retry #1 na primeira execução
+  completa da suíte (14,6min, 18 passaram/7 falharam/4 flaky) mas esgotou as 3 tentativas na
+  segunda (15,2min, 18 passaram/6 falharam/5 flaky) - mas **toda falha, sem exceção, confirmada
+  via `error-context.md` de cada tentativa, ocorreu na etapa de setup compartilhada** (aguardar
+  `getByLabel('Camera')` ficar visível ou `getByRole('status')` conter "REC"), nunca dentro do
+  código de ganho/mudo em si; a mesma classe de falha atingiu simultaneamente testes sem nenhuma
+  relação de código com ganho/mudo (`library`, `recording microphone+camera`,
+  `recording screen+microphone`) nas mesmas execuções. Correção de lógica confirmada pelos 9
+  testes de integração dedicados do `EditorService.setTrackGain` (100% verdes) e pela execução
+  isolada do próprio teste E2E, que passou sem nenhum retry antes do pico mais severo de pressão
+  de memória - evidência de que o problema é a exaustão real de RAM da máquina no momento da
+  validação (aparentemente causada por processos concorrentes não relacionados a este projeto -
+  ver decisão registrada na memória persistente do agente), não uma regressão deste incremento.
 
 ## Pendências conhecidas
 
@@ -1475,9 +1547,9 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   contagem + bytes totais) - suficiente para o MVP, mas insuficiente para uma futura timeline de
   edição, que precisará dos segmentos um a um.
 - Projeto de edição ainda não tem renomear nem excluir (só a Biblioteca tem essas ações, para
-  gravações - não para projetos de edição). Corte/split/remover-intervalo (EDIT-004/005/006) e
-  desfazer/refazer (EDIT-007) já funcionam; ganho/mudo/fade, transformação de câmera e layout ainda
-  não (EDIT-008 em diante).
+  gravações - não para projetos de edição). Corte/split/remover-intervalo (EDIT-004/005/006),
+  desfazer/refazer (EDIT-007) e ganho/mudo por trilha (EDIT-008) já funcionam; fade, transformação
+  de câmera e layout ainda não (EDIT-009 em diante).
 - `EditorProjectPage` não trata um `id` de projeto de edição inexistente/inválido na URL de forma
   amigável (`editor.get` lança `NotFoundError`, capturado só como um estado de erro genérico) -
   refinamento futuro, não bloqueante.
@@ -1497,9 +1569,10 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - Buscar (seek) só funciona por clique/toque na régua ou numa lane de trilha - sem arrastar o
   mouse pressionado (drag-scrub contínuo) nem atalhos de teclado (espaço = play/pause, setas = ±1
   frame).
-- Sem controle de volume/mudo por trilha na reprodução (ex.: silenciar o microfone e ouvir só o
-  áudio do sistema) - todas as trilhas de áudio tocam sempre, sem ajuste individual; isso faz
-  parte do trabalho de ganho/mudo/fade (EDIT-008/009), ainda não implementado.
+- **Ganho por trilha limitado a atenuação (-60..0dB), sem amplificação acima do original**
+  (EDIT-008) - os elementos `<video>`/`<audio>` nativos usados pelo player só suportam `volume`
+  linear 0..1; amplificar (ex.: reforçar um microfone gravado baixo) exigiria trocar para a Web
+  Audio API (`GainNode`), refinamento futuro. Fade-in/fade-out (EDIT-009) ainda não implementado.
 - O relógio do player não pausa sozinho ao final de cada clip em caso de gap real entre segmentos
   de uma mesma trilha (ex.: um pause/resume real) - a trilha simplesmente fica pausada durante o
   gap e retoma quando o próximo clip começa; comportamento correto, mas sem nenhuma indicação
@@ -1525,16 +1598,16 @@ mostrar na pasta, excluir) funcionam de ponta a ponta. A **Fase 3 — Editor MVP
 EDIT-001 (criar/abrir projeto de edição), EDIT-002 (timeline compilada somente-leitura), EDIT-003
 completo (partes 1 e 2 - preview com playhead sincronizado e reprodução multi-trilha via protocolo
 de mídia local seguro), EDIT-004/005/006 (corte/split/remover-intervalo, a primeira operação de
-edição real) e EDIT-007 (desfazer/refazer, cursor sobre o log de operações) já funcionam de ponta a
-ponta.
+edição real), EDIT-007 (desfazer/refazer, cursor sobre o log de operações) e EDIT-008 (ganho/mudo
+por trilha, reusando o mesmo log) já funcionam de ponta a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 3 — Editor MVP**: ganho/mudo/fade (EDIT-008/009), visibilidade/transformação
-   de câmera (EDIT-010), layout (PiP/lado-a-lado/só-tela/só-câmera, EDIT-011), autosave
-   (EDIT-012) - cada operação provavelmente seu próprio incremento, dado o tamanho desta fase
+1. Continuar a **Fase 3 — Editor MVP**: fade in/out (EDIT-009), visibilidade/transformação de
+   câmera (EDIT-010), layout (PiP/lado-a-lado/só-tela/só-câmera, EDIT-011), autosave (EDIT-012) -
+   cada operação provavelmente seu próprio incremento, dado o tamanho desta fase
    (05_MEDIA_EDITOR.md).
 2. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
    ainda não instalados - `main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`,

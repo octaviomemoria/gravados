@@ -15,7 +15,9 @@ import {
   UndoRequestSchema,
   UndoResponseSchema,
   RedoRequestSchema,
-  RedoResponseSchema
+  RedoResponseSchema,
+  SetTrackGainRequestSchema,
+  SetTrackGainResponseSchema
 } from '../../shared/schemas/editor.schema'
 import type { EditorApi } from '../../shared/types/preload-api'
 import { invokeChannel } from '../invoke'
@@ -69,6 +71,12 @@ export function createEditorApi(): EditorApi {
         IPC_CHANNELS.editor.redo,
         { request: RedoRequestSchema, response: RedoResponseSchema },
         { editProjectId }
+      ),
+    setTrackGain: (editProjectId: string, trackId: string, gainDb: number, muted: boolean) =>
+      invokeChannel(
+        IPC_CHANNELS.editor.setTrackGain,
+        { request: SetTrackGainRequestSchema, response: SetTrackGainResponseSchema },
+        { editProjectId, trackId, gainDb, muted }
       )
   }
 }

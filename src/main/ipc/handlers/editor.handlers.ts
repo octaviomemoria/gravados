@@ -15,7 +15,9 @@ import {
   UndoRequestSchema,
   UndoResponseSchema,
   RedoRequestSchema,
-  RedoResponseSchema
+  RedoResponseSchema,
+  SetTrackGainRequestSchema,
+  SetTrackGainResponseSchema
 } from '../../../shared/schemas/editor.schema'
 import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
@@ -70,5 +72,17 @@ export function registerEditorHandlers(context: AppContext): void {
     IPC_CHANNELS.editor.redo,
     { request: RedoRequestSchema, response: RedoResponseSchema },
     async (request) => context.editorService.redo(request.editProjectId)
+  )
+
+  registerHandler(
+    IPC_CHANNELS.editor.setTrackGain,
+    { request: SetTrackGainRequestSchema, response: SetTrackGainResponseSchema },
+    async (request) =>
+      context.editorService.setTrackGain(
+        request.editProjectId,
+        request.trackId,
+        request.gainDb,
+        request.muted
+      )
   )
 }

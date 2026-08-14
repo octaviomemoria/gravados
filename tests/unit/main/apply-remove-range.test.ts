@@ -16,7 +16,7 @@ function clip(overrides: Partial<TimelineClip> = {}): TimelineClip {
 }
 
 function track(clips: TimelineClip[], type: TimelineTrack['type'] = 'MICROPHONE'): TimelineTrack {
-  return { id: 'track-1', type, clips }
+  return { id: 'track-1', type, clips, gainDb: 0, muted: false }
 }
 
 describe('applyRemoveRange', () => {

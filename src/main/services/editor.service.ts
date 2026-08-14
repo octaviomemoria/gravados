@@ -114,7 +114,8 @@ export class EditorService {
               byteSize: segment.byteSize
             }
           })
-        return { id: track.id, type: track.type, clips }
+        // Timeline BRUTA - nenhum SET_GAIN (EDIT-008) ainda foi aplicado, sempre volume original.
+        return { id: track.id, type: track.type, clips, gainDb: 0, muted: false }
       })
       // Trilha sem nenhum clip sobrevivente (ex.: audio do sistema sem suporte na plataforma,
       // RF-005) nao aparece na timeline - nada para desenhar, so ruido visual.
@@ -133,9 +134,10 @@ export class EditorService {
    * BRUTA (`getTimeline`) com o LOG ordenado de `edit_operations` aplicado por cima, uma operacao
    * de cada vez, em `sequence` - cada `REMOVE_RANGE` opera sobre o RESULTADO da anterior (a
    * timeline "atual" do ponto de vista do usuario naquele momento), nunca sobre a bruta original
-   * diretamente. Tipos de operacao ainda nao implementados (gain/fade/camera transform - EDIT-008
-   * em diante) sao ignorados silenciosamente - o compilador nunca quebra so porque um tipo futuro
-   * apareceu no log.
+   * diretamente. `SET_GAIN` (EDIT-008) e aplicado numa segunda passagem, com semantica diferente
+   * (substitui, nao acumula - ver comentario mais abaixo). Tipos de operacao ainda nao
+   * implementados (fade/camera transform - EDIT-009 em diante) sao ignorados silenciosamente - o
+   * compilador nunca quebra so porque um tipo futuro apareceu no log.
    *
    * EDIT-007 (decimo oitavo incremento - undo/redo) - so reproduz operacoes com
    * `sequence <= activeOperationSequence` (o cursor no historico); linhas alem do cursor existem
@@ -158,6 +160,25 @@ export class EditorService {
     // Trilha que perdeu todos os clips na edicao (ex.: um REMOVE_RANGE cobrindo a unica trilha de
     // video inteira) some da timeline, mesmo raciocinio ja aplicado em `getTimeline`.
     tracks = tracks.filter((track) => track.clips.length > 0)
+
+    // EDIT-008 - ao contrario de REMOVE_RANGE (cada operacao se COMPOE sobre o resultado da
+    // anterior), um SET_GAIN NAO acumula: o mais recente ATIVO por trilha simplesmente SUBSTITUI
+    // o `gainDb`/`muted` inteiro daquela trilha. `activeOperations` ja vem ordenado por
+    // `sequence` ascendente (`listByEditProject`), entao sobrescrever a cada ocorrencia deixa o
+    // ultimo (mais recente) vencer sem precisar procurar o maximo manualmente. Uma trilha que o
+    // REMOVE_RANGE acima ja removeu da lista (filter logo abaixo) simplesmente nao aparece no
+    // Map - nenhum crash se um SET_GAIN antigo mirar uma trilha que nao existe mais.
+    const gainByTrackId = new Map<string, { gainDb: number; muted: boolean }>()
+    for (const operation of activeOperations) {
+      if (operation.type !== 'SET_GAIN') continue
+      if (operation.trackId === null) continue
+      const payload = JSON.parse(operation.payloadJson) as { gainDb: number; muted: boolean }
+      gainByTrackId.set(operation.trackId, payload)
+    }
+    tracks = tracks.map((track) => {
+      const gain = gainByTrackId.get(track.id)
+      return gain ? { ...track, gainDb: gain.gainDb, muted: gain.muted } : track
+    })
 
     return {
       ...raw,
@@ -189,6 +210,59 @@ export class EditorService {
       throw new ValidationError('O intervalo informado vai alem do fim atual da timeline')
     }
 
+    this.appendOperation(editProjectId, editProject, {
+      type: 'REMOVE_RANGE',
+      startMs,
+      endMs,
+      trackId: null,
+      payloadJson: '{}'
+    })
+
+    return this.getEditedTimeline(editProjectId)
+  }
+
+  /**
+   * EDIT-008 (decimo nono incremento - Fase 3, ganho/mudo, `05_MEDIA_EDITOR.md` §4). `gainDb`
+   * limitado a [-60, 0] - ver comentario em `TimelineTrackSchema` sobre a limitacao do player
+   * nativo (sem amplificacao acima do volume original sem Web Audio API). Valida que `trackId`
+   * existe na timeline EDITADA ATUAL antes de gravar a operacao - mesmo espirito defensivo de
+   * `removeRange` validar `endMs` contra `getEditedTimeline()`, nao a bruta.
+   */
+  setTrackGain(
+    editProjectId: string,
+    trackId: string,
+    gainDb: number,
+    muted: boolean
+  ): GetEditedTimelineResponse {
+    const editProject = this.getEditProject(editProjectId)
+    const current = this.getEditedTimeline(editProjectId)
+    if (!current.tracks.some((track) => track.id === trackId)) {
+      throw new NotFoundError(`Trilha nao encontrada na timeline atual: ${trackId}`)
+    }
+
+    this.appendOperation(editProjectId, editProject, {
+      type: 'SET_GAIN',
+      startMs: null,
+      endMs: null,
+      trackId,
+      payloadJson: JSON.stringify({ gainDb, muted })
+    })
+
+    return this.getEditedTimeline(editProjectId)
+  }
+
+  /**
+   * EDIT-007/EDIT-008 - ponto UNICO onde uma operacao NOVA e gravada no log, reusado por
+   * `removeRange` e `setTrackGain` (e por qualquer operacao futura - fade/camera transform/
+   * layout, EDIT-009 em diante). Sempre poda (`DELETE`) qualquer coisa alem do cursor ANTES de
+   * inserir - uma acao nova invalida o "refazer" pendente, o mesmo comportamento padrao de
+   * qualquer editor, independente do TIPO da operacao.
+   */
+  private appendOperation(
+    editProjectId: string,
+    editProject: EditProjectEntity,
+    fields: Pick<EditOperationEntity, 'type' | 'startMs' | 'endMs' | 'trackId' | 'payloadJson'>
+  ): void {
     this.editOperationRepository.deleteAfterSequence(
       editProjectId,
       editProject.activeOperationSequence
@@ -198,19 +272,13 @@ export class EditorService {
       id: randomUUID(),
       editProjectId,
       sequence: newSequence,
-      type: 'REMOVE_RANGE',
-      startMs,
-      endMs,
-      trackId: null,
-      payloadJson: '{}'
+      ...fields
     }
     this.editOperationRepository.create(operation)
     this.editProjectRepository.touchAfterEdit(editProjectId, {
       revision: editProject.revision + 1,
       activeOperationSequence: newSequence
     })
-
-    return this.getEditedTimeline(editProjectId)
   }
 
   /**

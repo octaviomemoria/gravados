@@ -513,9 +513,42 @@ body {
 }
 
 .timeline__track-label {
-  flex: 0 0 110px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 130px;
   font-size: 0.85rem;
   color: var(--ms-color-text-muted);
+}
+
+/* EDIT-008 - mudo/ganho por trilha. */
+.timeline__track-gain-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--ms-space-1);
+}
+
+.timeline__track-mute {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-color-border);
+  background: var(--ms-color-bg);
+  color: var(--ms-color-text-muted);
+  cursor: pointer;
+}
+
+.timeline__track-mute[aria-pressed='true'] {
+  background: var(--ms-color-danger);
+  border-color: var(--ms-color-danger);
+  color: var(--ms-color-bg);
+}
+
+.timeline__track-gain-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 14px;
 }
 
 .timeline__track-lane {

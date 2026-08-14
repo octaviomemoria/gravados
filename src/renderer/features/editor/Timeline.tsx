@@ -23,13 +23,18 @@ export function Timeline({
   timeline,
   currentTimeMs,
   onSeek,
-  selection
+  selection,
+  onSetTrackGain
 }: {
   timeline: GetTimelineResponse
   currentTimeMs?: number
   onSeek?: (ms: number) => void
   /** EDIT-004/005/006 - intervalo destacado (chave para remover/cortar), se houver. */
   selection?: { startMs: number; endMs: number } | null
+  /** EDIT-008 - controles de mudo/ganho por trilha, mostrados na coluna de rotulo quando
+   * fornecido (omitido = so o rotulo, sem controles - ex.: um preview futuro somente-leitura que
+   * reuse este componente sem edicao). */
+  onSetTrackGain?: (trackId: string, gainDb: number, muted: boolean) => void
 }) {
   const totalMs = Math.max(timeline.totalDurationMs, 1)
   const rulerMarks = buildRulerMarks(totalMs)
@@ -78,7 +83,35 @@ export function Timeline({
       </div>
       {timeline.tracks.map((track) => (
         <div key={track.id} className="timeline__track">
-          <span className="timeline__track-label">{TRACK_TYPE_LABELS[track.type]}</span>
+          <div className="timeline__track-label">
+            <span>{TRACK_TYPE_LABELS[track.type]}</span>
+            {onSetTrackGain && (
+              <div className="timeline__track-gain-controls">
+                <button
+                  type="button"
+                  className="timeline__track-mute"
+                  aria-pressed={track.muted}
+                  aria-label={track.muted ? 'Reativar som' : 'Silenciar trilha'}
+                  title={track.muted ? 'Reativar som' : 'Silenciar trilha'}
+                  onClick={() => onSetTrackGain(track.id, track.gainDb, !track.muted)}
+                >
+                  {track.muted ? 'Mudo' : 'Som'}
+                </button>
+                <input
+                  type="range"
+                  className="timeline__track-gain-slider"
+                  min={-60}
+                  max={0}
+                  step={1}
+                  value={track.gainDb}
+                  aria-label={`Ganho da trilha ${TRACK_TYPE_LABELS[track.type]}`}
+                  onChange={(event) =>
+                    onSetTrackGain(track.id, Number(event.target.value), track.muted)
+                  }
+                />
+              </div>
+            )}
+          </div>
           <div
             className={`timeline__track-lane${onSeek ? ' timeline__track-lane--seekable' : ''}`}
             onClick={onSeek ? handleSeek : undefined}

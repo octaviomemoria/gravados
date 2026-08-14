@@ -41,7 +41,8 @@ export const IPC_CHANNELS = {
     getEditedTimeline: 'editor.getEditedTimeline',
     removeRange: 'editor.removeRange',
     undo: 'editor.undo',
-    redo: 'editor.redo'
+    redo: 'editor.redo',
+    setTrackGain: 'editor.setTrackGain'
   },
   export: {
     start: 'export.start',

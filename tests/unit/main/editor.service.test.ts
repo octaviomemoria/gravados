@@ -541,4 +541,127 @@ describe('EditorService', () => {
       expect(() => service.redo(randomUUID())).toThrow('nao encontrado')
     })
   })
+
+  describe('setTrackGain', () => {
+    function createTrackWithSegment(
+      projectId: string,
+      type: 'MICROPHONE' | 'CAMERA',
+      startMs: number,
+      endMs: number
+    ): string {
+      const trackId = randomUUID()
+      trackRepository.create({
+        id: trackId,
+        projectId,
+        type,
+        enabled: true,
+        position: 0,
+        startOffsetMs: 0
+      })
+      segmentRepository.create({
+        id: randomUUID(),
+        trackId,
+        seqIndex: 1,
+        relativePath: `source/${type.toLowerCase()}/${type.toLowerCase()}_000001.webm`,
+        startedAtMs: startMs,
+        endedAtMs: endMs,
+        durationMs: endMs - startMs,
+        byteSize: 1000,
+        mimeType: type === 'CAMERA' ? 'video/webm' : 'audio/webm',
+        finalized: true
+      })
+      return trackId
+    }
+
+    it('raw getTimeline always reports gainDb 0 and muted false, before any SET_GAIN', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      const raw = service.getTimeline(editProject.id)
+      expect(raw.tracks[0]).toMatchObject({ gainDb: 0, muted: false })
+    })
+
+    it('applies gainDb/muted to the target track and leaves other tracks untouched', () => {
+      const project = createProject('COMPLETED')
+      const micTrackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      const updated = service.setTrackGain(editProject.id, micTrackId, -12, true)
+      const micTrack = updated.tracks.find((track) => track.id === micTrackId)!
+      const otherTrack = updated.tracks.find((track) => track.id !== micTrackId)!
+      expect(micTrack).toMatchObject({ gainDb: -12, muted: true })
+      expect(otherTrack).toMatchObject({ gainDb: 0, muted: false })
+    })
+
+    it('a second SET_GAIN on the same track REPLACES the previous state, does not accumulate', () => {
+      const project = createProject('COMPLETED')
+      const trackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackGain(editProject.id, trackId, -30, false)
+      const updated = service.setTrackGain(editProject.id, trackId, -6, true)
+      expect(updated.tracks[0]).toMatchObject({ gainDb: -6, muted: true })
+    })
+
+    it('rejects a trackId that does not exist in the current edited timeline', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(() => service.setTrackGain(editProject.id, randomUUID(), -6, false)).toThrow(
+        'nao encontrada'
+      )
+    })
+
+    it('bumps the edit project revision, same as removeRange', () => {
+      const project = createProject('COMPLETED')
+      const trackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      const before = service.getEditProject(editProject.id).revision
+      service.setTrackGain(editProject.id, trackId, -6, false)
+      expect(service.getEditProject(editProject.id).revision).toBe(before + 1)
+    })
+
+    it('is undoable/redoable, same as any other operation on the log', () => {
+      const project = createProject('COMPLETED')
+      const trackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackGain(editProject.id, trackId, -20, true)
+      const afterUndo = service.undo(editProject.id)
+      expect(afterUndo.tracks[0]).toMatchObject({ gainDb: 0, muted: false })
+
+      const afterRedo = service.redo(editProject.id)
+      expect(afterRedo.tracks[0]).toMatchObject({ gainDb: -20, muted: true })
+    })
+
+    it('a SET_GAIN created after an undo prunes the abandoned redo branch, same as removeRange', () => {
+      const project = createProject('COMPLETED')
+      const trackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackGain(editProject.id, trackId, -20, false)
+      service.undo(editProject.id)
+
+      const afterNewGain = service.setTrackGain(editProject.id, trackId, -40, true)
+      expect(afterNewGain.tracks[0]).toMatchObject({ gainDb: -40, muted: true })
+      expect(afterNewGain.canRedo).toBe(false)
+    })
+
+    it('a SET_GAIN targeting a track later fully removed by REMOVE_RANGE has no visible effect (no crash)', () => {
+      const project = createProject('COMPLETED')
+      const micTrackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackGain(editProject.id, micTrackId, -20, true)
+      const afterCut = service.removeRange(editProject.id, 0, 5000)
+      expect(afterCut.tracks).toHaveLength(0)
+    })
+
+    it('throws NotFoundError for an unknown edit project', () => {
+      expect(() => service.setTrackGain(randomUUID(), randomUUID(), -6, false)).toThrow(
+        'nao encontrado'
+      )
+    })
+  })
 })
