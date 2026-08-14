@@ -44,6 +44,11 @@ export class ProjectRepository {
     this.db.update(projects).set({ status }).where(eq(projects.id, id)).run()
   }
 
+  /** LIB-004 (decimo primeiro incremento - renomear). */
+  updateTitle(id: string, title: string): void {
+    this.db.update(projects).set({ title }).where(eq(projects.id, id)).run()
+  }
+
   /** Usado ao iniciar/finalizar uma gravacao (`startedAt`/`endedAt`/`durationMs`/`status`). */
   updateRecordingLifecycle(
     id: string,

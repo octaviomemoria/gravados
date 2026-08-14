@@ -7,8 +7,14 @@ import {
   ListProjectsResponseSchema,
   GetProjectRequestSchema,
   GetProjectResponseSchema,
+  GetProjectDetailsRequestSchema,
+  ProjectDetailsResponseSchema,
   OpenProjectFolderRequestSchema,
-  OpenProjectFolderResponseSchema
+  OpenProjectFolderResponseSchema,
+  RenameProjectRequestSchema,
+  RenameProjectResponseSchema,
+  DeleteProjectRequestSchema,
+  DeleteProjectResponseSchema
 } from '../../../shared/schemas/project.schema'
 import { NotFoundError } from '../../../shared/types/domain-errors'
 import { registerHandler } from '../ipc-handler'
@@ -50,6 +56,30 @@ export function registerProjectHandlers(context: AppContext): void {
       // mensagem amigavel, igual a qualquer outro estado "vazio" ja tratado no app).
       const errorMessage = await shell.openPath(project.rootPath)
       return { opened: errorMessage === '' }
+    }
+  )
+
+  registerHandler(
+    IPC_CHANNELS.project.getDetails,
+    { request: GetProjectDetailsRequestSchema, response: ProjectDetailsResponseSchema },
+    async (request) => {
+      const { project, tracks, totalBytes } = context.projectService.getProjectDetails(request.id)
+      return { ...project, tracks, totalBytes }
+    }
+  )
+
+  registerHandler(
+    IPC_CHANNELS.project.rename,
+    { request: RenameProjectRequestSchema, response: RenameProjectResponseSchema },
+    async (request) => context.projectService.renameProject(request.id, request.title)
+  )
+
+  registerHandler(
+    IPC_CHANNELS.project.delete,
+    { request: DeleteProjectRequestSchema, response: DeleteProjectResponseSchema },
+    async (request) => {
+      await context.projectService.deleteProject(request.id)
+      return { deleted: true }
     }
   )
 }

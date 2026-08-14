@@ -20,7 +20,8 @@ const meetingStudioApi: MeetingStudioApi = {
   project: projectApi,
   library: {
     list: projectApi.list,
-    get: projectApi.get
+    get: projectApi.get,
+    getDetails: projectApi.getDetails
   },
   settings: createSettingsApi(),
   recording: createRecordingApi(),

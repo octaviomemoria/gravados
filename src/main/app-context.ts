@@ -49,7 +49,12 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
   const exportJobRepository = new ExportJobRepository(databaseClient.db)
   const settingsRepository = new SettingsRepository(databaseClient.db)
 
-  const projectService = new ProjectService(projectRepository, libraryRootPath)
+  const projectService = new ProjectService(
+    projectRepository,
+    trackRepository,
+    segmentRepository,
+    libraryRootPath
+  )
   const recoveryService = new RecoveryService(
     projectRepository,
     trackRepository,

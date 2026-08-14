@@ -260,6 +260,45 @@ body {
   font-size: 0.85rem;
 }
 
+.library-list__rename {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--ms-space-2);
+}
+
+.library-list__rename-input {
+  flex: 1 1 auto;
+  padding: var(--ms-space-2);
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-color-border);
+  background: var(--ms-color-surface);
+  color: var(--ms-color-text);
+  font-size: 0.9rem;
+}
+
+.library-list__delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--ms-space-2);
+  color: var(--ms-color-danger);
+  font-size: 0.85rem;
+}
+
+.library-list__details {
+  flex-basis: 100%;
+  margin-top: var(--ms-space-2);
+  padding-top: var(--ms-space-2);
+  border-top: 1px solid var(--ms-color-border);
+  font-size: 0.85rem;
+  color: var(--ms-color-text-muted);
+}
+
+.library-list__tracks {
+  margin: var(--ms-space-2) 0 0;
+  padding-left: var(--ms-space-4);
+}
+
 .setup-group {
   margin-bottom: var(--ms-space-8);
 }

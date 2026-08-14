@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { RECORDING_STATES } from '../types/recording-state'
+import { TRACK_TYPES } from '../types/entities'
 import { IdSchema, IsoDateTimeSchema, EmptyRequestSchema } from './common.schema'
 
 export const ProjectStatusSchema = z.enum(RECORDING_STATES)
@@ -41,3 +42,41 @@ export const GetProjectResponseSchema = ProjectResponseSchema
 export const OpenProjectFolderRequestSchema = z.object({ id: IdSchema })
 export type OpenProjectFolderRequest = z.infer<typeof OpenProjectFolderRequestSchema>
 export const OpenProjectFolderResponseSchema = z.object({ opened: z.boolean() })
+
+/** LIB-004 (decimo primeiro incremento - Fase 2, Biblioteca): apenas o titulo e editavel aqui -
+ * `notes` segue sem UI dedicada (mesmo escopo ja registrado em "Pendências conhecidas"). */
+export const RenameProjectRequestSchema = z.object({
+  id: IdSchema,
+  title: z.string().min(1).max(200)
+})
+export type RenameProjectRequest = z.infer<typeof RenameProjectRequestSchema>
+export const RenameProjectResponseSchema = ProjectResponseSchema
+
+/**
+ * LIB-006: exclusao permanente (banco + arvore de diretorios no disco). Recebe so o `id`, mesmo
+ * padrao de `OpenProjectFolderRequestSchema` - nunca um path vindo do renderer.
+ */
+export const DeleteProjectRequestSchema = z.object({ id: IdSchema })
+export type DeleteProjectRequest = z.infer<typeof DeleteProjectRequestSchema>
+export const DeleteProjectResponseSchema = z.object({ deleted: z.boolean() })
+
+/**
+ * LIB-002: resumo por trilha (tipo, quantos segmentos, bytes totais) agregado DIRETO do banco
+ * (`segments.byteSize`) - nunca escaneando o disco de novo, já que o próprio banco já mantém o
+ * tamanho real de cada segmento finalizado (ver `RecordingSessionManager`/`RecoveryService`).
+ */
+export const ProjectDetailsTrackSchema = z.object({
+  id: IdSchema,
+  type: z.enum(TRACK_TYPES),
+  segmentCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative()
+})
+export type ProjectDetailsTrack = z.infer<typeof ProjectDetailsTrackSchema>
+
+export const GetProjectDetailsRequestSchema = z.object({ id: IdSchema })
+export type GetProjectDetailsRequest = z.infer<typeof GetProjectDetailsRequestSchema>
+export const ProjectDetailsResponseSchema = ProjectResponseSchema.extend({
+  tracks: z.array(ProjectDetailsTrackSchema),
+  totalBytes: z.number().int().nonnegative()
+})
+export type ProjectDetailsResponse = z.infer<typeof ProjectDetailsResponseSchema>

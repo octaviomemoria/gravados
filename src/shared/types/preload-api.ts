@@ -9,7 +9,11 @@
  * mantendo o nome usado no exemplo da documentacao ao lado da nomenclatura de entidade do banco
  * (`projects`, usada em 06_DATA_MODEL.md e em todo o schema Drizzle).
  */
-import type { CreateProjectRequest, ProjectResponse } from '../schemas/project.schema'
+import type {
+  CreateProjectRequest,
+  ProjectResponse,
+  ProjectDetailsResponse
+} from '../schemas/project.schema'
 import type { SettingsCategory } from '../schemas/settings.schema'
 import type {
   StartRecordingRequest,
@@ -30,13 +34,20 @@ export interface ProjectApi {
   create: (request: CreateProjectRequest) => Promise<ProjectResponse>
   list: () => Promise<ProjectResponse[]>
   get: (id: string) => Promise<ProjectResponse>
+  /** LIB-002 - resumo por trilha (tipo, segmentos, bytes) + bytes totais do projeto. */
+  getDetails: (id: string) => Promise<ProjectDetailsResponse>
   /** RF-017 - abre a pasta do projeto no explorador de arquivos do SO. */
   openFolder: (id: string) => Promise<{ opened: boolean }>
+  /** LIB-004 - renomeia o titulo do projeto. Rejeita se houver gravacao ativa. */
+  rename: (id: string, title: string) => Promise<ProjectResponse>
+  /** LIB-006 - exclusao permanente (banco + arquivos). Rejeita se houver gravacao ativa. */
+  delete: (id: string) => Promise<{ deleted: boolean }>
 }
 
 export interface LibraryApi {
   list: () => Promise<ProjectResponse[]>
   get: (id: string) => Promise<ProjectResponse>
+  getDetails: (id: string) => Promise<ProjectDetailsResponse>
 }
 
 export interface SettingsApi {

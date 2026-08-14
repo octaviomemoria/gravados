@@ -19,9 +19,10 @@ disco** (RF-042) implementados. Ver
 [Segmentação por tempo/tamanho](#segmentação-por-tempotamanho-fase-1),
 [Pausar/retomar](#pausarretomar-fase-1), [Marcadores](#marcadores-fase-1) e
 [Monitor de espaço em disco](#monitor-de-espaço-em-disco-fase-1). A **Fase 2 — Recovery + Library**
-está em andamento: detecção e reparo de gravações interrompidas por um encerramento abrupto
-(RECOV-002/RECOV-003) já funcionam de ponta a ponta - ver
-[Recuperação de gravações incompletas](#recuperação-de-gravações-incompletas-fase-2).
+está completa: detecção e reparo de gravações interrompidas por um encerramento abrupto
+(RECOV-002/RECOV-003), e detalhes/renomear/excluir na Biblioteca (LIB-002/004/006) funcionam de
+ponta a ponta - ver [Recuperação de gravações incompletas](#recuperação-de-gravações-incompletas-fase-2)
+e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-excluir-fase-2).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -484,6 +485,42 @@ deliberada) fica preso num status não-terminal para sempre, sem este incremento
   Biblioteca, repara pelo clique, e confirma o status final `COMPLETED` com o arquivo de segmento
   ainda intacto no disco.
 
+### Biblioteca: detalhes, renomear, excluir (Fase 2)
+
+Décimo primeiro incremento - LIB-002 (detalhes), LIB-004 (renomear) e LIB-006 (excluir). LIB-001
+(listar) e LIB-005 (mostrar na pasta, via `project.openFolder`) já existiam desde incrementos
+anteriores - com este, a Fase 2 - Recovery + Library fica completa.
+
+- **Detalhes agregados direto do banco, nunca escaneando o disco de novo** - `getProjectDetails`
+  soma `segments.byteSize` por trilha (já mantido corretamente pelo `RecordingSessionManager`/
+  `RecoveryService`), evitando um `fs.stat` por arquivo toda vez que o usuário expande um item.
+  Buscado sob demanda ao clicar "Detalhes" (não junto com a lista inteira, que só precisa do
+  resumo já presente em `ProjectResponse`).
+- **Renomear e excluir rejeitam um projeto com gravação ativa** (`PREPARING`/`RECORDING`/`PAUSED`/
+  `STOPPING`/`FINALIZING` - mesma lista de estados usada por `RecoveryService.INTERRUPTIBLE_STATES`,
+  reaproveitada aqui com propósito diferente: bloquear a ação, não detectar recuperação) - evita
+  corromper arquivos ainda abertos pelo `RecordingSessionManager`.
+- **Excluir remove o disco PRIMEIRO, só removendo a linha do banco se isso funcionar** - ao
+  contrário de `project.openFolder` (que trata "pasta já sumiu" como resultado normal, não erro),
+  aqui uma falha real ao apagar (ex.: arquivo aberto/travado por outro processo) mantém o projeto
+  visível/re-tentável na Biblioteca, nunca some da lista enquanto os arquivos ainda ocupam disco em
+  algum lugar sem nenhum jeito de encontrá-los de novo pelo app (recuperabilidade/preservação de
+  dados do usuário).
+- **UI**: "Detalhes" expande mostrando duração, trilhas (tipo + segmentos + tamanho) e tamanho
+  total; "Renomear" vira o título num campo editável inline (sem modal); "Excluir" exige um
+  segundo clique de confirmação ("Sim, excluir") antes de qualquer chamada IPC - ação irreversível.
+- **Novo arquivo de teste E2E dedicado** (`tests/e2e/library.spec.ts`, não mais uma seção dentro de
+  `recording.spec.ts`) - decisão registrada: a partir daqui os cenários de ponta a ponta deixam de
+  ser todos "sobre gravação" (este é sobre a tela da Biblioteca em si); um arquivo por área de
+  produto fica mais fácil de navegar conforme a suíte cresce ao longo do roadmap.
+- Testado via 9 testes sintéticos em `project.service.test.ts` (mesmo padrão de reaproveitar o
+  `RecordingSessionManager` real para gerar trilhas/segmentos/estado "gravação ativa" reais, já
+  usado por `recovery.service.test.ts`): agregação de detalhes com/sem dados, renomear com
+  sucesso/projeto inexistente/gravação ativa, excluir com sucesso (banco + disco)/projeto
+  inexistente/gravação ativa (mantendo banco e arquivos intactos). Ponta a ponta em
+  `library.spec.ts`: grava uma sessão curta real, expande detalhes, renomeia, exclui com
+  confirmação, confirma que a pasta some do disco.
+
 ## Estrutura de diretórios
 
 ```text
@@ -510,7 +547,7 @@ src/
     constants/    app-info, filesystem, error-codes, error-messages
 tests/
   unit/{main,shared,db,renderer}/
-  e2e/            app-launch.spec.ts, navigation.spec.ts
+  e2e/            app-launch.spec.ts, navigation.spec.ts, recording.spec.ts, library.spec.ts
   fixtures/       tmp-db.ts
   setup/          vitest.setup.ts
 ```
@@ -760,6 +797,24 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     o processo antes de terminar); é mais robusto deixar a gravação "malformada" de propósito e
     reparar no próximo boot, onde há tempo e um banco consistente para decidir com calma - do que
     arriscar uma finalização apressada e potencialmente inconsistente durante o quit.
+51. **`getProjectDetails` agrega a partir do banco (`segments.byteSize`), nunca escaneando o
+    disco** — o banco já mantém o tamanho real de cada segmento finalizado (e o reparo, decisão
+    #47, já garante que o `byteSize` reflita o arquivo real); um `fs.stat` por arquivo a cada vez
+    que o usuário expande "Detalhes" seria trabalho redundante e mais lento sem nenhum ganho de
+    precisão.
+52. **Renomear/excluir reaproveitam a mesma lista de estados "sessão ativa" de
+    `RecoveryService.INTERRUPTIBLE_STATES`, com um propósito diferente** — lá, esses estados
+    encontrados no BOOT significam "processo anterior morreu, recuperar"; aqui, encontrados em
+    tempo de execução normal, significam "gravação em andamento agora, bloquear a ação" (o
+    `RecordingSessionManager` ainda tem arquivos abertos para este projeto).
+53. **`deleteProject` remove o disco ANTES do banco, nunca ao contrário** — se `fs.rm` falhar (ex.:
+    arquivo travado por outro processo), o projeto permanece visível/re-tentável na Biblioteca;
+    inverter a ordem arriscaria um projeto "sumido" da lista com arquivos de mídia ainda ocupando
+    disco em algum lugar, sem nenhum jeito de achá-los de novo pelo app.
+54. **`library.spec.ts` é um arquivo E2E próprio, não mais uma seção de `recording.spec.ts`** —
+    primeiro cenário desta suíte que não é "sobre gravação" (é sobre a tela da Biblioteca em si);
+    registrado como o padrão daqui pra frente - um arquivo por área de produto, não um arquivo
+    monolítico crescendo indefinidamente conforme o roadmap avança.
 
 ## Testes
 
@@ -785,10 +840,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   projeto `IDLE` vazio e `COMPLETED`, é idempotente; reparo recupera um segmento válido com o
   tamanho real do arquivo, descarta um segmento de 0 bytes marcando o projeto `FAILED` quando nada
   sobrevive, mantém só as trilhas que sobreviveram quando trilhas diferentes crasham de formas
-  diferentes, e continua funcionando via banco mesmo com o manifest ausente**, wrapper de IPC
+  diferentes, e continua funcionando via banco mesmo com o manifest ausente**, **`ProjectService`
+  de ponta a ponta (`project.service.test.ts`, mesmo padrão de reaproveitar o
+  `RecordingSessionManager` real): agregação de detalhes por trilha com/sem dados gravados,
+  renomear com sucesso/projeto inexistente/gravação ativa, excluir com sucesso (remove banco E
+  disco)/projeto inexistente/gravação ativa (mantendo banco e arquivos intactos)**, wrapper de IPC
   (validação/erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de domínio,
   migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço de
-  configurações, store de tema, smoke test de componente (jsdom). **139 testes, 23 arquivos.**
+  configurações, store de tema, smoke test de componente (jsdom). **148 testes, 24 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -816,6 +875,11 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   lógica de recuperação em si é sólida mesmo sob a pior contenção de recursos observada nesta
   sessão até agora, e que os 8 fracassos são a mesma classe de flakiness ambiental já documentada
   (decisão #23), apenas numa instância particularmente severa, não uma regressão deste incremento.
+- **Playwright** (`tests/e2e/library.spec.ts`, arquivo próprio - decisão #54): grava uma sessão
+  real curta (só microfone), abre a Biblioteca, expande "Detalhes" (confirma a trilha de microfone
+  com bytes reais), renomeia inline, exclui com o passo de confirmação, confirma que o item some da
+  lista E que a pasta some do disco. **1 teste**, validado limpo e rápido (7.6-10.2s) em múltiplas
+  execuções isoladas consecutivas.
 
 ## Pendências conhecidas
 
@@ -880,29 +944,36 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   segmentos foram descartados, por quê) - só a ausência do selo "Incompleta" ou o próprio status
   final; o resultado de `recovery.repair` (`recoveredSegments`/`discardedSegments`) já é retornado
   pelo IPC, só não é exibido na UI ainda.
+- Excluir um projeto não pede confirmação por digitação/nome, só um segundo clique ("Sim,
+  excluir") - suficiente para o MVP, mas mais fraco que confirmações usadas em apps de produção
+  para ações destrutivas de alto risco.
+- Renomear só edita `title`; `notes` segue sem UI dedicada (já registrado acima). Não há
+  validação de título duplicado entre projetos - dois projetos podem ter o mesmo título sem
+  colisão (mesmo raciocínio já registrado na decisão sobre pastas nomeadas por UUID).
+- `getProjectDetails` não expõe a lista de segmentos individualmente (só o resumo por trilha:
+  contagem + bytes totais) - suficiente para o MVP, mas insuficiente para uma futura timeline de
+  edição, que precisará dos segmentos um a um.
 
 ## Próximo passo
 
 A **Fase 1 — Recording Core** está completa (`11_ROADMAP_BACKLOG.md`, REC-001 a REC-015): as
 quatro fontes de captura simultâneas, segmentação por tempo/tamanho, pausar/retomar (RF-010),
 marcadores (RF-016) e monitor de espaço em disco (RF-042) estão implementados e testados de ponta a
-ponta. A **Fase 2 — Recovery + Library** está em andamento: RECOV-001/002/003 (manifest, detecção e
-reparo de gravações incompletas) já funcionam de ponta a ponta.
+ponta. A **Fase 2 — Recovery + Library** também está completa: RECOV-001/002/003 (manifest,
+detecção e reparo de gravações incompletas) e LIB-001/002/004/005/006 (listar, detalhes, renomear,
+mostrar na pasta, excluir) funcionam de ponta a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Concluir a **Fase 2 — Recovery + Library**: LIB-002 (detalhes do projeto), LIB-004
-   (renomear), LIB-006 (excluir) - LIB-001 (listar) e LIB-005 (mostrar na pasta, via
-   `project.openFolder`) já existem desde incrementos anteriores.
-2. **Fase 3 — Editor MVP** (EDIT-001..012): timeline, corte/split, undo/redo, ganho/mudo, fade,
+1. **Fase 3 — Editor MVP** (EDIT-001..012): timeline, corte/split, undo/redo, ganho/mudo, fade,
    transformação de câmera, layout, autosave.
-3. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
+2. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
    ainda não instalados - `main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`,
    nenhum binário real, `export.start` sempre lança `NotImplementedError`), MP4 720p/1080p, faixa
    de tempo, progresso, cancelamento, validação via ffprobe - inclui a exportação em múltiplos
    formatos pedida explicitamente pelo usuário (MP4/MP3/WAV/M4A-AAC/AVI/MPEG/OGG/etc.). O roadmap
    marca o fim desta fase como o **Marco MVP**.
-4. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
+3. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
    depois do MVP, replanejadas quando chegar a vez.
