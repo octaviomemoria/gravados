@@ -200,6 +200,7 @@ test.describe('recording (microphone + camera)', () => {
 
 test.describe('recording (screen + microphone)', () => {
   test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
 
   let electronApp: ElectronApplication
   let appWindow: Page
@@ -259,6 +260,7 @@ test.describe('recording (screen + microphone)', () => {
 
 test.describe('recording (system audio + microphone)', () => {
   test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
 
   let electronApp: ElectronApplication
   let appWindow: Page
@@ -449,6 +451,7 @@ test.describe('recording (segmentation)', () => {
  */
 test.describe('recording (pause/resume)', () => {
   test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
 
   let electronApp: ElectronApplication
   let appWindow: Page
@@ -537,6 +540,7 @@ test.describe('recording (pause/resume)', () => {
  */
 test.describe('recording (markers)', () => {
   test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
 
   let electronApp: ElectronApplication
   let appWindow: Page

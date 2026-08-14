@@ -24,11 +24,13 @@ está completa: detecção e reparo de gravações interrompidas por um encerram
 ponta a ponta - ver [Recuperação de gravações incompletas](#recuperação-de-gravações-incompletas-fase-2)
 e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-excluir-fase-2). A
 **Fase 3 — Editor MVP** está em andamento: criar/abrir um projeto de edição vinculado a uma
-gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002) e um preview
-mínimo de uma trilha via protocolo de mídia local seguro (EDIT-003) já funcionam de ponta a ponta
-- ver [Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3),
-[Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3)
-e [Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3).
+gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002) e o preview
+completo com playhead sincronizado e reprodução multi-trilha (EDIT-003, partes 1 e 2) já
+funcionam de ponta a ponta - ver
+[Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3),
+[Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3),
+[Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3)
+e [Playhead sincronizado e reprodução multi-trilha](#playhead-sincronizado-e-reprodução-multi-trilha-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -645,6 +647,57 @@ no app.
   reportar `Infinity` até o navegador escanear mais do stream, comportamento conhecido do
   Chromium, não um bug deste app).
 
+### Playhead sincronizado e reprodução multi-trilha (Fase 3)
+
+Décimo sexto incremento - EDIT-003 (parte 2 de 2, completando o preview). Antes deste incremento
+o player só tocava UMA trilha isolada, sem nenhuma ligação com a timeline acima dela. Agora
+"Reproduzir" avança TODAS as trilhas ao mesmo tempo (vídeo + áudio, em lockstep), a régua da
+timeline mostra um playhead ao vivo, e clicar em qualquer ponto da régua/lane busca (seek) o
+player inteiro para aquele instante - o desafio técnico central desta fase, como já registrado no
+incremento anterior.
+
+- **Relógio mestre em software (`requestAnimationFrame` + `performance.now()`), não o `timeupdate`
+  de um elemento "líder"** — deixar um `<video>`/`<audio>` real ditar o relógio é frágil: ele para
+  de disparar eventos exatamente durante a troca de `src` na fronteira de um clip, que é o momento
+  mais crítico pra sincronizar as OUTRAS trilhas. Com um relógio independente
+  (`useMultiTrackPlayback.ts`), cada elemento só é corrigido (seek) quando se desvia do relógio
+  além de `DRIFT_THRESHOLD_SECONDS` (250ms) - suficiente para uma ferramenta de revisão, sem
+  pretender ser sample-accurate como um editor profissional.
+- **Lógica pura extraída para `timeline-playback.ts`, testável sem DOM nenhum**: `findClipAtTime`
+  (qual clip cobre um instante global, ou `null` num gap/antes do primeiro/depois do último),
+  `clipLocalTimeSeconds` (converte o instante global no `currentTime` local do arquivo daquele
+  clip), `isDrifting` (decide se o desvio justifica um seek corretivo), `msFromPointerOffset`
+  (converte um clique em pixel no instante global correspondente) - mesmo padrão já usado por
+  `segmentation-thresholds.ts`/`disk-space-thresholds.ts`: o hook que toca `HTMLMediaElement`
+  fica só com a orquestração, sem nenhuma decisão que valha a pena testar isoladamente escondida
+  nele.
+- **TODAS as trilhas tocam, não só a exibida no preview** — trilhas de VÍDEO (tela/câmera) sem
+  prioridade de exibição (`pickPreviewTrack`) ficam com o elemento oculto (`hidden`, prontas para
+  um futuro layout picture-in-picture, EDIT-011); trilhas de ÁUDIO (microfone/áudio do sistema)
+  nunca têm elemento visual próprio, mas SÃO OUVIDAS - reconstituir o áudio completo de uma
+  reunião (não só a trilha escolhida pro preview) é o ponto principal de ter múltiplas trilhas de
+  áudio gravadas separadamente.
+- **Playhead desenhado DENTRO de cada lane de trilha (e na régua), não uma única linha absoluta
+  sobre o componente `Timeline` inteiro** — a régua não reserva a coluna do rótulo da trilha
+  (110px), então tem uma largura diferente das lanes; uma única linha "global" posicionada em % do
+  container inteiro ficaria desalinhada com os clips. Desenhar o playhead dentro de cada elemento
+  clicável usa sempre a MESMA referência de largura que aquele elemento já usa pros seus próprios
+  marcos/clips, sem precisar medir nada em JS (mantém o princípio já registrado na decisão #61 -
+  posicionamento 100% por porcentagem, sem recálculo em JS ao redimensionar).
+- **Reset de estado do player via `key={editProject.id}` no componente pai, não um `useEffect`
+  chamando `setState`** — o padrão recomendado pelo React pra "resetar estado quando um id muda" é
+  remontar a subárvore, não sincronizar manualmente; evita também o anti-padrão de setState
+  síncrono dentro de um efeito (torna o reset atômico e o hook mais simples).
+- Testado via 15 novos testes sintéticos das quatro funções puras
+  (`tests/unit/renderer/timeline-playback.test.ts`) e um quinto teste E2E
+  (`test.describe('editor (playback)')`): grava câmera + microfone, aperta "Reproduzir" e confirma
+  que AMBAS as trilhas avançam juntas (`video.currentTime` E `audio.currentTime` > 0.1s),
+  "Pausar" congela o instante (confirmado esperando e comparando o `currentTime` antes/depois),
+  e clicar perto do início da régua faz as duas trilhas voltarem juntas. Limiares de tempo
+  propositalmente frouxos (a gravação real dura só ~1-2s neste ambiente de teste) - o objetivo é
+  provar o COMPORTAMENTO de sincronização, não validar matemática de proporção exata contra uma
+  gravação tão curta.
+
 ## Estrutura de diretórios
 
 ```text
@@ -995,6 +1048,48 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     arquivo, não um bug deste app); `videoWidth > 0` só fica positivo depois que um frame real foi
     de fato decodificado, um sinal mais confiável de que o protocolo customizado funcionou de
     ponta a ponta.
+68. **Relógio mestre em software (`requestAnimationFrame`/`performance.now()`), não o `timeupdate`
+    de um elemento "líder"** — um elemento de mídia real para de disparar eventos justo na troca de
+    `src` na fronteira de um clip, o momento mais crítico pra sincronizar as outras trilhas; um
+    relógio independente, com correção por desvio (`isDrifting`, 250ms de tolerância) em vez de
+    seek a cada frame, é mais robusto e evita micro-stutters visuais por correção excessiva.
+69. **Lógica de sincronização extraída pura em `timeline-playback.ts`
+    (`findClipAtTime`/`clipLocalTimeSeconds`/`isDrifting`/`msFromPointerOffset`), hook
+    (`useMultiTrackPlayback.ts`) só orquestra** — mesmo padrão já usado por
+    `segmentation-thresholds.ts`/`disk-space-thresholds.ts`: tudo que é decisão testável fica fora
+    do que manipula `HTMLMediaElement`/`requestAnimationFrame` (difícil e de baixo valor mockar em
+    Vitest).
+70. **Todas as trilhas tocam simultaneamente, não só a exibida no preview** — trilhas de vídeo sem
+    prioridade de exibição ficam com o elemento `hidden` (prontas para um futuro
+    picture-in-picture, EDIT-011); trilhas de áudio nunca têm elemento visual, mas tocam
+    normalmente - o valor de ter múltiplas trilhas de áudio gravadas separadamente é justamente
+    reconstituir o áudio completo da reunião na reprodução, não só uma trilha isolada.
+71. **Playhead desenhado dentro de cada lane/régua (mesma referência de largura que os próprios
+    marcos/clips daquele elemento), não uma linha absoluta sobre o componente `Timeline` inteiro**
+    — a régua não reserva a coluna do rótulo da trilha (110px) como as lanes reservam, então tem
+    largura diferente; desenhar por elemento evita medir qualquer coisa em JS, mantendo o
+    princípio 100%-porcentagem já registrado na decisão #61.
+72. **Reset do estado do player via `key={editProject.id}` no componente pai, não um `useEffect`
+    chamando `setState`** — o padrão recomendado pelo React pra "resetar estado quando um id muda"
+    é remontar a subárvore; evita o anti-padrão de setState síncrono dentro de um efeito
+    (`react-hooks/set-state-in-effect`) e deixa o reset atômico.
+73. **Buscar (seek) só por clique/toque na régua ou numa lane de trilha, sem arrastar o mouse
+    pressionado (drag-scrub) nem atalhos de teclado** — suficiente para navegar no tempo durante
+    esta etapa; um scrubber arrastável e atalhos (espaço = play/pause, setas = ±1 frame) ficam para
+    um refinamento futuro, não bloqueante para o MVP do editor.
+74. **Bug real encontrado e corrigido durante este incremento: `findClipAtTime(clips, 0)` no
+    instante 0 nunca encontrava clip nenhum.** Cada trilha abre seu primeiro segmento alguns
+    milissegundos DEPOIS do instante 0 da sessão (mesmo atraso assíncrono já documentado na
+    timeline somente-leitura, EDIT-002 - `clip.startMs` quase nunca é exatamente `0`). O
+    pré-carregamento do primeiro frame (`useMultiTrackPlayback`, ao montar) chamava
+    `findClipAtTime(clips, 0)`, que retornava `null` porque `0 >= clip.startMs` era falso -
+    `el.src` nunca era atribuído, e o preview ficava pra sempre sem nenhum frame decodificado
+    (sintoma: timeout indefinido em `videoWidth > 0`, não flakiness recuperável por retry).
+    Corrigido fazendo `findClipAtTime` retornar o PRIMEIRO clip quando o instante pedido é ANTES
+    dele (em vez de `null`) - só um gap real ENTRE dois clips, ou depois do último, continua
+    retornando `null`. Descoberto ao investigar por que o teste E2E de preview (não tocado por
+    este incremento) também passou a falhar - mesmo sintoma nos dois testes, mesma causa raiz,
+    não duas instâncias da flakiness ambiental já documentada (decisão #23).
 
 ## Testes
 
@@ -1036,10 +1131,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   `parseRangeHeader` (range simples/aberto/inválido/fora dos limites), `isValidMediaRelativePath`
   (aceita só o padrão exato, rejeita directory traversal), `buildMeetingMediaUrl` (encoding de
   path, separadores Windows normalizados), `pickPreviewTrack`/`isVideoTrackType` (prioridade
-  tela > câmera > áudio)**, wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo
+  tela > câmera > áudio)**, **sincronização de reprodução multi-trilha: `findClipAtTime` (clip que
+  cobre um instante, `null` num gap/antes do primeiro/depois do último), `clipLocalTimeSeconds`
+  (conversão global→local com clamp), `isDrifting` (limiar padrão e customizado),
+  `msFromPointerOffset` (clique em pixel → instante global, com clamp nas duas pontas e divisão
+  por zero segura)**, wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo
   `project.openFolder`), erros de domínio, migrations (tabelas/índices/FKs), repositórios
   (project/settings/export-job), serviço de configurações, store de tema, smoke test de
-  componente (jsdom). **193 testes, 28 arquivos.**
+  componente (jsdom). **209 testes, 29 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -1067,6 +1166,15 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   lógica de recuperação em si é sólida mesmo sob a pior contenção de recursos observada nesta
   sessão até agora, e que os 8 fracassos são a mesma classe de flakiness ambiental já documentada
   (decisão #23), apenas numa instância particularmente severa, não uma regressão deste incremento.
+  **Hardening deste incremento (não relacionado ao playhead/multi-trilha em si)**: os blocos
+  `recording (screen + microphone)`, `recording (system audio + microphone)`,
+  `recording (pause/resume)` e `recording (markers)` estavam SEM `test.describe.configure({retries: 2})`
+  - um descuido pré-existente, não coberto pelos outros incrementos - o que fazia qualquer um deles
+  falhar de vez (sem chance de recuperação) ao bater na mesma flakiness ambiental que os demais
+  blocos toleram via retry. Corrigido para o mesmo padrão usado em todo o resto do arquivo.
+  Confirmado na validação: `recording (markers)` bateu na flakiness conhecida (`getByRole('status')`
+  sem "REC" a tempo) numa das duas execuções completas deste incremento e agora se recupera no
+  retry, exatamente como os demais blocos já faziam.
 - **Playwright** (`tests/e2e/library.spec.ts`, arquivo próprio - decisão #54): grava uma sessão
   real curta (só microfone), abre a Biblioteca, expande "Detalhes" (confirma a trilha de microfone
   com bytes reais), renomeia inline, exclui com o passo de confirmação, confirma que o item some da
@@ -1078,12 +1186,19 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   "/editor"; segundo teste confirma a rejeição ao tentar criar um projeto de edição para uma
   gravação que nunca chegou a `COMPLETED`; terceiro teste (`test.describe('editor (timeline)')`,
   EDIT-002) grava microfone + câmera, cria o projeto de edição, confirma duas faixas (uma por
-  trilha) com um clip cada; quarto teste (`test.describe('editor (preview)')`, EDIT-003) grava com
-  câmera, cria o projeto de edição, confirma que o `<video>` decodificou um frame real
-  (`videoWidth > 0`) via o protocolo `meeting-media://`. **4 testes**, validados estáveis em
-  múltiplas execuções isoladas consecutivas - a flakiness observada em alguns retries
-  (`getByLabel('Camera')` sem aparecer a tempo) é a mesma classe já documentada para a trilha de
-  câmera (decisão #23), sempre recuperada limpo no retry.
+  trilha) com um clip cada; quarto teste (`test.describe('editor (preview)')`, EDIT-003 parte 1)
+  grava com câmera, cria o projeto de edição, confirma que o `<video>` decodificou um frame real
+  (`videoWidth > 0`) via o protocolo `meeting-media://`; quinto teste
+  (`test.describe('editor (playback)')`, EDIT-003 parte 2) grava microfone + câmera, aperta
+  "Reproduzir" e confirma que AMBAS as trilhas avançam juntas (não só a exibida no preview),
+  "Pausar" congela o instante, e clicar perto do início da régua da timeline faz as duas trilhas
+  voltarem juntas. **5 testes**, validados em 2 execuções completas consecutivas da suíte inteira
+  após a correção do bug de `findClipAtTime` (decisão #74): o novo teste `editor (playback)` passou
+  de forma limpa (sem nenhum retry) nas DUAS execuções (10.1s e 10.2s) - a mesma vara de medir já
+  usada para julgar increments anteriores (feature nova estável, flakiness remanescente é só a
+  classe ambiental já documentada). A flakiness observada em alguns retries dos demais testes
+  (`getByLabel('Camera')`/`getByRole('status')` sem aparecer a tempo) é a mesma classe já
+  documentada para a trilha de câmera (decisão #23), sempre recuperada limpo no retry.
 
 ## Pendências conhecidas
 
@@ -1171,15 +1286,23 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - Sem indicação visual de gaps entre clips na mesma trilha (ex.: um pause/resume real deixaria
   dois segmentos consecutivos sem intervalo, mas uma trilha que só rotacionou por tamanho/tempo
   também não tem gap perceptível hoje) - refinamento futuro, não bloqueante para esta etapa.
-- **Preview (EDIT-003) só toca UMA trilha por vez**, sem nenhuma sincronização com as demais nem
-  com o playhead da timeline - clicar em "play" no `<video>`/`<audio>` não move nada na régua
-  acima, e vice-versa; isso é justamente o próximo incremento planejado.
-- Preview não troca de segmento automaticamente ao cruzar uma fronteira de rotação - só o
-  PRIMEIRO clip da trilha escolhida é tocado; uma gravação segmentada (por tempo/tamanho) mostra
-  só o começo. Concatenar/trocar de arquivo automaticamente ao alcançar o fim de um clip é parte
-  do trabalho do playhead sincronizado, ainda não implementado.
-- Sem controle de qual trilha usar no preview - `pickPreviewTrack` decide sozinho (tela > câmera >
-  primeira disponível), sem nenhuma forma de o usuário escolher outra trilha manualmente.
+- Sem controle de qual trilha usar como preview visual principal - `pickPreviewTrack` decide
+  sozinho (tela > câmera > primeira disponível), sem nenhuma forma de o usuário escolher outra
+  trilha manualmente ou ver duas trilhas de vídeo ao mesmo tempo (isso é o layout PiP/lado-a-lado
+  planejado pra EDIT-011).
+- Sincronização entre trilhas tem tolerância de 250ms (`DRIFT_THRESHOLD_SECONDS`) - suficiente
+  para revisar uma gravação, mas não é sample-accurate como um editor profissional de verdade;
+  refinamento futuro, não bloqueante para o MVP.
+- Buscar (seek) só funciona por clique/toque na régua ou numa lane de trilha - sem arrastar o
+  mouse pressionado (drag-scrub contínuo) nem atalhos de teclado (espaço = play/pause, setas = ±1
+  frame).
+- Sem controle de volume/mudo por trilha na reprodução (ex.: silenciar o microfone e ouvir só o
+  áudio do sistema) - todas as trilhas de áudio tocam sempre, sem ajuste individual; isso faz
+  parte do trabalho de ganho/mudo/fade (EDIT-008/009), ainda não implementado.
+- O relógio do player não pausa sozinho ao final de cada clip em caso de gap real entre segmentos
+  de uma mesma trilha (ex.: um pause/resume real) - a trilha simplesmente fica pausada durante o
+  gap e retoma quando o próximo clip começa; comportamento correto, mas sem nenhuma indicação
+  visual de "sem sinal" nesse intervalo.
 
 ## Próximo passo
 
@@ -1190,17 +1313,16 @@ ponta. A **Fase 2 — Recovery + Library** também está completa: RECOV-001/002
 detecção e reparo de gravações incompletas) e LIB-001/002/004/005/006 (listar, detalhes, renomear,
 mostrar na pasta, excluir) funcionam de ponta a ponta. A **Fase 3 — Editor MVP** está em andamento:
 EDIT-001 (criar/abrir projeto de edição), EDIT-002 (timeline compilada somente-leitura) e EDIT-003
-parte 1 (preview de uma trilha via protocolo de mídia local seguro) já funcionam de ponta a ponta.
+completo, partes 1 e 2 (preview com playhead sincronizado e reprodução multi-trilha via protocolo
+de mídia local seguro) já funcionam de ponta a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 3 — Editor MVP**: EDIT-003 parte 2 - playhead/scrubber sincronizado com a
-   timeline (mover o player ao arrastar a régua, e vice-versa) e reprodução simultânea de múltiplas
-   trilhas (o desafio técnico maior desta fase: sincronizar até 4 elementos `<video>`/`<audio>`,
-   cada um trocando de arquivo automaticamente ao cruzar uma fronteira de segmento/rotação) -
-   depois corte/split/remover intervalo (EDIT-004/005/006), undo/redo (EDIT-007), ganho/mudo/fade
+1. Continuar a **Fase 3 — Editor MVP**: corte/split/remover intervalo (EDIT-004/005/006) - a
+   primeira operação de edição real, consumindo `edit_operations` (tabela existente desde a
+   Fase 0, sem nenhum uso até agora) - depois undo/redo (EDIT-007), ganho/mudo/fade
    (EDIT-008/009), visibilidade/transformação de câmera (EDIT-010), layout (PiP/lado-a-lado/
    só-tela/só-câmera, EDIT-011), autosave (EDIT-012) - cada operação provavelmente seu próprio
    incremento, dado o tamanho desta fase (05_MEDIA_EDITOR.md).

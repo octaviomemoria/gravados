@@ -545,3 +545,34 @@ body {
   border-radius: var(--ms-radius-md);
   background: #000;
 }
+
+/* EDIT-003 parte 2 - controles do player multi-trilha (play/pausar + relogio). */
+.editor-player-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--ms-space-3);
+  margin: var(--ms-space-2) 0 var(--ms-space-4);
+}
+
+.editor-player-controls__time {
+  font-variant-numeric: tabular-nums;
+  color: var(--ms-color-text-muted);
+}
+
+/* EDIT-003 parte 2 - regua/lanes clicaveis buscam (seek) o player; cursor indica isso. */
+.timeline__ruler--seekable,
+.timeline__track-lane--seekable {
+  cursor: pointer;
+}
+
+/* Linha do playhead - desenhada dentro da regua e de CADA lane de trilha (mesma referencia de
+   largura que os marcos/clips daquele elemento, ver comentario em Timeline.tsx). */
+.timeline__playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ms-color-danger);
+  pointer-events: none;
+  z-index: 1;
+}

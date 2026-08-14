@@ -283,3 +283,132 @@ test.describe('editor (preview)', () => {
     )
   })
 })
+
+/**
+ * EDIT-003 parte 2 (decimo sexto incremento - playhead sincronizado + multi-trilha). Grava
+ * camera + microfone (uma trilha de video, uma de audio) para provar o requisito central deste
+ * incremento: as DUAS trilhas avancam JUNTAS quando o usuario aperta "Reproduzir" (nao so a
+ * trilha escolhida para o preview visual), "Pausar" congela ambas, e buscar (clicar na regua da
+ * timeline) resincroniza as duas ao mesmo instante. Limiares de tempo propositalmente frouxos
+ * (a gravacao real dura so ~1-2s neste ambiente de teste - fake media device + parar assim que o
+ * primeiro chunk aparece) - o objetivo e provar o COMPORTAMENTO (avanca / congela / resincroniza
+ * junto), nao validar matematica de proporcao exata contra uma gravacao tao curta.
+ */
+test.describe('editor (playback)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await electronApp.close()
+  })
+
+  test('plays, pauses, and seeks multiple tracks in lockstep', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - playback ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+    const cameraSelect = appWindow.getByLabel('Camera', { exact: true })
+    await expect(cameraSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cameraSelect.selectOption({ index: 1 })
+    await expect(appWindow.locator('video.camera-preview')).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    const cameraPath = join(rootPath, 'source', 'camera', 'camera_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath) && fileHasBytes(cameraPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando os primeiros chunks de audio e video serem persistidos em disco'
+      })
+      .toBe(true)
+    // Espera um pouco mais antes de parar - o objetivo deste teste e provar SINCRONIZACAO entre
+    // trilhas avancando de verdade, o que precisa de uma janela de conteudo real com folga (o
+    // primeiro chunk sozinho pode render um clip de so alguns milissegundos de largura sob
+    // contencao de maquina, estreito demais pra qualquer limiar de avanco fazer sentido).
+    await appWindow.waitForTimeout(1500)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+
+    const video = appWindow.locator('video.editor-preview')
+    await expect(video).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await appWindow.waitForFunction(
+      () => {
+        const element = document.querySelector('video.editor-preview') as HTMLVideoElement | null
+        return !!element && element.readyState >= 1 && element.videoWidth > 0
+      },
+      { timeout: POLL_TIMEOUT_MS }
+    )
+    // A trilha de audio (microfone) nao tem elemento visual proprio de proposito (nunca tem
+    // imagem) - ver comentario em `EditorProjectPage.tsx`.
+    const hiddenAudio = appWindow.locator('audio[data-track-type="MICROPHONE"]')
+    await expect(hiddenAudio).toBeAttached()
+
+    // --- Reproduzir: as duas trilhas avancam JUNTAS, nao so a exibida no preview. Limiar de
+    // avanco propositalmente pequeno (10ms) - o objetivo e provar que AMBAS avancam juntas, nao
+    // validar matematica de proporcao exata contra uma gravacao curta.
+    const playButton = appWindow.getByRole('button', { name: 'Reproduzir' })
+    await expect(playButton).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await playButton.click()
+    await expect(appWindow.getByRole('button', { name: 'Pausar' })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await appWindow.waitForFunction(
+      () => {
+        const v = document.querySelector('video.editor-preview') as HTMLVideoElement | null
+        const a = document.querySelector(
+          'audio[data-track-type="MICROPHONE"]'
+        ) as HTMLAudioElement | null
+        return !!v && !!a && v.currentTime > 0.01 && a.currentTime > 0.01
+      },
+      { timeout: POLL_TIMEOUT_MS }
+    )
+
+    // --- Pausar: o instante congela (nao continua avancando sozinho).
+    await appWindow.getByRole('button', { name: 'Pausar' }).click()
+    await expect(playButton).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    const frozenAt = await video.evaluate((el: HTMLVideoElement) => el.currentTime)
+    await appWindow.waitForTimeout(400)
+    const stillFrozenAt = await video.evaluate((el: HTMLVideoElement) => el.currentTime)
+    expect(stillFrozenAt).toBeCloseTo(frozenAt, 1)
+
+    // --- Buscar (clicar perto do inicio da regua): as duas trilhas voltam JUNTAS.
+    await appWindow.locator('.timeline__ruler').click({ position: { x: 2, y: 5 } })
+    await appWindow.waitForFunction(
+      () => {
+        const v = document.querySelector('video.editor-preview') as HTMLVideoElement | null
+        const a = document.querySelector(
+          'audio[data-track-type="MICROPHONE"]'
+        ) as HTMLAudioElement | null
+        return !!v && !!a && v.currentTime < 0.5 && a.currentTime < 0.5
+      },
+      { timeout: POLL_TIMEOUT_MS }
+    )
+  })
+})
