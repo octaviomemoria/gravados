@@ -54,6 +54,16 @@ export const TimelineClipSchema = z.object({
   relativePath: z.string(),
   startMs: z.number().int().nonnegative(),
   endMs: z.number().int().nonnegative(),
+  /**
+   * EDIT-004/005/006 (decimo setimo incremento - corte/split/remover intervalo). Offset (ms)
+   * DENTRO DO ARQUIVO de origem onde o conteudo deste clip comeca - sempre `0` na timeline BRUTA
+   * (`EditorService.getTimeline`, um segmento sempre usado do seu proprio inicio), mas pode ser
+   * maior que zero na timeline EDITADA (`getEditedTimeline`) quando um `REMOVE_RANGE` corta o
+   * INICIO de um clip: a parte que sobra ainda referencia o mesmo `relativePath`, so comecando
+   * mais adiante dentro do arquivo. Necessario porque o player (`useMultiTrackPlayback`) precisa
+   * saber ONDE no arquivo buscar, nao so por quanto tempo tocar.
+   */
+  sourceStartMs: z.number().int().nonnegative(),
   byteSize: z.number().int().nonnegative()
 })
 export type TimelineClip = z.infer<typeof TimelineClipSchema>
@@ -74,3 +84,39 @@ export const GetTimelineResponseSchema = z.object({
   tracks: z.array(TimelineTrackSchema)
 })
 export type GetTimelineResponse = z.infer<typeof GetTimelineResponseSchema>
+
+/**
+ * EDIT-004/005/006 (decimo setimo incremento - Fase 3, primeira operacao de edicao real). A
+ * timeline EDITADA - a bruta (`getTimeline`) com o LOG ordenado de `edit_operations` ja aplicado
+ * por cima (hoje so `REMOVE_RANGE` existe; tipos futuros - gain/fade/camera transform, EDIT-008
+ * em diante - sao ignorados pelo compilador sem quebrar, ate ganharem seu proprio incremento).
+ * Mesmo formato de resposta que `getTimeline` - o consumidor (preview/timeline na UI) nao
+ * precisa distinguir "bruta" de "editada", so troca qual canal chama.
+ */
+export const GetEditedTimelineRequestSchema = GetTimelineRequestSchema
+export type GetEditedTimelineRequest = GetTimelineRequest
+export const GetEditedTimelineResponseSchema = GetTimelineResponseSchema
+export type GetEditedTimelineResponse = GetTimelineResponse
+
+/**
+ * Corte/split/remover-intervalo (Trim/Split/Delete range de `05_MEDIA_EDITOR.md` §4) sao todos o
+ * MESMO primitivo aqui: um `REMOVE_RANGE` que apaga `[startMs, endMs)` de TODAS as trilhas
+ * simultaneamente e desloca tudo depois para a esquerda. "Trim inicio" = `REMOVE_RANGE(0, X)`;
+ * "trim fim" = `REMOVE_RANGE(X, totalDurationMs)`; "split + apagar o meio" = uma selecao
+ * arbitraria no meio da timeline - a UI so oferece atalhos diferentes para o mesmo IPC. `startMs`/
+ * `endMs` sao relativos a timeline EDITADA ATUAL (apos as operacoes anteriores ja aplicadas), nao
+ * a timeline bruta original - o mesmo referencial que o usuario ve na tela no momento do corte.
+ */
+export const RemoveRangeRequestSchema = z
+  .object({
+    editProjectId: IdSchema,
+    startMs: z.number().int().nonnegative(),
+    endMs: z.number().int().positive()
+  })
+  .refine((value) => value.startMs < value.endMs, {
+    message: 'startMs deve ser menor que endMs'
+  })
+export type RemoveRangeRequest = z.infer<typeof RemoveRangeRequestSchema>
+/** Retorna a timeline editada RECEM-RECALCULADA - poupa o chamador de um segundo round-trip. */
+export const RemoveRangeResponseSchema = GetTimelineResponseSchema
+export type RemoveRangeResponse = GetTimelineResponse

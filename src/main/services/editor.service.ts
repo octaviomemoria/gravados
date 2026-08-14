@@ -3,9 +3,11 @@ import type { EditProjectRepository } from '../database/repositories/edit-projec
 import type { ProjectRepository } from '../database/repositories/project.repository'
 import type { TrackRepository } from '../database/repositories/track.repository'
 import type { SegmentRepository } from '../database/repositories/segment.repository'
-import type { EditProjectEntity } from '../../shared/types/entities'
+import type { EditOperationRepository } from '../database/repositories/edit-operation.repository'
+import type { EditProjectEntity, EditOperationEntity } from '../../shared/types/entities'
 import type { GetTimelineResponse, TimelineTrack } from '../../shared/schemas/editor.schema'
 import { NotFoundError, ValidationError } from '../../shared/types/domain-errors'
+import { applyRemoveRange } from './apply-remove-range'
 
 /**
  * EDIT-001 (decimo segundo incremento - Fase 3, Editor MVP). Cria/consulta projetos de edicao
@@ -18,7 +20,8 @@ export class EditorService {
     private readonly editProjectRepository: EditProjectRepository,
     private readonly projectRepository: ProjectRepository,
     private readonly trackRepository: TrackRepository,
-    private readonly segmentRepository: SegmentRepository
+    private readonly segmentRepository: SegmentRepository,
+    private readonly editOperationRepository: EditOperationRepository
   ) {}
 
   /**
@@ -100,6 +103,9 @@ export class EditorService {
               relativePath: segment.relativePath,
               startMs,
               endMs: startMs + Math.max(0, durationMs),
+              // Timeline BRUTA - todo clip usa o segmento inteiro desde o proprio inicio. So a
+              // timeline EDITADA (`getEditedTimeline`) pode produzir um `sourceStartMs` > 0.
+              sourceStartMs: 0,
               byteSize: segment.byteSize
             }
           })
@@ -116,4 +122,70 @@ export class EditorService {
 
     return { editProjectId, projectId: project.id, totalDurationMs, tracks }
   }
+
+  /**
+   * EDIT-004/005/006 (decimo setimo incremento - primeira operacao de edicao real). A timeline
+   * BRUTA (`getTimeline`) com o LOG ordenado de `edit_operations` aplicado por cima, uma operacao
+   * de cada vez, em `sequence` - cada `REMOVE_RANGE` opera sobre o RESULTADO da anterior (a
+   * timeline "atual" do ponto de vista do usuario naquele momento), nunca sobre a bruta original
+   * diretamente. Tipos de operacao ainda nao implementados (gain/fade/camera transform - EDIT-008
+   * em diante) sao ignorados silenciosamente - o compilador nunca quebra so porque um tipo futuro
+   * apareceu no log.
+   */
+  getEditedTimeline(editProjectId: string): GetTimelineResponse {
+    const raw = this.getTimeline(editProjectId)
+    const operations = this.editOperationRepository.listByEditProject(editProjectId)
+
+    let tracks = raw.tracks
+    for (const operation of operations) {
+      if (operation.type !== 'REMOVE_RANGE') continue
+      if (operation.startMs === null || operation.endMs === null) continue
+      tracks = applyRemoveRange(tracks, operation.startMs, operation.endMs)
+    }
+    // Trilha que perdeu todos os clips na edicao (ex.: um REMOVE_RANGE cobrindo a unica trilha de
+    // video inteira) some da timeline, mesmo raciocinio ja aplicado em `getTimeline`.
+    tracks = tracks.filter((track) => track.clips.length > 0)
+
+    return { ...raw, tracks, totalDurationMs: computeTotalDurationMs(tracks) }
+  }
+
+  /**
+   * Corte/split/remover-intervalo (`05_MEDIA_EDITOR.md` §4) - ver comentario em
+   * `RemoveRangeRequestSchema` (shared) sobre os tres serem o MESMO primitivo aqui. Valida contra
+   * a timeline EDITADA ATUAL (nao a bruta) - `endMs` alem do fim atual, ou um intervalo vazio,
+   * sao rejeitados antes de qualquer escrita.
+   */
+  removeRange(editProjectId: string, startMs: number, endMs: number): GetTimelineResponse {
+    const editProject = this.getEditProject(editProjectId)
+    const current = this.getEditedTimeline(editProjectId)
+    if (startMs >= endMs) {
+      throw new ValidationError('startMs deve ser menor que endMs')
+    }
+    if (endMs > current.totalDurationMs) {
+      throw new ValidationError('O intervalo informado vai alem do fim atual da timeline')
+    }
+
+    const operations = this.editOperationRepository.listByEditProject(editProjectId)
+    const operation: EditOperationEntity = {
+      id: randomUUID(),
+      editProjectId,
+      sequence: operations.length + 1,
+      type: 'REMOVE_RANGE',
+      startMs,
+      endMs,
+      trackId: null,
+      payloadJson: '{}'
+    }
+    this.editOperationRepository.create(operation)
+    this.editProjectRepository.touchAfterEdit(editProjectId, editProject.revision + 1)
+
+    return this.getEditedTimeline(editProjectId)
+  }
+}
+
+function computeTotalDurationMs(tracks: TimelineTrack[]): number {
+  return tracks.reduce((max, track) => {
+    const trackEnd = track.clips.reduce((clipMax, clip) => Math.max(clipMax, clip.endMs), 0)
+    return Math.max(max, trackEnd)
+  }, 0)
 }

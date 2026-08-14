@@ -412,3 +412,145 @@ test.describe('editor (playback)', () => {
     )
   })
 })
+
+/**
+ * EDIT-004/005/006 (decimo setimo incremento - primeira operacao de edicao real). Confirma
+ * "Cortar antes daqui" (trim inicio) e o fluxo de selecao manual (marcar inicio/fim + "Remover
+ * trecho selecionado") de ponta a ponta - clique na UI ate a timeline editada refletir o corte.
+ * Verificacao via `window.meetingStudio.editor.getEditedTimeline` (chamada direta pela API, mesmo
+ * padrao ja usado em outros testes para evitar depender de parsing fragil de texto na tela) em
+ * vez de matematica de proporcao exata contra uma gravacao curta - o objetivo e provar que o
+ * clique realmente chega no IPC e volta refletido na timeline, nao validar milissegundos exatos.
+ */
+test.describe('editor (trim/remove-range)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await electronApp.close()
+  })
+
+  test('trims the start and then removes a manually marked selection', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - trim ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const cameraSelect = appWindow.getByLabel('Camera', { exact: true })
+    await expect(cameraSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cameraSelect.selectOption({ index: 1 })
+    await expect(appWindow.locator('video.camera-preview')).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const cameraPath = join(rootPath, 'source', 'camera', 'camera_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(cameraPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de video ser persistido em disco'
+      })
+      .toBe(true)
+    // Mesma folga usada no teste de playback - uma janela de conteudo maior deixa margem real
+    // pra cortar um pedaco do inicio sem que o resultado vire uma timeline vazia/zero.
+    await appWindow.waitForTimeout(1500)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+
+    const video = appWindow.locator('video.editor-preview')
+    await expect(video).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await appWindow.waitForFunction(
+      () => {
+        const element = document.querySelector('video.editor-preview') as HTMLVideoElement | null
+        return !!element && element.readyState >= 1 && element.videoWidth > 0
+      },
+      { timeout: POLL_TIMEOUT_MS }
+    )
+
+    const editProjectId = await appWindow.evaluate(async () => {
+      const list = await window.meetingStudio.editor.list()
+      return list[0]!.id
+    })
+    const before = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(before.totalDurationMs).toBeGreaterThan(0)
+
+    // --- Reproduz um pouco, pausa, e corta tudo ANTES do playhead ("Cortar antes daqui").
+    await appWindow.getByRole('button', { name: 'Reproduzir' }).click()
+    await appWindow.waitForFunction(
+      () => {
+        const v = document.querySelector('video.editor-preview') as HTMLVideoElement | null
+        return !!v && v.currentTime > 0.05
+      },
+      { timeout: POLL_TIMEOUT_MS }
+    )
+    await appWindow.getByRole('button', { name: 'Pausar' }).click()
+    await appWindow.getByRole('button', { name: 'Cortar antes daqui' }).click()
+
+    // O botao "Cortar antes daqui" fica desabilitado assim que o playhead volta pro zero (efeito
+    // do proprio corte, ver `EditorProjectPage.tsx`) - esperar por isso confirma que o pedido
+    // IPC completou e a timeline editada foi substituida na tela.
+    await expect(appWindow.getByRole('button', { name: 'Cortar antes daqui' })).toBeDisabled({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(appWindow.locator('.editor-edit-controls__error')).toHaveCount(0)
+
+    const afterTrim = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(afterTrim.totalDurationMs).toBeLessThan(before.totalDurationMs)
+    expect(afterTrim.totalDurationMs).toBeGreaterThan(0)
+
+    // --- Marca uma selecao manual (inicio no zero, fim depois de reproduzir um pouco) e remove.
+    await appWindow.getByRole('button', { name: 'Marcar inicio da selecao' }).click()
+    await appWindow.getByRole('button', { name: 'Reproduzir' }).click()
+    await appWindow.waitForFunction(
+      () => {
+        const v = document.querySelector('video.editor-preview') as HTMLVideoElement | null
+        return !!v && v.currentTime > 0.05
+      },
+      { timeout: POLL_TIMEOUT_MS }
+    )
+    await appWindow.getByRole('button', { name: 'Pausar' }).click()
+    await appWindow.getByRole('button', { name: 'Marcar fim da selecao' }).click()
+    await expect(appWindow.locator('.editor-edit-controls__selection')).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+
+    const removeButton = appWindow.getByRole('button', { name: 'Remover trecho selecionado' })
+    await expect(removeButton).toBeEnabled({ timeout: POLL_TIMEOUT_MS })
+    await removeButton.click()
+    await expect(removeButton).toBeDisabled({ timeout: POLL_TIMEOUT_MS })
+    await expect(appWindow.locator('.editor-edit-controls__error')).toHaveCount(0)
+
+    const afterSelection = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(afterSelection.totalDurationMs).toBeLessThan(afterTrim.totalDurationMs)
+  })
+})

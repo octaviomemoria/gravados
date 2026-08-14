@@ -9,7 +9,8 @@ import {
   EditProjectRepository,
   TrackRepository,
   SegmentRepository,
-  MarkerRepository
+  MarkerRepository,
+  EditOperationRepository
 } from '../../../src/main/database/repositories'
 import { RecordingStateMachine } from '../../../src/main/recording/recording-state-machine'
 import { RecordingSessionManager } from '../../../src/main/recording/recording-session-manager'
@@ -25,6 +26,7 @@ describe('EditorService', () => {
   let editProjectRepository: EditProjectRepository
   let trackRepository: TrackRepository
   let segmentRepository: SegmentRepository
+  let editOperationRepository: EditOperationRepository
   let manager: RecordingSessionManager
   let service: EditorService
   let libraryRoot: string
@@ -36,6 +38,7 @@ describe('EditorService', () => {
     editProjectRepository = new EditProjectRepository(client.db)
     trackRepository = new TrackRepository(client.db)
     segmentRepository = new SegmentRepository(client.db)
+    editOperationRepository = new EditOperationRepository(client.db)
     const markerRepository = new MarkerRepository(client.db)
     manager = new RecordingSessionManager(
       projectRepository,
@@ -49,7 +52,8 @@ describe('EditorService', () => {
       editProjectRepository,
       projectRepository,
       trackRepository,
-      segmentRepository
+      segmentRepository,
+      editOperationRepository
     )
   })
 
@@ -260,6 +264,125 @@ describe('EditorService', () => {
       const editProject = service.createEditProject(project.id)
       const timeline = service.getTimeline(editProject.id)
       expect(timeline.tracks).toEqual([])
+    })
+  })
+
+  /** EDIT-004/005/006 (decimo setimo incremento - primeira operacao de edicao real). Segmentos
+   * com `startedAtMs` FIXO (nao via `RecordingSessionManager` real, que tem alguns ms de overhead
+   * assincrono) - o objetivo aqui e matematica de corte PRECISA, ja coberta em profundidade pelos
+   * testes puros de `applyRemoveRange` (`tests/unit/main/apply-remove-range.test.ts`); estes
+   * testes so confirmam que o SERVICO (validacao, persistencia, sequenciamento, revision) liga tudo
+   * corretamente. */
+  describe('getEditedTimeline / removeRange', () => {
+    function createTrackWithSegment(
+      projectId: string,
+      type: 'MICROPHONE' | 'CAMERA',
+      startMs: number,
+      endMs: number
+    ): string {
+      const trackId = randomUUID()
+      trackRepository.create({
+        id: trackId,
+        projectId,
+        type,
+        enabled: true,
+        position: 0,
+        startOffsetMs: 0
+      })
+      segmentRepository.create({
+        id: randomUUID(),
+        trackId,
+        seqIndex: 1,
+        relativePath: `source/${type.toLowerCase()}/${type.toLowerCase()}_000001.webm`,
+        startedAtMs: startMs,
+        endedAtMs: endMs,
+        durationMs: endMs - startMs,
+        byteSize: 1000,
+        mimeType: type === 'CAMERA' ? 'video/webm' : 'audio/webm',
+        finalized: true
+      })
+      return trackId
+    }
+
+    it('equals getTimeline when no operations exist yet', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(service.getEditedTimeline(editProject.id)).toEqual(service.getTimeline(editProject.id))
+    })
+
+    it('reflects a REMOVE_RANGE operation and shrinks totalDurationMs accordingly', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      const result = service.removeRange(editProject.id, 1000, 2000)
+      expect(result.totalDurationMs).toBe(4000)
+      expect(result.tracks[0]!.clips).toEqual([
+        expect.objectContaining({ startMs: 0, endMs: 1000 }),
+        expect.objectContaining({ startMs: 1000, endMs: 4000, sourceStartMs: 2000 })
+      ])
+
+      const edited = service.getEditedTimeline(editProject.id)
+      expect(edited).toEqual(result)
+    })
+
+    it('composes two REMOVE_RANGE operations in sequence, each relative to the timeline as edited so far', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 10_000)
+      const editProject = service.createEditProject(project.id)
+
+      // Primeiro corte: [1000,2000) de uma timeline de 10000ms -> sobra 9000ms.
+      service.removeRange(editProject.id, 1000, 2000)
+      // Segundo corte: [1000,3000) DA TIMELINE JA EDITADA (9000ms), nao da original.
+      const result = service.removeRange(editProject.id, 1000, 3000)
+
+      expect(result.totalDurationMs).toBe(7000)
+    })
+
+    it('bumps the edit project revision on every successful removeRange', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(editProject.revision).toBe(1)
+
+      service.removeRange(editProject.id, 1000, 2000)
+      expect(service.getEditProject(editProject.id).revision).toBe(2)
+
+      service.removeRange(editProject.id, 1000, 1500)
+      expect(service.getEditProject(editProject.id).revision).toBe(3)
+    })
+
+    it('rejects a range where startMs >= endMs', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(() => service.removeRange(editProject.id, 2000, 2000)).toThrow()
+      expect(() => service.removeRange(editProject.id, 3000, 1000)).toThrow()
+    })
+
+    it('rejects a range extending past the current edited timeline duration', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(() => service.removeRange(editProject.id, 4000, 6000)).toThrow()
+    })
+
+    it('applies the same cut across multiple tracks simultaneously', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      const result = service.removeRange(editProject.id, 1000, 2000)
+      expect(result.tracks).toHaveLength(2)
+      for (const track of result.tracks) {
+        expect(track.clips.reduce((sum, clip) => sum + (clip.endMs - clip.startMs), 0)).toBe(4000)
+      }
+    })
+
+    it('throws NotFoundError for an unknown edit project on getEditedTimeline', () => {
+      expect(() => service.getEditedTimeline(randomUUID())).toThrow('nao encontrado')
     })
   })
 })

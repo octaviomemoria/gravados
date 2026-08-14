@@ -7,7 +7,11 @@ import {
   ListEditProjectsRequestSchema,
   ListEditProjectsResponseSchema,
   GetTimelineRequestSchema,
-  GetTimelineResponseSchema
+  GetTimelineResponseSchema,
+  GetEditedTimelineRequestSchema,
+  GetEditedTimelineResponseSchema,
+  RemoveRangeRequestSchema,
+  RemoveRangeResponseSchema
 } from '../../../shared/schemas/editor.schema'
 import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
@@ -37,5 +41,18 @@ export function registerEditorHandlers(context: AppContext): void {
     IPC_CHANNELS.editor.getTimeline,
     { request: GetTimelineRequestSchema, response: GetTimelineResponseSchema },
     async (request) => context.editorService.getTimeline(request.editProjectId)
+  )
+
+  registerHandler(
+    IPC_CHANNELS.editor.getEditedTimeline,
+    { request: GetEditedTimelineRequestSchema, response: GetEditedTimelineResponseSchema },
+    async (request) => context.editorService.getEditedTimeline(request.editProjectId)
+  )
+
+  registerHandler(
+    IPC_CHANNELS.editor.removeRange,
+    { request: RemoveRangeRequestSchema, response: RemoveRangeResponseSchema },
+    async (request) =>
+      context.editorService.removeRange(request.editProjectId, request.startMs, request.endMs)
   )
 }

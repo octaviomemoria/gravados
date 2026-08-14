@@ -13,6 +13,7 @@ function clip(overrides: Partial<TimelineClip> = {}): TimelineClip {
     segmentId: 'segment-1',
     seqIndex: 1,
     relativePath: 'source/camera/camera_000001.webm',
+    sourceStartMs: 0,
     startMs: 0,
     endMs: 1000,
     byteSize: 1000,
@@ -65,6 +66,12 @@ describe('clipLocalTimeSeconds', () => {
   it('clamps to the clip duration when the global instant is past its end', () => {
     const c = clip({ startMs: 1000, endMs: 3000 })
     expect(clipLocalTimeSeconds(c, 10_000)).toBe(2)
+  })
+
+  it('adds sourceStartMs when the clip was trimmed at the head by a REMOVE_RANGE (EDIT-004/005/006)', () => {
+    const c = clip({ startMs: 1000, endMs: 3000, sourceStartMs: 500 })
+    expect(clipLocalTimeSeconds(c, 1500)).toBe(1)
+    expect(clipLocalTimeSeconds(c, 1000)).toBe(0.5)
   })
 })
 

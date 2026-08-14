@@ -536,6 +536,17 @@ body {
   min-width: 2px;
 }
 
+/* EDIT-004/005/006 - intervalo marcado para corte/remocao, por cima dos clips (semi-transparente
+   para nao esconder o que sera removido) mas abaixo do playhead (z-index maior). */
+.timeline__selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--ms-color-danger);
+  opacity: 0.25;
+  pointer-events: none;
+}
+
 /* EDIT-003 - preview minimo (uma trilha por vez, sem playhead sincronizado ainda). */
 .editor-preview {
   display: block;
@@ -557,6 +568,25 @@ body {
 .editor-player-controls__time {
   font-variant-numeric: tabular-nums;
   color: var(--ms-color-text-muted);
+}
+
+/* EDIT-004/005/006 - corte/split/remover-intervalo (trim inicio/fim + selecao manual). */
+.editor-edit-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ms-space-2);
+  margin: 0 0 var(--ms-space-4);
+}
+
+.editor-edit-controls__selection {
+  font-variant-numeric: tabular-nums;
+  color: var(--ms-color-text-muted);
+}
+
+.editor-edit-controls__error {
+  color: var(--ms-color-danger);
+  margin: 0 0 var(--ms-space-3);
 }
 
 /* EDIT-003 parte 2 - regua/lanes clicaveis buscam (seek) o player; cursor indica isso. */

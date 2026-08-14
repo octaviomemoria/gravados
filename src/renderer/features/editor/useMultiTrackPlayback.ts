@@ -52,8 +52,15 @@ export function useMultiTrackPlayback(timeline: GetTimelineResponse | null): Mul
   const tickRef = useRef<(wallNow: number) => void>(() => {})
 
   const setPlayheadMs = useCallback((ms: number) => {
-    playheadMsRef.current = ms
-    setPlayheadMsState(ms)
+    // Arredondado para inteiro AQUI, uma unica vez na origem - `ms` chega fracionario durante a
+    // reproducao (`performance.now()` tem precisao de sub-milissegundo), mas `playheadMs` e usado
+    // diretamente como `startMs`/`endMs` de operacoes de edicao (EDIT-004/005/006 - `removeRange`,
+    // `Timeline`'s `selection`), cujo schema exige inteiro (`RemoveRangeRequestSchema`). Arredondar
+    // centralizado aqui poupa cada consumidor de lembrar disso individualmente; a perda de
+    // precisao sub-ms e imperceptivel pra revisao/edicao de gravacao.
+    const rounded = Math.round(ms)
+    playheadMsRef.current = rounded
+    setPlayheadMsState(rounded)
   }, [])
 
   const applyTimeToTrack = useCallback(

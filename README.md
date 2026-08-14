@@ -24,13 +24,15 @@ está completa: detecção e reparo de gravações interrompidas por um encerram
 ponta a ponta - ver [Recuperação de gravações incompletas](#recuperação-de-gravações-incompletas-fase-2)
 e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-excluir-fase-2). A
 **Fase 3 — Editor MVP** está em andamento: criar/abrir um projeto de edição vinculado a uma
-gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002) e o preview
-completo com playhead sincronizado e reprodução multi-trilha (EDIT-003, partes 1 e 2) já
-funcionam de ponta a ponta - ver
+gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002), o preview
+completo com playhead sincronizado e reprodução multi-trilha (EDIT-003, partes 1 e 2) e a primeira
+operação de edição real - corte/split/remover-intervalo (EDIT-004/005/006) - já funcionam de ponta
+a ponta - ver
 [Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3),
 [Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3),
-[Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3)
-e [Playhead sincronizado e reprodução multi-trilha](#playhead-sincronizado-e-reprodução-multi-trilha-fase-3).
+[Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3),
+[Playhead sincronizado e reprodução multi-trilha](#playhead-sincronizado-e-reprodução-multi-trilha-fase-3)
+e [Corte, split e remover intervalo](#corte-split-e-remover-intervalo-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -698,6 +700,58 @@ incremento anterior.
   provar o COMPORTAMENTO de sincronização, não validar matemática de proporção exata contra uma
   gravação tão curta.
 
+### Corte, split e remover intervalo (Fase 3)
+
+Décimo sétimo incremento - EDIT-004/005/006. Primeira operação de edição REAL - até aqui a
+timeline era só leitura, agora o usuário pode efetivamente encurtar a gravação. "Trim" (alterar
+início/fim útil), "Split" (dividir num ponto) e "Delete range" (remover um trecho) são todos o
+MESMO primitivo aqui, como o próprio `05_MEDIA_EDITOR.md` §6 já sugere no exemplo de modelo de
+edição: um `REMOVE_RANGE` que apaga `[startMs, endMs)` de TODAS as trilhas simultaneamente.
+
+- **`edit_operations` (tabela + `EditOperationRepository`, existentes desde a Fase 0, zero
+  consumidores até agora) ganham seu primeiro tipo de operação.** Um LOG ordenado (`sequence`) por
+  projeto de edição - `EditorService.getEditedTimeline()` pega a timeline BRUTA
+  (`getTimeline`) e aplica cada operação por cima, uma de cada vez, na ordem em que foram
+  criadas. Operações de tipos ainda não implementados (gain/fade/camera transform - EDIT-008 em
+  diante) são ignoradas silenciosamente pelo compilador - o log nunca quebra por causa de um tipo
+  futuro.
+- **`startMs`/`endMs` de cada operação são relativos à timeline JÁ EDITADA no momento em que foram
+  criadas, não à bruta original** - o mesmo referencial que o usuário via na tela ao fazer aquele
+  corte especificamente. Um segundo corte "empurra" a partir do resultado do primeiro, não da
+  gravação original - `removeRange()` sempre valida contra `getEditedTimeline()` (o estado ATUAL),
+  nunca contra `getTimeline()` (a base intocada).
+- **Algoritmo de corte puro** (`main/services/apply-remove-range.ts`, sem nenhum import de
+  `electron`): para cada clip de cada trilha, um clip inteiramente antes do corte fica intocado,
+  um inteiramente depois desloca para a esquerda pela duração removida, e um que se sobrepõe ao
+  corte é truncado - ou DIVIDIDO em dois (mesmo `segmentId`/arquivo, janelas diferentes) se o corte
+  cai inteiramente no meio dele. Um novo campo `sourceStartMs` em `TimelineClip` (sempre `0` na
+  timeline bruta) guarda ONDE dentro do ARQUIVO de origem o clip resultante começa - necessário
+  porque um clip cortado pela cabeça não começa mais do zero do próprio arquivo.
+  `useMultiTrackPlayback`'s `clipLocalTimeSeconds` soma esse offset ao calcular o `currentTime` do
+  player.
+- **UI**: "Cortar antes daqui"/"Cortar depois daqui" (trim, um clique, usam o playhead atual como
+  fronteira) e "Marcar início da seleção"/"Marcar fim da seleção" + "Remover trecho selecionado"
+  (delete range/split, seleção manual de um intervalo arbitrário, destacada em vermelho
+  translúcido na timeline). Depois de qualquer corte bem-sucedido, o player salta pro início
+  (`playback.seek(0)`) - o instante anterior pode nem existir mais na timeline mais curta.
+- **Bug real encontrado e corrigido durante a validação E2E**: `playback.playheadMs` é
+  alimentado por deltas de `performance.now()` (relógio mestre do player, EDIT-003 parte 2) -
+  **fracionário** por natureza, mas `RemoveRangeRequestSchema` exige `startMs`/`endMs` inteiros.
+  Clicar em "Cortar antes daqui" durante a reprodução enviava um `endMs` fracionário, a validação
+  Zod rejeitava na fronteira do IPC, e o botão nunca voltava a ficar desabilitado (sintoma:
+  timeout esperando o estado da UI assentar, reproduzido de forma consistente, não uma flakiness
+  ambiental qualquer). Corrigido arredondando UMA VEZ na origem (`setPlayheadMs`, dentro do hook) -
+  poupa todo consumidor futuro de lembrar disso individualmente.
+- Testado via 11 novos testes sintéticos do algoritmo puro
+  (`tests/unit/main/apply-remove-range.test.ts` - antes/depois/tocando a fronteira/split ao
+  meio/engolido inteiro/multi-trilha com layouts diferentes), 8 novos testes de integração do
+  `EditorService` (`tests/unit/main/editor.service.test.ts`, segmentos com `startedAtMs` FIXO para
+  matemática precisa - a precisão do algoritmo em si já está coberta pelos testes puros) e um novo
+  teste E2E (`test.describe('editor (trim/remove-range)')`): grava com câmera, corta o início via
+  botão, confirma via `editor.getEditedTimeline` (chamada direta pela API, não parsing de texto na
+  tela) que a duração encolheu, depois marca e remove uma seleção manual, confirmando um segundo
+  encolhimento.
+
 ## Estrutura de diretórios
 
 ```text
@@ -1090,6 +1144,58 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     retornando `null`. Descoberto ao investigar por que o teste E2E de preview (não tocado por
     este incremento) também passou a falhar - mesmo sintoma nos dois testes, mesma causa raiz,
     não duas instâncias da flakiness ambiental já documentada (decisão #23).
+75. **Trim/split/delete-range são o MESMO primitivo (`REMOVE_RANGE`), não três operações
+    diferentes no schema** — `05_MEDIA_EDITOR.md` §6 já mostra `REMOVE_RANGE` como a operação de
+    corte no modelo de edição; "trim inicio" é só `REMOVE_RANGE(0, X)`, "trim fim" é
+    `REMOVE_RANGE(X, totalDurationMs)`, e "split + apagar o meio" é uma seleção arbitrária no
+    meio da timeline - a UI oferece atalhos diferentes (botões de trim vs. marcar seleção
+    manualmente) para o MESMO canal IPC, em vez de multiplicar tipos de operação sem necessidade
+    real ainda.
+76. **`edit_operations.startMs`/`endMs` são relativos à timeline JÁ EDITADA no momento da
+    criação, não à bruta original** — `removeRange()` sempre valida e opera sobre
+    `getEditedTimeline()` (o estado atual, com as operações anteriores já aplicadas), nunca sobre
+    `getTimeline()` diretamente. Um segundo corte "empurra" a partir do resultado do primeiro -
+    o mesmo referencial que o usuário via na tela ao criar aquela operação especificamente
+    (padrão de "histórico incremental" já sugerido por `05_MEDIA_EDITOR.md` §7 para undo/redo,
+    ainda não implementado).
+77. **Algoritmo de corte extraído puro (`main/services/apply-remove-range.ts`), sem nenhum import
+    de `electron`** — mesmo padrão já usado em todo o projeto para lógica testável isoladamente
+    (`segmentation-thresholds.ts`, `timeline-playback.ts`). `EditorService.getEditedTimeline()`
+    só orquestra: busca a timeline bruta, aplica cada operação do log em sequência, filtra
+    trilhas que ficaram sem nenhum clip.
+78. **Novo campo `sourceStartMs` em `TimelineClip`** — offset (ms) DENTRO DO ARQUIVO de origem
+    onde o conteúdo de um clip começa; sempre `0` na timeline bruta (todo segmento é usado do
+    próprio início), mas pode ser maior depois que um `REMOVE_RANGE` corta a CABEÇA de um clip -
+    a parte que sobra ainda referencia o mesmo arquivo, só começando mais adiante nele. Sem esse
+    campo, o player não teria como saber ONDE no arquivo buscar depois de um corte no meio de um
+    clip, só por QUANTO TEMPO tocar.
+79. **Um corte no MEIO de um clip o divide em dois** (mesmo `segmentId`/`relativePath`, janelas
+    de tempo e `sourceStartMs` diferentes) — consequência direta do modelo anterior, não uma
+    decisão isolada. Quebra a suposição implícita de que `segmentId` é único por trilha (válida
+    até este incremento); a `key` do React na `Timeline` passou a ser `${segmentId}-${startMs}`
+    (startMs é garantido único entre clips da mesma trilha, já que não se sobrepõem por
+    construção).
+80. **Depois de qualquer corte bem-sucedido, o player salta para o início
+    (`playback.seek(0)`)** — o instante em que o usuário estava pode nem existir mais na timeline
+    mais curta (ou estar bem no meio do trecho que acabou de ser removido); saltar pro início é
+    previsível e é o mesmo comportamento de editores de vídeo convencionais depois de um corte,
+    em vez de tentar preservar uma posição que pode ser inválida.
+81. **Estado editável da timeline vive DENTRO de `EditorProjectView` (sincronizado da prop via
+    ajuste durante a renderização, não um `useEffect` chamando `setState`), não em
+    `EditorProjectPage`** — `removeRange` precisa poder SUBSTITUIR a timeline exibida pela
+    resposta já recalculada do IPC sem depender do componente pai refazer o fetch inteiro; o
+    padrão de "ajustar estado durante a renderização comparando com a última prop vista" é o
+    recomendado pelo próprio React para derivar estado de uma prop que muda, evitando o mesmo
+    anti-padrão (`react-hooks/set-state-in-effect`) já registrado na decisão #72.
+82. **Bug real encontrado e corrigido durante a validação E2E: `playback.playheadMs` chegava
+    FRACIONÁRIO (`performance.now()` tem sub-milissegundo de precisão) onde `startMs`/`endMs` de
+    `removeRange` exigem inteiro (`RemoveRangeRequestSchema`)** — clicar em "Cortar antes daqui"
+    durante a reprodução enviava um `endMs` fracionário, a validação Zod rejeitava na fronteira
+    do IPC, e o botão nunca voltava a ficar desabilitado (reproduzido de forma CONSISTENTE em 3
+    tentativas seguidas, não uma flakiness ambiental qualquer - o sinal de que era um bug real,
+    não sorte ruim). Corrigido arredondando uma única vez na origem (dentro de `setPlayheadMs`,
+    no hook) - poupa todo consumidor futuro (seleção manual, futuros atalhos de teclado) de
+    lembrar disso individualmente.
 
 ## Testes
 
@@ -1135,10 +1241,16 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   cobre um instante, `null` num gap/antes do primeiro/depois do último), `clipLocalTimeSeconds`
   (conversão global→local com clamp), `isDrifting` (limiar padrão e customizado),
   `msFromPointerOffset` (clique em pixel → instante global, com clamp nas duas pontas e divisão
-  por zero segura)**, wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo
-  `project.openFolder`), erros de domínio, migrations (tabelas/índices/FKs), repositórios
-  (project/settings/export-job), serviço de configurações, store de tema, smoke test de
-  componente (jsdom). **209 testes, 29 arquivos.**
+  por zero segura)**, **algoritmo puro de corte (`applyRemoveRange` - clip antes/depois/tocando a
+  fronteira/dividido ao meio/engolido inteiro, multi-trilha com layouts diferentes, seqIndex/
+  relativePath/byteSize preservados através de um split)**, **`EditorService.getEditedTimeline`/
+  `removeRange` de ponta a ponta (segmentos com `startedAtMs` fixo para matemática precisa: sem
+  operações ainda = igual à bruta, uma operação reflete o corte, duas operações compõem relativas
+  à timeline já editada, revision incrementa a cada corte, validação de intervalo inválido/além do
+  fim atual, corte simultâneo em múltiplas trilhas)**, wrapper de IPC (validação/erro/sucesso),
+  schemas Zod (incluindo `project.openFolder`), erros de domínio, migrations (tabelas/índices/FKs),
+  repositórios (project/settings/export-job), serviço de configurações, store de tema, smoke test
+  de componente (jsdom). **229 testes, 30 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -1192,13 +1304,22 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   (`test.describe('editor (playback)')`, EDIT-003 parte 2) grava microfone + câmera, aperta
   "Reproduzir" e confirma que AMBAS as trilhas avançam juntas (não só a exibida no preview),
   "Pausar" congela o instante, e clicar perto do início da régua da timeline faz as duas trilhas
-  voltarem juntas. **5 testes**, validados em 2 execuções completas consecutivas da suíte inteira
-  após a correção do bug de `findClipAtTime` (decisão #74): o novo teste `editor (playback)` passou
-  de forma limpa (sem nenhum retry) nas DUAS execuções (10.1s e 10.2s) - a mesma vara de medir já
-  usada para julgar increments anteriores (feature nova estável, flakiness remanescente é só a
-  classe ambiental já documentada). A flakiness observada em alguns retries dos demais testes
-  (`getByLabel('Camera')`/`getByRole('status')` sem aparecer a tempo) é a mesma classe já
-  documentada para a trilha de câmera (decisão #23), sempre recuperada limpo no retry.
+  voltarem juntas; sexto teste (`test.describe('editor (trim/remove-range)')`, EDIT-004/005/006)
+  grava com câmera, corta o início via "Cortar antes daqui" e confirma via `editor.getEditedTimeline`
+  (chamada direta pela API) que a duração encolheu, depois marca e remove uma seleção manual,
+  confirmando um segundo encolhimento. **6 testes**, validados em 2 execuções completas
+  consecutivas da suíte inteira após a correção do bug de arredondamento (decisão #82) - a mesma
+  vara de medir já usada pra distinguir bug real de flakiness ambiental ao longo de toda a sessão:
+  isolado, `editor (trim/remove-range)` passou de forma limpa (sem retry, 9.5s) assim que o fix
+  foi aplicado, depois de reproduzir a falha de forma CONSISTENTE (3 tentativas seguidas) com o
+  bug ainda presente. Nas duas execuções completas da suíte inteira, o teste passou limpo numa
+  (12.6s) e recuperou no primeiro retry na outra (a mesma classe de flakiness de câmera já
+  documentada, decisão #23) - nunca falhou de vez. A segunda execução completa coincidiu com uma
+  instância particularmente severa da contenção de recursos já registrada anteriormente nesta
+  sessão (18 processos `electron`/`node` concorrentes) - 2 testes PRÉ-EXISTENTES, não tocados por
+  este incremento (`library.spec.ts`, `recording (microphone + camera)`), esgotaram os 3 retries
+  configurados, mas nenhum teste NOVO deste incremento falhou de vez, mesma evidência já usada
+  para aceitar instâncias anteriores desta classe (decisão #23, recorrência documentada na Fase 2).
 
 ## Pendências conhecidas
 
@@ -1273,10 +1394,9 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   contagem + bytes totais) - suficiente para o MVP, mas insuficiente para uma futura timeline de
   edição, que precisará dos segmentos um a um.
 - Projeto de edição ainda não tem renomear nem excluir (só a Biblioteca tem essas ações, para
-  gravações - não para projetos de edição). A timeline (EDIT-002) é só leitura: sem
-  corte/split/remover intervalo, undo/redo, gain/fade, transformação de câmera nem layout ainda
-  (EDIT-004 em diante). `edit_operations` (tabela já existente desde a Fase 0) segue sem nenhum
-  canal IPC/uso - chega junto com a primeira operação de edição real.
+  gravações - não para projetos de edição). Corte/split/remover-intervalo (EDIT-004/005/006) já
+  funcionam; undo/redo, gain/mudo/fade, transformação de câmera e layout ainda não (EDIT-007 em
+  diante).
 - `EditorProjectPage` não trata um `id` de projeto de edição inexistente/inválido na URL de forma
   amigável (`editor.get` lança `NotFoundError`, capturado só como um estado de erro genérico) -
   refinamento futuro, não bloqueante.
@@ -1303,6 +1423,19 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   de uma mesma trilha (ex.: um pause/resume real) - a trilha simplesmente fica pausada durante o
   gap e retoma quando o próximo clip começa; comportamento correto, mas sem nenhuma indicação
   visual de "sem sinal" nesse intervalo.
+- **Sem undo/redo ainda (EDIT-007)** - um `REMOVE_RANGE` aplicado é permanente do ponto de vista
+  da UI (o arquivo original nunca é tocado, editor não-destrutivo por desenho, mas não há como
+  desfazer um corte pela interface); o log de operações (`edit_operations`) já registra tudo em
+  ordem, a base para desfazer/refazer já existe no banco, só falta o consumo.
+- **Sem visualização/gerenciamento do histórico de operações** - `EditOperationRepository.listByEditProject`
+  existe e é usado internamente por `getEditedTimeline`, mas não há tela nem canal IPC dedicado
+  pra listar/inspecionar os cortes já feitos num projeto de edição.
+- **Seleção manual (marcar início/fim) depende de reproduzir e pausar no ponto certo** - não há
+  ainda arrastar diretamente na régua/lane pra definir um intervalo (drag-select), nem digitar um
+  timestamp exato; suficiente pra este incremento, mas menos preciso que um scrubber arrastável.
+- **`removeRange` não valida limite mínimo de duração remanescente** - tecnicamente possível
+  remover a timeline inteira até sobrar `totalDurationMs = 0` (ou próximo disso); nenhum teste
+  cobre esse caso extremo, e a UI não impede explicitamente, só fica sem nada útil pra mostrar.
 
 ## Próximo passo
 
@@ -1312,20 +1445,21 @@ marcadores (RF-016) e monitor de espaço em disco (RF-042) estão implementados 
 ponta. A **Fase 2 — Recovery + Library** também está completa: RECOV-001/002/003 (manifest,
 detecção e reparo de gravações incompletas) e LIB-001/002/004/005/006 (listar, detalhes, renomear,
 mostrar na pasta, excluir) funcionam de ponta a ponta. A **Fase 3 — Editor MVP** está em andamento:
-EDIT-001 (criar/abrir projeto de edição), EDIT-002 (timeline compilada somente-leitura) e EDIT-003
-completo, partes 1 e 2 (preview com playhead sincronizado e reprodução multi-trilha via protocolo
-de mídia local seguro) já funcionam de ponta a ponta.
+EDIT-001 (criar/abrir projeto de edição), EDIT-002 (timeline compilada somente-leitura), EDIT-003
+completo (partes 1 e 2 - preview com playhead sincronizado e reprodução multi-trilha via protocolo
+de mídia local seguro) e EDIT-004/005/006 (corte/split/remover-intervalo, a primeira operação de
+edição real) já funcionam de ponta a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 3 — Editor MVP**: corte/split/remover intervalo (EDIT-004/005/006) - a
-   primeira operação de edição real, consumindo `edit_operations` (tabela existente desde a
-   Fase 0, sem nenhum uso até agora) - depois undo/redo (EDIT-007), ganho/mudo/fade
-   (EDIT-008/009), visibilidade/transformação de câmera (EDIT-010), layout (PiP/lado-a-lado/
-   só-tela/só-câmera, EDIT-011), autosave (EDIT-012) - cada operação provavelmente seu próprio
-   incremento, dado o tamanho desta fase (05_MEDIA_EDITOR.md).
+1. Continuar a **Fase 3 — Editor MVP**: undo/redo (EDIT-007) - o log ordenado de
+   `edit_operations` já existe e está sendo consumido (`getEditedTimeline`), falta expor
+   desfazer/refazer pela UI - depois ganho/mudo/fade (EDIT-008/009), visibilidade/transformação
+   de câmera (EDIT-010), layout (PiP/lado-a-lado/só-tela/só-câmera, EDIT-011), autosave
+   (EDIT-012) - cada operação provavelmente seu próprio incremento, dado o tamanho desta fase
+   (05_MEDIA_EDITOR.md).
 2. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
    ainda não instalados - `main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`,
    nenhum binário real, `export.start` sempre lança `NotImplementedError`), MP4 720p/1080p, faixa

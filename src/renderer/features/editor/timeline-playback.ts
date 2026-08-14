@@ -35,12 +35,16 @@ export function findClipAtTime(clips: TimelineClip[], globalTimeMs: number): Tim
 /**
  * Converte um instante global (ms, eixo da timeline) no instante LOCAL (segundos, eixo do
  * `<video>`/`<audio>` daquele clip especifico) - o valor a atribuir a `element.currentTime`.
- * Limitado a `[0, duracao do clip]` para nunca produzir um seek invalido por arredondamento.
+ * Soma `clip.sourceStartMs` (EDIT-004/005/006 - offset dentro do ARQUIVO onde o conteudo deste
+ * clip comeca; sempre `0` numa timeline nao editada, mas pode ser maior depois de um
+ * `REMOVE_RANGE` cortar o inicio do clip) ao deslocamento dentro do clip. Limitado a
+ * `[sourceStartMs, sourceStartMs + duracao do clip]` para nunca produzir um seek invalido por
+ * arredondamento.
  */
 export function clipLocalTimeSeconds(clip: TimelineClip, globalTimeMs: number): number {
   const durationMs = Math.max(0, clip.endMs - clip.startMs)
-  const localMs = Math.min(Math.max(0, globalTimeMs - clip.startMs), durationMs)
-  return localMs / 1000
+  const offsetWithinClipMs = Math.min(Math.max(0, globalTimeMs - clip.startMs), durationMs)
+  return (clip.sourceStartMs + offsetWithinClipMs) / 1000
 }
 
 /**

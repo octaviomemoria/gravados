@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { EmptyState } from '../../components/EmptyState'
 import { formatFileSize } from '../library/format-file-size'
@@ -10,12 +10,12 @@ import type { EditProjectResponse, GetTimelineResponse } from '@shared/schemas/e
 import type { ProjectDetailsResponse } from '@shared/schemas/project.schema'
 
 /**
- * EDIT-001/EDIT-002/EDIT-003 (decimo segundo/terceiro/quarto/sexto incrementos - Fase 3, Editor
- * MVP). Pagina de detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo
- * somente-leitura da gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a
- * timeline compilada (`Timeline.tsx`, EDIT-002) + o player multi-trilha sincronizado
- * (`useMultiTrackPlayback`, EDIT-003 parte 2). Sem corte/split/undo-redo/layout ainda (EDIT-004
- * em diante) - incrementos futuros deliberadamente separados dado o tamanho da Fase 3.
+ * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006 (Fase 3, Editor MVP). Pagina de detalhe de UM
+ * projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura da gravacao vinculada
+ * (reaproveitando `library.getDetails`, LIB-002) + a timeline EDITADA (`Timeline.tsx`, EDIT-002/
+ * EDIT-004-005-006) + o player multi-trilha sincronizado (`useMultiTrackPlayback`, EDIT-003 parte
+ * 2) + corte/split/remover-intervalo (EDIT-004/005/006 - todos o mesmo primitivo `REMOVE_RANGE`,
+ * ver `RemoveRangeRequestSchema`). Sem undo/redo/layout ainda (EDIT-007 em diante).
  */
 export function EditorProjectPage() {
   const { id } = useParams<{ id: string }>()
@@ -34,7 +34,10 @@ export function EditorProjectPage() {
         setEditProject(result)
         return Promise.all([
           window.meetingStudio.library.getDetails(result.projectId),
-          window.meetingStudio.editor.getTimeline(result.id)
+          // EDIT-004/005/006 - a timeline que a UI mostra/reproduz e a EDITADA (bruta + log de
+          // `edit_operations` ja aplicado), nao a bruta - o usuario precisa ver o resultado dos
+          // proprios cortes, nao a gravacao original intocada.
+          window.meetingStudio.editor.getEditedTimeline(result.id)
         ])
       })
       .then((results) => {
@@ -70,14 +73,15 @@ export function EditorProjectPage() {
   }
 
   return (
-    // `key` forca remontagem (e reset do estado interno de `useMultiTrackPlayback`) se o usuario
-    // navegar de um projeto de edicao para outro sem sair desta rota - o padrao recomendado pelo
-    // React para "resetar estado quando um id muda", em vez de um efeito chamando setState.
+    // `key` forca remontagem (e reset do estado interno de `useMultiTrackPlayback`/selecao) se o
+    // usuario navegar de um projeto de edicao para outro sem sair desta rota - o padrao
+    // recomendado pelo React para "resetar estado quando um id muda", em vez de um efeito
+    // chamando setState.
     <EditorProjectView
       key={editProject.id}
       editProject={editProject}
       recording={recording}
-      timeline={timeline}
+      initialTimeline={timeline}
     />
   )
 }
@@ -88,19 +92,38 @@ export function EditorProjectPage() {
  * conforme cruza fronteiras de clip). So a trilha de video "principal" (`pickPreviewTrack` -
  * SCREEN > CAMERA > primeira disponivel) e exibida visualmente; as demais trilhas de VIDEO ficam
  * ocultas (`hidden`, prontas para um futuro layout picture-in-picture - EDIT-011) e as trilhas de
- * AUDIO tocam sem elemento visual proprio (nunca tem imagem) mas SAO OUVIDAS - e assim que
- * microfone/audio do sistema se somam ao vivo durante a reproducao, nao so a trilha escolhida
- * pro preview.
+ * AUDIO tocam sem elemento visual proprio (nunca tem imagem) mas SAO OUVIDAS.
+ *
+ * EDIT-004/005/006 - mantem sua PROPRIA copia local da timeline (`editedTimeline`, sincronizada
+ * com `initialTimeline` via efeito) em vez de depender so da prop - `removeRange` precisa poder
+ * SUBSTITUIR a timeline exibida pela resposta ja recalculada do IPC, sem depender do componente
+ * pai buscar tudo de novo.
  */
 function EditorProjectView({
   editProject,
   recording,
-  timeline
+  initialTimeline
 }: {
   editProject: EditProjectResponse
   recording: ProjectDetailsResponse | null
-  timeline: GetTimelineResponse | null
+  initialTimeline: GetTimelineResponse | null
 }) {
+  const [timeline, setTimeline] = useState<GetTimelineResponse | null>(initialTimeline)
+  // `initialTimeline` chega `null` primeiro (carregamento assincrono, ver `EditorProjectPage`) e
+  // muda de identidade quando o fetch resolve - precisa refletir em `timeline` sem um efeito
+  // chamando `setState` (anti-padrao, `react-hooks/set-state-in-effect`). Ajustar o estado DURANTE
+  // a renderizacao (comparando com a ultima prop vista) e o padrao recomendado pelo proprio React
+  // pra "derivar estado de uma prop que muda" sem side effect nenhum.
+  const [prevInitialTimeline, setPrevInitialTimeline] = useState(initialTimeline)
+  if (initialTimeline !== prevInitialTimeline) {
+    setPrevInitialTimeline(initialTimeline)
+    setTimeline(initialTimeline)
+  }
+
+  const [selection, setSelection] = useState<{ startMs: number; endMs: number } | null>(null)
+  const [cutError, setCutError] = useState<string | null>(null)
+  const [cutting, setCutting] = useState(false)
+
   const playback = useMultiTrackPlayback(timeline)
   const primaryTrackId = useMemo(() => {
     if (!timeline) return null
@@ -111,6 +134,60 @@ function EditorProjectView({
     () => !!timeline && timeline.tracks.some((track) => track.clips.length > 0),
     [timeline]
   )
+
+  const removeRange = useCallback(
+    async (startMs: number, endMs: number) => {
+      setCutError(null)
+      setCutting(true)
+      try {
+        const updated = await window.meetingStudio.editor.removeRange(
+          editProject.id,
+          startMs,
+          endMs
+        )
+        setTimeline(updated)
+        setSelection(null)
+        // O playhead pode estar alem do novo fim (mais curto) ou no meio do trecho removido -
+        // volta pro inicio, comportamento previsivel apos qualquer corte (mesmo padrao de editores
+        // de video convencionais: o preview "salta" pro resultado, nao tenta preservar uma posicao
+        // que pode nem existir mais).
+        playback.seek(0)
+      } catch {
+        setCutError('Nao foi possivel remover o trecho selecionado.')
+      } finally {
+        setCutting(false)
+      }
+    },
+    [editProject.id, playback]
+  )
+
+  const markSelectionStart = useCallback(() => {
+    setSelection((current) => ({
+      startMs: Math.min(playback.playheadMs, current?.endMs ?? playback.totalMs),
+      endMs: current?.endMs ?? playback.totalMs
+    }))
+  }, [playback.playheadMs, playback.totalMs])
+
+  const markSelectionEnd = useCallback(() => {
+    setSelection((current) => ({
+      startMs: current?.startMs ?? 0,
+      endMs: Math.max(playback.playheadMs, current?.startMs ?? 0)
+    }))
+  }, [playback.playheadMs])
+
+  const trimStart = useCallback(() => {
+    if (playback.playheadMs > 0) void removeRange(0, playback.playheadMs)
+  }, [playback.playheadMs, removeRange])
+
+  const trimEnd = useCallback(() => {
+    if (playback.playheadMs < playback.totalMs) void removeRange(playback.playheadMs, playback.totalMs)
+  }, [playback.playheadMs, playback.totalMs, removeRange])
+
+  const removeSelection = useCallback(() => {
+    if (selection && selection.startMs < selection.endMs) {
+      void removeRange(selection.startMs, selection.endMs)
+    }
+  }, [selection, removeRange])
 
   return (
     <div className="feature-page">
@@ -156,17 +233,57 @@ function EditorProjectView({
               {formatElapsed(playback.playheadMs)} / {formatElapsed(playback.totalMs)}
             </span>
           </div>
+          <div className="editor-edit-controls">
+            <button type="button" onClick={trimStart} disabled={cutting || playback.playheadMs === 0}>
+              Cortar antes daqui
+            </button>
+            <button
+              type="button"
+              onClick={trimEnd}
+              disabled={cutting || playback.playheadMs >= playback.totalMs}
+            >
+              Cortar depois daqui
+            </button>
+            <button type="button" onClick={markSelectionStart} disabled={cutting}>
+              Marcar inicio da selecao
+            </button>
+            <button type="button" onClick={markSelectionEnd} disabled={cutting}>
+              Marcar fim da selecao
+            </button>
+            <button
+              type="button"
+              onClick={removeSelection}
+              disabled={cutting || !selection || selection.startMs >= selection.endMs}
+            >
+              Remover trecho selecionado
+            </button>
+            {selection && (
+              <span className="editor-edit-controls__selection" role="status">
+                Selecao: {formatElapsed(selection.startMs)} - {formatElapsed(selection.endMs)}
+              </span>
+            )}
+          </div>
+          {cutError && (
+            <p className="editor-edit-controls__error" role="alert">
+              {cutError}
+            </p>
+          )}
         </>
       ) : (
         <p>Sem midia para pre-visualizar.</p>
       )}
       <h2>Timeline</h2>
       {timeline ? (
-        <Timeline timeline={timeline} currentTimeMs={playback.playheadMs} onSeek={playback.seek} />
+        <Timeline
+          timeline={timeline}
+          currentTimeMs={playback.playheadMs}
+          onSeek={playback.seek}
+          selection={selection}
+        />
       ) : (
         <p>Carregando timeline...</p>
       )}
-      <EmptyState message="Cortar, dividir, desfazer/refazer e layout chegam nos proximos incrementos da Fase 3." />
+      <EmptyState message="Desfazer/refazer, ganho/mudo/fade, transformacao de camera e layout chegam nos proximos incrementos da Fase 3." />
     </div>
   )
 }

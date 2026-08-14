@@ -96,6 +96,13 @@ export interface EditorApi {
   /** EDIT-002 - timeline compilada (cada clip 1:1 com um segmento gravado, nenhuma operacao de
    * edicao ainda aplicada), posicionada num eixo 0-based ancorado no inicio da sessao. */
   getTimeline: (editProjectId: string) => Promise<GetTimelineResponse>
+  /** EDIT-004/005/006 - a timeline BRUTA com o log de `edit_operations` ja aplicado por cima
+   * (hoje so `REMOVE_RANGE`). O que a UI de fato mostra/reproduz. */
+  getEditedTimeline: (editProjectId: string) => Promise<GetTimelineResponse>
+  /** Corte/split/remover-intervalo - todos o mesmo primitivo (ver comentario em
+   * `RemoveRangeRequestSchema`, shared). `startMs`/`endMs` relativos a timeline EDITADA ATUAL, nao
+   * a bruta. Retorna a timeline editada ja recalculada. */
+  removeRange: (editProjectId: string, startMs: number, endMs: number) => Promise<GetTimelineResponse>
 }
 
 export interface ExportApi {

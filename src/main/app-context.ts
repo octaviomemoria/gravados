@@ -5,6 +5,7 @@ import {
   SegmentRepository,
   MarkerRepository,
   EditProjectRepository,
+  EditOperationRepository,
   ExportJobRepository,
   SettingsRepository
 } from './database/repositories'
@@ -29,6 +30,7 @@ export interface AppContext {
   settingsRepository: SettingsRepository
   markerRepository: MarkerRepository
   editProjectRepository: EditProjectRepository
+  editOperationRepository: EditOperationRepository
   projectService: ProjectService
   recoveryService: RecoveryService
   editorService: EditorService
@@ -51,6 +53,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
   const segmentRepository = new SegmentRepository(databaseClient.db)
   const markerRepository = new MarkerRepository(databaseClient.db)
   const editProjectRepository = new EditProjectRepository(databaseClient.db)
+  const editOperationRepository = new EditOperationRepository(databaseClient.db)
   const exportJobRepository = new ExportJobRepository(databaseClient.db)
   const settingsRepository = new SettingsRepository(databaseClient.db)
 
@@ -70,7 +73,8 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     editProjectRepository,
     projectRepository,
     trackRepository,
-    segmentRepository
+    segmentRepository,
+    editOperationRepository
   )
   const settingsService = new SettingsService(
     settingsRepository,
@@ -96,6 +100,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     settingsRepository,
     markerRepository,
     editProjectRepository,
+    editOperationRepository,
     projectService,
     recoveryService,
     editorService,

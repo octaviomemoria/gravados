@@ -24,4 +24,15 @@ export class EditProjectRepository {
   listAll(): EditProjectEntity[] {
     return this.db.select().from(editProjects).orderBy(desc(editProjects.createdAt)).all()
   }
+
+  /** EDIT-004/005/006 (decimo setimo incremento) - toda operacao de edicao real incrementa
+   * `revision` e atualiza `updatedAt`, mesmo raciocinio de "dirty state"/historico de mudancas ja
+   * previsto em `05_MEDIA_EDITOR.md` §7 (undo/redo, ainda nao implementado - so o contador). */
+  touchAfterEdit(id: string, revision: number): void {
+    this.db
+      .update(editProjects)
+      .set({ revision, updatedAt: new Date().toISOString() })
+      .where(eq(editProjects.id, id))
+      .run()
+  }
 }

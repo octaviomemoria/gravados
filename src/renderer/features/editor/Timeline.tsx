@@ -6,11 +6,10 @@ import { msFromPointerOffset } from './timeline-playback'
 import type { GetTimelineResponse } from '@shared/schemas/editor.schema'
 
 /**
- * EDIT-002/EDIT-003 parte 2 (Fase 3, Editor MVP). Visualizacao da timeline compilada - cada bloco
- * e um clip 1:1 com um segmento gravado (nenhuma operacao de edicao ainda existe). Desde
- * EDIT-003 parte 2, mostra um PLAYHEAD sincronizado com o player (`currentTimeMs`) e aceita
- * clique/arrasto na regua ou em qualquer lane de trilha para buscar (`onSeek`) - sem
- * arrastar/cortar CLIPS ainda (EDIT-004/005), so navegacao no tempo.
+ * EDIT-002/EDIT-003 parte 2/EDIT-004-005-006 (Fase 3, Editor MVP). Visualizacao da timeline
+ * compilada. Mostra um PLAYHEAD sincronizado com o player (`currentTimeMs`), aceita clique/arrasto
+ * na regua ou em qualquer lane de trilha para buscar (`onSeek`), e desde EDIT-004/005/006 pode
+ * destacar uma SELECAO de intervalo (`selection`) usada para cortar/remover um trecho.
  *
  * Posicionamento por porcentagem (`left`/`width` relativos a `totalDurationMs`), nao por pixel
  * fixo - responsivo a largura do container sem nenhum recalculo em JS ao redimensionar a janela.
@@ -23,11 +22,14 @@ import type { GetTimelineResponse } from '@shared/schemas/editor.schema'
 export function Timeline({
   timeline,
   currentTimeMs,
-  onSeek
+  onSeek,
+  selection
 }: {
   timeline: GetTimelineResponse
   currentTimeMs?: number
   onSeek?: (ms: number) => void
+  /** EDIT-004/005/006 - intervalo destacado (chave para remover/cortar), se houver. */
+  selection?: { startMs: number; endMs: number } | null
 }) {
   const totalMs = Math.max(timeline.totalDurationMs, 1)
   const rulerMarks = buildRulerMarks(totalMs)
@@ -47,6 +49,12 @@ export function Timeline({
 
   const playheadPct =
     currentTimeMs !== undefined ? `${Math.min((currentTimeMs / totalMs) * 100, 100)}%` : null
+  const selectionStyle = selection
+    ? {
+        left: `${(selection.startMs / totalMs) * 100}%`,
+        width: `${Math.max(((selection.endMs - selection.startMs) / totalMs) * 100, 0.5)}%`
+      }
+    : null
 
   return (
     <div className="timeline">
@@ -63,6 +71,7 @@ export function Timeline({
             {formatElapsed(markMs)}
           </span>
         ))}
+        {selectionStyle && <div className="timeline__selection" style={selectionStyle} />}
         {playheadPct !== null && (
           <div className="timeline__playhead" style={{ left: playheadPct }} />
         )}
@@ -76,7 +85,11 @@ export function Timeline({
           >
             {track.clips.map((clip) => (
               <div
-                key={clip.segmentId}
+                // `segmentId` sozinho nao e mais unico dentro de uma trilha desde EDIT-004/005/006
+                // - um REMOVE_RANGE que corta o MEIO de um clip o divide em dois, ambos referenciando
+                // o mesmo segmento de origem. `startMs` e garantido unico entre clips da mesma
+                // trilha (nao se sobrepoem por construcao).
+                key={`${clip.segmentId}-${clip.startMs}`}
                 className="timeline__clip"
                 style={{
                   left: `${(clip.startMs / totalMs) * 100}%`,
@@ -85,6 +98,7 @@ export function Timeline({
                 title={`Segmento ${clip.seqIndex} · ${formatElapsed(clip.startMs)} - ${formatElapsed(clip.endMs)}`}
               />
             ))}
+            {selectionStyle && <div className="timeline__selection" style={selectionStyle} />}
             {playheadPct !== null && (
               <div className="timeline__playhead" style={{ left: playheadPct }} />
             )}
