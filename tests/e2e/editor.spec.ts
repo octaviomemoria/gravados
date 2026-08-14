@@ -554,3 +554,153 @@ test.describe('editor (trim/remove-range)', () => {
     expect(afterSelection.totalDurationMs).toBeLessThan(afterTrim.totalDurationMs)
   })
 })
+
+/**
+ * EDIT-007 (decimo oitavo incremento - desfazer/refazer). Confirma o botao "Desfazer" (e o atalho
+ * Ctrl+Z) revertendo um corte, "Refazer" reaplicando, e que criar uma operacao NOVA depois de um
+ * undo desabilita "Refazer" (o ramo antigo foi podado - ver `EditorService.removeRange`).
+ */
+test.describe('editor (undo/redo)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await electronApp.close()
+  })
+
+  test('undoes and redoes a cut via buttons and the Ctrl+Z shortcut', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - undo ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const cameraSelect = appWindow.getByLabel('Camera', { exact: true })
+    await expect(cameraSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cameraSelect.selectOption({ index: 1 })
+    await expect(appWindow.locator('video.camera-preview')).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const cameraPath = join(rootPath, 'source', 'camera', 'camera_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(cameraPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de video ser persistido em disco'
+      })
+      .toBe(true)
+    await appWindow.waitForTimeout(1500)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+
+    const video = appWindow.locator('video.editor-preview')
+    await expect(video).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await appWindow.waitForFunction(
+      () => {
+        const element = document.querySelector('video.editor-preview') as HTMLVideoElement | null
+        return !!element && element.readyState >= 1 && element.videoWidth > 0
+      },
+      { timeout: POLL_TIMEOUT_MS }
+    )
+
+    const editProjectId = await appWindow.evaluate(async () => {
+      const list = await window.meetingStudio.editor.list()
+      return list[0]!.id
+    })
+    const original = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(original.canUndo).toBe(false)
+
+    // --- Desfazer/Refazer comecam desabilitados (nada pra desfazer/refazer ainda).
+    const undoButton = appWindow.getByRole('button', { name: 'Desfazer' })
+    const redoButton = appWindow.getByRole('button', { name: 'Refazer' })
+    await expect(undoButton).toBeDisabled({ timeout: POLL_TIMEOUT_MS })
+    await expect(redoButton).toBeDisabled({ timeout: POLL_TIMEOUT_MS })
+
+    // --- Corta um trecho (trim inicio) - "Desfazer" fica habilitado, "Refazer" continua nao.
+    await appWindow.getByRole('button', { name: 'Reproduzir' }).click()
+    await appWindow.waitForFunction(
+      () => {
+        const v = document.querySelector('video.editor-preview') as HTMLVideoElement | null
+        return !!v && v.currentTime > 0.05
+      },
+      { timeout: POLL_TIMEOUT_MS }
+    )
+    await appWindow.getByRole('button', { name: 'Pausar' }).click()
+    await appWindow.getByRole('button', { name: 'Cortar antes daqui' }).click()
+    await expect(undoButton).toBeEnabled({ timeout: POLL_TIMEOUT_MS })
+    await expect(redoButton).toBeDisabled({ timeout: POLL_TIMEOUT_MS })
+
+    const afterCut = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(afterCut.totalDurationMs).toBeLessThan(original.totalDurationMs)
+
+    // --- Desfazer (clique no botao) - volta pra duracao original, "Refazer" fica habilitado.
+    await undoButton.click()
+    await expect(redoButton).toBeEnabled({ timeout: POLL_TIMEOUT_MS })
+    await expect(undoButton).toBeDisabled({ timeout: POLL_TIMEOUT_MS })
+    const afterUndo = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(afterUndo.totalDurationMs).toBe(original.totalDurationMs)
+
+    // --- Refazer (atalho Ctrl+Shift+Z) - reaplica o corte.
+    await appWindow.keyboard.down('Control')
+    await appWindow.keyboard.down('Shift')
+    await appWindow.keyboard.press('z')
+    await appWindow.keyboard.up('Shift')
+    await appWindow.keyboard.up('Control')
+    await expect(undoButton).toBeEnabled({ timeout: POLL_TIMEOUT_MS })
+    await expect(redoButton).toBeDisabled({ timeout: POLL_TIMEOUT_MS })
+    const afterRedo = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(afterRedo.totalDurationMs).toBe(afterCut.totalDurationMs)
+
+    // --- Desfazer de novo (atalho Ctrl+Z), depois um corte NOVO - poda o "refazer" pendente.
+    await appWindow.keyboard.down('Control')
+    await appWindow.keyboard.press('z')
+    await appWindow.keyboard.up('Control')
+    await expect(redoButton).toBeEnabled({ timeout: POLL_TIMEOUT_MS })
+
+    await appWindow.getByRole('button', { name: 'Reproduzir' }).click()
+    await appWindow.waitForFunction(
+      () => {
+        const v = document.querySelector('video.editor-preview') as HTMLVideoElement | null
+        return !!v && v.currentTime > 0.05
+      },
+      { timeout: POLL_TIMEOUT_MS }
+    )
+    await appWindow.getByRole('button', { name: 'Pausar' }).click()
+    await appWindow.getByRole('button', { name: 'Cortar antes daqui' }).click()
+    await expect(undoButton).toBeEnabled({ timeout: POLL_TIMEOUT_MS })
+    await expect(redoButton).toBeDisabled({ timeout: POLL_TIMEOUT_MS })
+  })
+})

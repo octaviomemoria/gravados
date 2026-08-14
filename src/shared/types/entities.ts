@@ -65,6 +65,9 @@ export interface EditProjectEntity {
   createdAt: string
   updatedAt: string
   revision: number
+  /** EDIT-007 - quantas operacoes do log ordenado (`edit_operations.sequence`) estao ativas na
+   * timeline editada atual; ver comentario em `edit-projects.schema.ts`. */
+  activeOperationSequence: number
 }
 
 export interface EditOperationEntity {

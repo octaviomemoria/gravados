@@ -27,11 +27,13 @@ export class EditProjectRepository {
 
   /** EDIT-004/005/006 (decimo setimo incremento) - toda operacao de edicao real incrementa
    * `revision` e atualiza `updatedAt`, mesmo raciocinio de "dirty state"/historico de mudancas ja
-   * previsto em `05_MEDIA_EDITOR.md` §7 (undo/redo, ainda nao implementado - so o contador). */
-  touchAfterEdit(id: string, revision: number): void {
+   * previsto em `05_MEDIA_EDITOR.md` §7. EDIT-007 (decimo oitavo incremento) - undo/redo tambem
+   * chamam isto, movendo `activeOperationSequence` (o cursor no historico) sem tocar no log de
+   * operacoes em si. */
+  touchAfterEdit(id: string, patch: { revision: number; activeOperationSequence: number }): void {
     this.db
       .update(editProjects)
-      .set({ revision, updatedAt: new Date().toISOString() })
+      .set({ ...patch, updatedAt: new Date().toISOString() })
       .where(eq(editProjects.id, id))
       .run()
   }

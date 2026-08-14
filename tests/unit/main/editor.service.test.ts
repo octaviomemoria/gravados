@@ -304,11 +304,15 @@ describe('EditorService', () => {
       return trackId
     }
 
-    it('equals getTimeline when no operations exist yet', () => {
+    it('equals getTimeline (plus canUndo/canRedo both false) when no operations exist yet', () => {
       const project = createProject('COMPLETED')
       createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
       const editProject = service.createEditProject(project.id)
-      expect(service.getEditedTimeline(editProject.id)).toEqual(service.getTimeline(editProject.id))
+      expect(service.getEditedTimeline(editProject.id)).toEqual({
+        ...service.getTimeline(editProject.id),
+        canUndo: false,
+        canRedo: false
+      })
     })
 
     it('reflects a REMOVE_RANGE operation and shrinks totalDurationMs accordingly', () => {
@@ -383,6 +387,158 @@ describe('EditorService', () => {
 
     it('throws NotFoundError for an unknown edit project on getEditedTimeline', () => {
       expect(() => service.getEditedTimeline(randomUUID())).toThrow('nao encontrado')
+    })
+
+    it('reports canUndo/canRedo correctly across a cut', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      expect(service.getEditedTimeline(editProject.id)).toMatchObject({
+        canUndo: false,
+        canRedo: false
+      })
+
+      const afterCut = service.removeRange(editProject.id, 1000, 2000)
+      expect(afterCut.canUndo).toBe(true)
+      expect(afterCut.canRedo).toBe(false)
+    })
+  })
+
+  /** EDIT-007 (decimo oitavo incremento - desfazer/refazer). */
+  describe('undo / redo', () => {
+    function createTrackWithSegment(
+      projectId: string,
+      type: 'MICROPHONE' | 'CAMERA',
+      startMs: number,
+      endMs: number
+    ): string {
+      const trackId = randomUUID()
+      trackRepository.create({
+        id: trackId,
+        projectId,
+        type,
+        enabled: true,
+        position: 0,
+        startOffsetMs: 0
+      })
+      segmentRepository.create({
+        id: randomUUID(),
+        trackId,
+        seqIndex: 1,
+        relativePath: `source/${type.toLowerCase()}/${type.toLowerCase()}_000001.webm`,
+        startedAtMs: startMs,
+        endedAtMs: endMs,
+        durationMs: endMs - startMs,
+        byteSize: 1000,
+        mimeType: type === 'CAMERA' ? 'video/webm' : 'audio/webm',
+        finalized: true
+      })
+      return trackId
+    }
+
+    it('rejects undo when there is nothing to undo', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(() => service.undo(editProject.id)).toThrow('Nao ha nada')
+    })
+
+    it('rejects redo when there is nothing to redo', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(() => service.redo(editProject.id)).toThrow('Nao ha nada')
+    })
+
+    it('undo reverts the timeline to its state before the last cut, without deleting the operation', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      const beforeCut = service.getEditedTimeline(editProject.id)
+      service.removeRange(editProject.id, 1000, 2000)
+
+      const afterUndo = service.undo(editProject.id)
+      expect(afterUndo.totalDurationMs).toBe(beforeCut.totalDurationMs)
+      expect(afterUndo.canUndo).toBe(false)
+      expect(afterUndo.canRedo).toBe(true)
+    })
+
+    it('redo re-applies the operation that was just undone', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      const afterCut = service.removeRange(editProject.id, 1000, 2000)
+      service.undo(editProject.id)
+      const afterRedo = service.redo(editProject.id)
+
+      expect(afterRedo.totalDurationMs).toBe(afterCut.totalDurationMs)
+      expect(afterRedo.canUndo).toBe(true)
+      expect(afterRedo.canRedo).toBe(false)
+    })
+
+    it('supports multiple undo/redo cycles across two cuts, in the correct order', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 10_000)
+      const editProject = service.createEditProject(project.id)
+
+      service.removeRange(editProject.id, 1000, 2000) // -> 9000ms
+      const afterSecondCut = service.removeRange(editProject.id, 1000, 3000) // -> 7000ms (relative to 9000)
+
+      const afterOneUndo = service.undo(editProject.id)
+      expect(afterOneUndo.totalDurationMs).toBe(9000)
+
+      const afterTwoUndos = service.undo(editProject.id)
+      expect(afterTwoUndos.totalDurationMs).toBe(10_000)
+      expect(afterTwoUndos.canUndo).toBe(false)
+
+      const afterOneRedo = service.redo(editProject.id)
+      expect(afterOneRedo.totalDurationMs).toBe(9000)
+
+      const afterTwoRedos = service.redo(editProject.id)
+      expect(afterTwoRedos.totalDurationMs).toBe(afterSecondCut.totalDurationMs)
+      expect(afterTwoRedos.canRedo).toBe(false)
+    })
+
+    it('creating a new operation after an undo prunes the abandoned redo branch permanently', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 10_000)
+      const editProject = service.createEditProject(project.id)
+
+      service.removeRange(editProject.id, 1000, 2000) // -> 9000ms, sequence 1
+      service.undo(editProject.id) // cursor back to 0, sequence 1 still exists but inactive
+
+      // Uma operacao NOVA (diferente da que foi desfeita) - deve podar a sequence 1 abandonada.
+      const afterNewCut = service.removeRange(editProject.id, 5000, 6000) // -> 9000ms
+      expect(afterNewCut.totalDurationMs).toBe(9000)
+      expect(afterNewCut.canRedo).toBe(false)
+
+      // O "refazer" antigo nao existe mais - undo desta nova operacao volta direto pra bruta.
+      const afterUndoingNew = service.undo(editProject.id)
+      expect(afterUndoingNew.totalDurationMs).toBe(10_000)
+      expect(afterUndoingNew.canRedo).toBe(true)
+      const afterRedoingNew = service.redo(editProject.id)
+      expect(afterRedoingNew.totalDurationMs).toBe(9000)
+    })
+
+    it('bumps the edit project revision on undo and redo, same as a cut', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.removeRange(editProject.id, 1000, 2000)
+      const afterCutRevision = service.getEditProject(editProject.id).revision
+      service.undo(editProject.id)
+      expect(service.getEditProject(editProject.id).revision).toBe(afterCutRevision + 1)
+      service.redo(editProject.id)
+      expect(service.getEditProject(editProject.id).revision).toBe(afterCutRevision + 2)
+    })
+
+    it('throws NotFoundError for an unknown edit project on undo/redo', () => {
+      expect(() => service.undo(randomUUID())).toThrow('nao encontrado')
+      expect(() => service.redo(randomUUID())).toThrow('nao encontrado')
     })
   })
 })

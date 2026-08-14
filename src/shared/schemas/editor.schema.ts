@@ -15,7 +15,11 @@ export const EditProjectResponseSchema = z.object({
   name: z.string(),
   createdAt: IsoDateTimeSchema,
   updatedAt: IsoDateTimeSchema,
-  revision: z.number().int().positive()
+  revision: z.number().int().positive(),
+  /** EDIT-007 - cursor no historico ordenado de `edit_operations`; ver comentario em
+   * `edit-projects.schema.ts`. Exposto por completude, mas a UI deveria preferir `canUndo`/
+   * `canRedo` (`GetEditedTimelineResponseSchema`) a fazer essa conta sozinha. */
+  activeOperationSequence: z.number().int().nonnegative()
 })
 export type EditProjectResponse = z.infer<typeof EditProjectResponseSchema>
 
@@ -88,15 +92,19 @@ export type GetTimelineResponse = z.infer<typeof GetTimelineResponseSchema>
 /**
  * EDIT-004/005/006 (decimo setimo incremento - Fase 3, primeira operacao de edicao real). A
  * timeline EDITADA - a bruta (`getTimeline`) com o LOG ordenado de `edit_operations` ja aplicado
- * por cima (hoje so `REMOVE_RANGE` existe; tipos futuros - gain/fade/camera transform, EDIT-008
- * em diante - sao ignorados pelo compilador sem quebrar, ate ganharem seu proprio incremento).
- * Mesmo formato de resposta que `getTimeline` - o consumidor (preview/timeline na UI) nao
- * precisa distinguir "bruta" de "editada", so troca qual canal chama.
+ * por cima, ate o cursor ativo (`edit_projects.activeOperationSequence` - EDIT-007, undo/redo).
+ * Tipos de operacao futuros (gain/fade/camera transform, EDIT-008 em diante) sao ignorados pelo
+ * compilador sem quebrar, ate ganharem seu proprio incremento. `canUndo`/`canRedo` poupam a UI de
+ * replicar a logica de "existe operacao ativa pra desfazer" / "existe operacao alem do cursor pra
+ * refazer" sozinha.
  */
 export const GetEditedTimelineRequestSchema = GetTimelineRequestSchema
 export type GetEditedTimelineRequest = GetTimelineRequest
-export const GetEditedTimelineResponseSchema = GetTimelineResponseSchema
-export type GetEditedTimelineResponse = GetTimelineResponse
+export const GetEditedTimelineResponseSchema = GetTimelineResponseSchema.extend({
+  canUndo: z.boolean(),
+  canRedo: z.boolean()
+})
+export type GetEditedTimelineResponse = z.infer<typeof GetEditedTimelineResponseSchema>
 
 /**
  * Corte/split/remover-intervalo (Trim/Split/Delete range de `05_MEDIA_EDITOR.md` §4) sao todos o
@@ -117,6 +125,25 @@ export const RemoveRangeRequestSchema = z
     message: 'startMs deve ser menor que endMs'
   })
 export type RemoveRangeRequest = z.infer<typeof RemoveRangeRequestSchema>
-/** Retorna a timeline editada RECEM-RECALCULADA - poupa o chamador de um segundo round-trip. */
-export const RemoveRangeResponseSchema = GetTimelineResponseSchema
-export type RemoveRangeResponse = GetTimelineResponse
+/** Retorna a timeline editada RECEM-RECALCULADA (com `canUndo`/`canRedo` atualizados) - poupa o
+ * chamador de um segundo round-trip. */
+export const RemoveRangeResponseSchema = GetEditedTimelineResponseSchema
+export type RemoveRangeResponse = GetEditedTimelineResponse
+
+/**
+ * EDIT-007 (decimo oitavo incremento - Fase 3, desfazer/refazer). Desfazer/refazer NUNCA apagam
+ * uma operacao do log fisicamente - so movem o cursor (`activeOperationSequence`) pra tras/frente.
+ * Criar uma operacao NOVA depois de um undo poda (apaga de verdade) qualquer coisa alem do cursor
+ * - mesmo comportamento padrao de qualquer editor (uma acao nova invalida o "refazer" pendente).
+ * `05_MEDIA_EDITOR.md` §15 - atalhos Ctrl+Z/Ctrl+Shift+Z, nunca disparando com foco em campo de
+ * texto.
+ */
+export const UndoRequestSchema = z.object({ editProjectId: IdSchema })
+export type UndoRequest = z.infer<typeof UndoRequestSchema>
+export const UndoResponseSchema = GetEditedTimelineResponseSchema
+export type UndoResponse = GetEditedTimelineResponse
+
+export const RedoRequestSchema = z.object({ editProjectId: IdSchema })
+export type RedoRequest = z.infer<typeof RedoRequestSchema>
+export const RedoResponseSchema = GetEditedTimelineResponseSchema
+export type RedoResponse = GetEditedTimelineResponse

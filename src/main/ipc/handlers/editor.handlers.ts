@@ -11,7 +11,11 @@ import {
   GetEditedTimelineRequestSchema,
   GetEditedTimelineResponseSchema,
   RemoveRangeRequestSchema,
-  RemoveRangeResponseSchema
+  RemoveRangeResponseSchema,
+  UndoRequestSchema,
+  UndoResponseSchema,
+  RedoRequestSchema,
+  RedoResponseSchema
 } from '../../../shared/schemas/editor.schema'
 import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
@@ -54,5 +58,17 @@ export function registerEditorHandlers(context: AppContext): void {
     { request: RemoveRangeRequestSchema, response: RemoveRangeResponseSchema },
     async (request) =>
       context.editorService.removeRange(request.editProjectId, request.startMs, request.endMs)
+  )
+
+  registerHandler(
+    IPC_CHANNELS.editor.undo,
+    { request: UndoRequestSchema, response: UndoResponseSchema },
+    async (request) => context.editorService.undo(request.editProjectId)
+  )
+
+  registerHandler(
+    IPC_CHANNELS.editor.redo,
+    { request: RedoRequestSchema, response: RedoResponseSchema },
+    async (request) => context.editorService.redo(request.editProjectId)
   )
 }

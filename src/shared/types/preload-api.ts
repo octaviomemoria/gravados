@@ -26,7 +26,11 @@ import type {
 } from '../schemas/recording.schema'
 import type { MarkerResponse } from '../schemas/markers.schema'
 import type { RepairProjectResponse } from '../schemas/recovery.schema'
-import type { EditProjectResponse, GetTimelineResponse } from '../schemas/editor.schema'
+import type {
+  EditProjectResponse,
+  GetTimelineResponse,
+  GetEditedTimelineResponse
+} from '../schemas/editor.schema'
 import type { StartExportRequest, ExportJobResponse } from '../schemas/export.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
 import type { RecordingState } from './recording-state'
@@ -97,12 +101,23 @@ export interface EditorApi {
    * edicao ainda aplicada), posicionada num eixo 0-based ancorado no inicio da sessao. */
   getTimeline: (editProjectId: string) => Promise<GetTimelineResponse>
   /** EDIT-004/005/006 - a timeline BRUTA com o log de `edit_operations` ja aplicado por cima
-   * (hoje so `REMOVE_RANGE`). O que a UI de fato mostra/reproduz. */
-  getEditedTimeline: (editProjectId: string) => Promise<GetTimelineResponse>
+   * (hoje so `REMOVE_RANGE`) ate o cursor ativo (EDIT-007). O que a UI de fato mostra/reproduz;
+   * inclui `canUndo`/`canRedo` prontos, sem a UI precisar deduzir sozinha. */
+  getEditedTimeline: (editProjectId: string) => Promise<GetEditedTimelineResponse>
   /** Corte/split/remover-intervalo - todos o mesmo primitivo (ver comentario em
    * `RemoveRangeRequestSchema`, shared). `startMs`/`endMs` relativos a timeline EDITADA ATUAL, nao
-   * a bruta. Retorna a timeline editada ja recalculada. */
-  removeRange: (editProjectId: string, startMs: number, endMs: number) => Promise<GetTimelineResponse>
+   * a bruta. Poda qualquer "refazer" pendente. Retorna a timeline editada ja recalculada. */
+  removeRange: (
+    editProjectId: string,
+    startMs: number,
+    endMs: number
+  ) => Promise<GetEditedTimelineResponse>
+  /** EDIT-007 - desfaz a ultima operacao ativa (move o cursor pra tras, nunca apaga o log).
+   * Rejeita se nao houver nada pra desfazer. */
+  undo: (editProjectId: string) => Promise<GetEditedTimelineResponse>
+  /** EDIT-007 - refaz a proxima operacao pendente (move o cursor pra frente). Rejeita se nao
+   * houver nada pra refazer (nenhuma operacao criada depois do undo que a invalidaria). */
+  redo: (editProjectId: string) => Promise<GetEditedTimelineResponse>
 }
 
 export interface ExportApi {

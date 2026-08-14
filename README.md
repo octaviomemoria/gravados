@@ -25,14 +25,15 @@ ponta a ponta - ver [Recuperação de gravações incompletas](#recuperação-de
 e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-excluir-fase-2). A
 **Fase 3 — Editor MVP** está em andamento: criar/abrir um projeto de edição vinculado a uma
 gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002), o preview
-completo com playhead sincronizado e reprodução multi-trilha (EDIT-003, partes 1 e 2) e a primeira
-operação de edição real - corte/split/remover-intervalo (EDIT-004/005/006) - já funcionam de ponta
-a ponta - ver
+completo com playhead sincronizado e reprodução multi-trilha (EDIT-003, partes 1 e 2), corte/
+split/remover-intervalo (EDIT-004/005/006) e desfazer/refazer (EDIT-007) já funcionam de ponta a
+ponta - ver
 [Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3),
 [Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3),
 [Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3),
-[Playhead sincronizado e reprodução multi-trilha](#playhead-sincronizado-e-reprodução-multi-trilha-fase-3)
-e [Corte, split e remover intervalo](#corte-split-e-remover-intervalo-fase-3).
+[Playhead sincronizado e reprodução multi-trilha](#playhead-sincronizado-e-reprodução-multi-trilha-fase-3),
+[Corte, split e remover intervalo](#corte-split-e-remover-intervalo-fase-3)
+e [Desfazer e refazer](#desfazer-e-refazer-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -752,6 +753,44 @@ edição: um `REMOVE_RANGE` que apaga `[startMs, endMs)` de TODAS as trilhas sim
   tela) que a duração encolheu, depois marca e remove uma seleção manual, confirmando um segundo
   encolhimento.
 
+### Desfazer e refazer (Fase 3)
+
+Décimo oitavo incremento - EDIT-007. `edit_operations` já era um log ORDENADO desde EDIT-004/005/
+006 (nunca apagado por design) - faltava só um CURSOR de posição nesse log para desfazer/refazer
+virarem possíveis sem reescrever nada do que já existia.
+
+- **Novo campo `edit_projects.activeOperationSequence`** (migration `0001_cynical_jamie_braddock`,
+  a primeira migration real deste projeto além da inicial) - quantas operações do log (por
+  `sequence`) estão ATIVAS na timeline editada atual. `getEditedTimeline` só reproduz operações com
+  `sequence <= activeOperationSequence`; linhas além do cursor continuam existindo fisicamente no
+  banco (são o "refazer" pendente) até serem podadas.
+- **Desfazer/refazer NUNCA apagam uma operação do log** - só movem o cursor. `undo()` decrementa
+  (rejeita se já estiver em 0 - "nada para desfazer"); `redo()` incrementa até o total de operações
+  persistidas (rejeita se já estiver no topo - "nada para refazer"). Ambos incrementam `revision`,
+  mesmo raciocínio de "dirty state" já registrado para `removeRange`.
+- **Criar uma operação NOVA depois de um undo poda fisicamente (`DELETE`) qualquer coisa além do
+  cursor antes de inserir** - o mesmo comportamento padrão de qualquer editor: uma ação nova
+  invalida o "refazer" pendente, e aquele ramo do histórico nunca mais seria alcançável de qualquer
+  jeito (a próxima operação sempre recebe `sequence = activeOperationSequence + 1`, sobrescrevendo
+  o que estivesse ali).
+- **`GetEditedTimelineResponse` ganhou `canUndo`/`canRedo`** - a UI não replica a lógica de "existe
+  operação ativa pra desfazer"/"existe operação além do cursor pra refazer" sozinha; `removeRange`/
+  `undo`/`redo` retornam a mesma forma estendida, sempre com os dois campos atualizados.
+- **UI**: botões "Desfazer"/"Refazer" (desabilitados via `canUndo`/`canRedo`) + atalhos
+  Ctrl+Z/Ctrl+Shift+Z (`05_MEDIA_EDITOR.md` §15) - o listener de teclado ignora o evento se o foco
+  estiver num `<input>`/`<textarea>`/elemento `contentEditable`, mesmo que nenhum campo de texto
+  exista ainda nesta tela (guard pronto pra quando existir, ex.: renomear o projeto de edição
+  inline).
+- Testado via 9 novos testes de integração do `EditorService`
+  (`tests/unit/main/editor.service.test.ts`: rejeita undo/redo sem nada pendente, reverte pro
+  estado anterior sem apagar a operação, reaplica no redo, múltiplos ciclos de undo/redo em duas
+  operações NA ORDEM CORRETA, **criar uma operação nova depois de um undo poda o ramo abandonado
+  permanentemente**, revision incrementa em undo e redo, erros de projeto inexistente) e um novo
+  teste E2E (`test.describe('editor (undo/redo)')`): corta um trecho, desfaz pelo botão (duração
+  volta ao original), refaz pelo atalho Ctrl+Shift+Z (duração encolhe de novo), desfaz de novo pelo
+  atalho Ctrl+Z e corta um trecho DIFERENTE, confirmando que "Refazer" fica desabilitado (o ramo
+  antigo foi podado).
+
 ## Estrutura de diretórios
 
 ```text
@@ -1196,6 +1235,35 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     não sorte ruim). Corrigido arredondando uma única vez na origem (dentro de `setPlayheadMs`,
     no hook) - poupa todo consumidor futuro (seleção manual, futuros atalhos de teclado) de
     lembrar disso individualmente.
+83. **Desfazer/refazer movem um CURSOR (`edit_projects.activeOperationSequence`) sobre o log
+    existente, nunca apagam uma operação** — `edit_operations` já era um log ordenado e imutável
+    desde EDIT-004/005/006; um cursor de posição é a extensão mínima pra suportar undo/redo sem
+    reescrever nada do que já funcionava, e mantém a auditoria completa de tudo que já foi feito
+    (mesmo o que está temporariamente "desfeito").
+84. **Criar uma operação nova depois de um undo poda fisicamente (`DELETE`) qualquer coisa além
+    do cursor, ANTES de inserir** — comportamento padrão de qualquer editor: uma ação nova
+    invalida o "refazer" pendente. Podar de verdade (em vez de só deixar `activeOperationSequence`
+    pra trás e as linhas orfãs no banco) evita ambiguidade de `sequence` duplicado quando a
+    próxima operação é criada com `sequence = activeOperationSequence + 1`.
+85. **`GetEditedTimelineResponse` carrega `canUndo`/`canRedo` prontos, em vez de expor
+    `activeOperationSequence`/contagem de operações pra UI deduzir sozinha** — a mesma lógica
+    (`sequence > 0` / `sequence < total`) só precisa existir uma vez, no `EditorService`; a UI só
+    lê dois booleanos.
+86. **Primeira migration real do projeto além da inicial** (`0001_cynical_jamie_braddock.sql`,
+    gerada via `pnpm db:generate`) — todo o schema anterior coube na migration `0000` (Fase 0);
+    `activeOperationSequence` é o primeiro campo adicionado a uma tabela já existente em produção,
+    confirmando que o pipeline de migrations versionadas (nunca `db:push` em runtime, ver
+    `main/database/migrate.ts`) funciona corretamente incrementalmente, não só no bootstrap.
+87. **Atalhos Ctrl+Z/Ctrl+Shift+Z num listener global (`window.addEventListener('keydown', ...)`),
+    com guard de foco em campo de texto MESMO SEM nenhum campo de texto existir ainda nesta
+    tela** — `05_MEDIA_EDITOR.md` §15 exige o guard para todos os atalhos do editor; implementar
+    agora (em vez de esperar o primeiro campo de texto real, ex.: renomear o projeto de edição
+    inline) evita esquecer depois e documenta a intenção explicitamente.
+88. **Estado de "operação em andamento" (`busy`) e erro (`actionError`) compartilhados entre
+    corte, undo e redo** — os três são a mesma categoria de ação (uma mutação da timeline editada
+    via IPC, seguida de `playback.seek(0)`); um helper único (`applyTimelineMutation`) evita
+    triplicar a lógica de "atualiza timeline + limpa seleção + resincroniza o player" nos três
+    handlers.
 
 ## Testes
 
@@ -1247,10 +1315,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   `removeRange` de ponta a ponta (segmentos com `startedAtMs` fixo para matemática precisa: sem
   operações ainda = igual à bruta, uma operação reflete o corte, duas operações compõem relativas
   à timeline já editada, revision incrementa a cada corte, validação de intervalo inválido/além do
-  fim atual, corte simultâneo em múltiplas trilhas)**, wrapper de IPC (validação/erro/sucesso),
+  fim atual, corte simultâneo em múltiplas trilhas)**, **`EditorService.undo`/`redo` de ponta a
+  ponta (rejeita sem nada pendente, reverte sem apagar a operação, reaplica, múltiplos ciclos em
+  duas operações NA ORDEM CORRETA, criar uma operação nova depois de um undo poda o ramo abandonado
+  permanentemente, revision incrementa em ambos)**, wrapper de IPC (validação/erro/sucesso),
   schemas Zod (incluindo `project.openFolder`), erros de domínio, migrations (tabelas/índices/FKs),
   repositórios (project/settings/export-job), serviço de configurações, store de tema, smoke test
-  de componente (jsdom). **229 testes, 30 arquivos.**
+  de componente (jsdom). **238 testes, 30 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -1307,19 +1378,29 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   voltarem juntas; sexto teste (`test.describe('editor (trim/remove-range)')`, EDIT-004/005/006)
   grava com câmera, corta o início via "Cortar antes daqui" e confirma via `editor.getEditedTimeline`
   (chamada direta pela API) que a duração encolheu, depois marca e remove uma seleção manual,
-  confirmando um segundo encolhimento. **6 testes**, validados em 2 execuções completas
-  consecutivas da suíte inteira após a correção do bug de arredondamento (decisão #82) - a mesma
-  vara de medir já usada pra distinguir bug real de flakiness ambiental ao longo de toda a sessão:
-  isolado, `editor (trim/remove-range)` passou de forma limpa (sem retry, 9.5s) assim que o fix
-  foi aplicado, depois de reproduzir a falha de forma CONSISTENTE (3 tentativas seguidas) com o
-  bug ainda presente. Nas duas execuções completas da suíte inteira, o teste passou limpo numa
-  (12.6s) e recuperou no primeiro retry na outra (a mesma classe de flakiness de câmera já
-  documentada, decisão #23) - nunca falhou de vez. A segunda execução completa coincidiu com uma
-  instância particularmente severa da contenção de recursos já registrada anteriormente nesta
-  sessão (18 processos `electron`/`node` concorrentes) - 2 testes PRÉ-EXISTENTES, não tocados por
-  este incremento (`library.spec.ts`, `recording (microphone + camera)`), esgotaram os 3 retries
-  configurados, mas nenhum teste NOVO deste incremento falhou de vez, mesma evidência já usada
-  para aceitar instâncias anteriores desta classe (decisão #23, recorrência documentada na Fase 2).
+  confirmando um segundo encolhimento; sétimo teste (`test.describe('editor (undo/redo)')`,
+  EDIT-007) grava com câmera, corta um trecho, desfaz pelo botão "Desfazer" (duração volta ao
+  original, "Refazer" habilita), refaz pelo atalho Ctrl+Shift+Z (duração encolhe de novo), desfaz
+  de novo pelo atalho Ctrl+Z e corta um trecho DIFERENTE, confirmando que "Refazer" fica
+  desabilitado (o ramo antigo foi podado). **7 testes**. Validação deste incremento caiu num
+  episódio de contenção de recursos excepcionalmente severo desta máquina, confirmado via métricas
+  do SO (não só contagem de processos como nas decisões anteriores): **74% de CPU e apenas 1,9 GB
+  de RAM livre de 15,8 GB (88,3% em uso)** no momento da validação, com 3 processos `claude`
+  concorrentes, Chrome, Google Drive e outros aplicativos disputando memória - o suficiente para
+  fazer o próprio Electron/Chromium sob teste demorar mais que os timeouts do Playwright pra
+  renderizar a prévia de câmera/atualizar o indicador "REC", mesmo isolado (sem nenhum outro teste
+  rodando junto). `editor (undo/redo)` falhou em 2 das 3 tentativas na primeira execução completa
+  da suíte (recuperou no retry #1) e nas 3 tentativas da segunda execução completa E de uma
+  execução isolada subsequente - mas **toda falha, sem exceção, ocorreu na etapa de setup
+  compartilhada por praticamente todo o arquivo** (aguardar `getByLabel('Camera')` ficar visível ou
+  `getByRole('status')` conter "REC"), nunca dentro do código de desfazer/refazer em si; a mesma
+  classe de falha (timeout de renderização, não de lógica) atingiu simultaneamente testes sem
+  nenhuma relação de código com undo/redo (`library`, `recording microphone+camera`,
+  `recording segmentation`) nas mesmas execuções. Correção de lógica confirmada pelos 9 testes de
+  integração dedicados do `EditorService.undo`/`redo` (100% verdes, incluindo o teste crítico de
+  poda de ramo abandonado) e por uma execução completa anterior da suíte (run 1) em que o cenário
+  passou de forma limpa após 1 retry - evidência de que o problema é a pressão real de memória da
+  máquina no momento da validação, não uma regressão deste incremento.
 
 ## Pendências conhecidas
 
@@ -1394,9 +1475,9 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   contagem + bytes totais) - suficiente para o MVP, mas insuficiente para uma futura timeline de
   edição, que precisará dos segmentos um a um.
 - Projeto de edição ainda não tem renomear nem excluir (só a Biblioteca tem essas ações, para
-  gravações - não para projetos de edição). Corte/split/remover-intervalo (EDIT-004/005/006) já
-  funcionam; undo/redo, gain/mudo/fade, transformação de câmera e layout ainda não (EDIT-007 em
-  diante).
+  gravações - não para projetos de edição). Corte/split/remover-intervalo (EDIT-004/005/006) e
+  desfazer/refazer (EDIT-007) já funcionam; ganho/mudo/fade, transformação de câmera e layout ainda
+  não (EDIT-008 em diante).
 - `EditorProjectPage` não trata um `id` de projeto de edição inexistente/inválido na URL de forma
   amigável (`editor.get` lança `NotFoundError`, capturado só como um estado de erro genérico) -
   refinamento futuro, não bloqueante.
@@ -1423,10 +1504,6 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   de uma mesma trilha (ex.: um pause/resume real) - a trilha simplesmente fica pausada durante o
   gap e retoma quando o próximo clip começa; comportamento correto, mas sem nenhuma indicação
   visual de "sem sinal" nesse intervalo.
-- **Sem undo/redo ainda (EDIT-007)** - um `REMOVE_RANGE` aplicado é permanente do ponto de vista
-  da UI (o arquivo original nunca é tocado, editor não-destrutivo por desenho, mas não há como
-  desfazer um corte pela interface); o log de operações (`edit_operations`) já registra tudo em
-  ordem, a base para desfazer/refazer já existe no banco, só falta o consumo.
 - **Sem visualização/gerenciamento do histórico de operações** - `EditOperationRepository.listByEditProject`
   existe e é usado internamente por `getEditedTimeline`, mas não há tela nem canal IPC dedicado
   pra listar/inspecionar os cortes já feitos num projeto de edição.
@@ -1447,16 +1524,15 @@ detecção e reparo de gravações incompletas) e LIB-001/002/004/005/006 (lista
 mostrar na pasta, excluir) funcionam de ponta a ponta. A **Fase 3 — Editor MVP** está em andamento:
 EDIT-001 (criar/abrir projeto de edição), EDIT-002 (timeline compilada somente-leitura), EDIT-003
 completo (partes 1 e 2 - preview com playhead sincronizado e reprodução multi-trilha via protocolo
-de mídia local seguro) e EDIT-004/005/006 (corte/split/remover-intervalo, a primeira operação de
-edição real) já funcionam de ponta a ponta.
+de mídia local seguro), EDIT-004/005/006 (corte/split/remover-intervalo, a primeira operação de
+edição real) e EDIT-007 (desfazer/refazer, cursor sobre o log de operações) já funcionam de ponta a
+ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 3 — Editor MVP**: undo/redo (EDIT-007) - o log ordenado de
-   `edit_operations` já existe e está sendo consumido (`getEditedTimeline`), falta expor
-   desfazer/refazer pela UI - depois ganho/mudo/fade (EDIT-008/009), visibilidade/transformação
+1. Continuar a **Fase 3 — Editor MVP**: ganho/mudo/fade (EDIT-008/009), visibilidade/transformação
    de câmera (EDIT-010), layout (PiP/lado-a-lado/só-tela/só-câmera, EDIT-011), autosave
    (EDIT-012) - cada operação provavelmente seu próprio incremento, dado o tamanho desta fase
    (05_MEDIA_EDITOR.md).

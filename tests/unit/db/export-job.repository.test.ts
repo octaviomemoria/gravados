@@ -35,7 +35,8 @@ describe('ExportJobRepository', () => {
       name: 'Edicao',
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      revision: 1
+      revision: 1,
+      activeOperationSequence: 0
     })
   })
 

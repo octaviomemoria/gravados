@@ -6,22 +6,26 @@ import { formatElapsed } from '../recording/format-elapsed'
 import { Timeline } from './Timeline'
 import { pickPreviewTrack, isVideoTrackType } from './pick-preview-track'
 import { useMultiTrackPlayback } from './useMultiTrackPlayback'
-import type { EditProjectResponse, GetTimelineResponse } from '@shared/schemas/editor.schema'
+import type {
+  EditProjectResponse,
+  GetEditedTimelineResponse
+} from '@shared/schemas/editor.schema'
 import type { ProjectDetailsResponse } from '@shared/schemas/project.schema'
 
 /**
- * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006 (Fase 3, Editor MVP). Pagina de detalhe de UM
- * projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura da gravacao vinculada
+ * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007 (Fase 3, Editor MVP). Pagina de detalhe de
+ * UM projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura da gravacao vinculada
  * (reaproveitando `library.getDetails`, LIB-002) + a timeline EDITADA (`Timeline.tsx`, EDIT-002/
  * EDIT-004-005-006) + o player multi-trilha sincronizado (`useMultiTrackPlayback`, EDIT-003 parte
  * 2) + corte/split/remover-intervalo (EDIT-004/005/006 - todos o mesmo primitivo `REMOVE_RANGE`,
- * ver `RemoveRangeRequestSchema`). Sem undo/redo/layout ainda (EDIT-007 em diante).
+ * ver `RemoveRangeRequestSchema`) + desfazer/refazer (EDIT-007). Sem gain/mudo/fade/layout ainda
+ * (EDIT-008 em diante).
  */
 export function EditorProjectPage() {
   const { id } = useParams<{ id: string }>()
   const [editProject, setEditProject] = useState<EditProjectResponse | null>(null)
   const [recording, setRecording] = useState<ProjectDetailsResponse | null>(null)
-  const [timeline, setTimeline] = useState<GetTimelineResponse | null>(null)
+  const [timeline, setTimeline] = useState<GetEditedTimelineResponse | null>(null)
   const [error, setError] = useState(false)
 
   useEffect(() => {
@@ -106,9 +110,9 @@ function EditorProjectView({
 }: {
   editProject: EditProjectResponse
   recording: ProjectDetailsResponse | null
-  initialTimeline: GetTimelineResponse | null
+  initialTimeline: GetEditedTimelineResponse | null
 }) {
-  const [timeline, setTimeline] = useState<GetTimelineResponse | null>(initialTimeline)
+  const [timeline, setTimeline] = useState<GetEditedTimelineResponse | null>(initialTimeline)
   // `initialTimeline` chega `null` primeiro (carregamento assincrono, ver `EditorProjectPage`) e
   // muda de identidade quando o fetch resolve - precisa refletir em `timeline` sem um efeito
   // chamando `setState` (anti-padrao, `react-hooks/set-state-in-effect`). Ajustar o estado DURANTE
@@ -121,8 +125,8 @@ function EditorProjectView({
   }
 
   const [selection, setSelection] = useState<{ startMs: number; endMs: number } | null>(null)
-  const [cutError, setCutError] = useState<string | null>(null)
-  const [cutting, setCutting] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
 
   const playback = useMultiTrackPlayback(timeline)
   const primaryTrackId = useMemo(() => {
@@ -135,31 +139,84 @@ function EditorProjectView({
     [timeline]
   )
 
+  // EDIT-007 - depois de QUALQUER mutacao (corte, desfazer, refazer) o playhead pode ficar alem
+  // do novo fim (mais curto) ou no meio de um trecho que nem existe mais na timeline resultante -
+  // salta pro inicio sempre, comportamento previsivel (mesmo padrao de editores de video
+  // convencionais: o preview "salta" pro resultado, nao tenta preservar uma posicao invalida).
+  const applyTimelineMutation = useCallback(
+    (updated: GetEditedTimelineResponse) => {
+      setTimeline(updated)
+      setSelection(null)
+      playback.seek(0)
+    },
+    [playback]
+  )
+
   const removeRange = useCallback(
     async (startMs: number, endMs: number) => {
-      setCutError(null)
-      setCutting(true)
+      setActionError(null)
+      setBusy(true)
       try {
         const updated = await window.meetingStudio.editor.removeRange(
           editProject.id,
           startMs,
           endMs
         )
-        setTimeline(updated)
-        setSelection(null)
-        // O playhead pode estar alem do novo fim (mais curto) ou no meio do trecho removido -
-        // volta pro inicio, comportamento previsivel apos qualquer corte (mesmo padrao de editores
-        // de video convencionais: o preview "salta" pro resultado, nao tenta preservar uma posicao
-        // que pode nem existir mais).
-        playback.seek(0)
+        applyTimelineMutation(updated)
       } catch {
-        setCutError('Nao foi possivel remover o trecho selecionado.')
+        setActionError('Nao foi possivel remover o trecho selecionado.')
       } finally {
-        setCutting(false)
+        setBusy(false)
       }
     },
-    [editProject.id, playback]
+    [editProject.id, applyTimelineMutation]
   )
+
+  const undo = useCallback(async () => {
+    if (!timeline?.canUndo) return
+    setActionError(null)
+    setBusy(true)
+    try {
+      const updated = await window.meetingStudio.editor.undo(editProject.id)
+      applyTimelineMutation(updated)
+    } catch {
+      setActionError('Nao foi possivel desfazer.')
+    } finally {
+      setBusy(false)
+    }
+  }, [editProject.id, timeline?.canUndo, applyTimelineMutation])
+
+  const redo = useCallback(async () => {
+    if (!timeline?.canRedo) return
+    setActionError(null)
+    setBusy(true)
+    try {
+      const updated = await window.meetingStudio.editor.redo(editProject.id)
+      applyTimelineMutation(updated)
+    } catch {
+      setActionError('Nao foi possivel refazer.')
+    } finally {
+      setBusy(false)
+    }
+  }, [editProject.id, timeline?.canRedo, applyTimelineMutation])
+
+  // `05_MEDIA_EDITOR.md` §15 - Ctrl+Z desfaz, Ctrl+Shift+Z refaz; atalhos nunca disparam com o
+  // foco num campo de texto (aqui so o nome do projeto seria editavel num incremento futuro, mas
+  // o guard ja fica pronto pra quando existir).
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent): void {
+      const target = event.target as HTMLElement | null
+      const isTextInput =
+        target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable
+      if (isTextInput) return
+      if (!event.ctrlKey || event.key.toLowerCase() !== 'z') return
+      event.preventDefault()
+      if (event.shiftKey) void redo()
+      else void undo()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [undo, redo])
 
   const markSelectionStart = useCallback(() => {
     setSelection((current) => ({
@@ -234,26 +291,42 @@ function EditorProjectView({
             </span>
           </div>
           <div className="editor-edit-controls">
-            <button type="button" onClick={trimStart} disabled={cutting || playback.playheadMs === 0}>
+            <button
+              type="button"
+              onClick={() => void undo()}
+              disabled={busy || !timeline.canUndo}
+              title="Ctrl+Z"
+            >
+              Desfazer
+            </button>
+            <button
+              type="button"
+              onClick={() => void redo()}
+              disabled={busy || !timeline.canRedo}
+              title="Ctrl+Shift+Z"
+            >
+              Refazer
+            </button>
+            <button type="button" onClick={trimStart} disabled={busy || playback.playheadMs === 0}>
               Cortar antes daqui
             </button>
             <button
               type="button"
               onClick={trimEnd}
-              disabled={cutting || playback.playheadMs >= playback.totalMs}
+              disabled={busy || playback.playheadMs >= playback.totalMs}
             >
               Cortar depois daqui
             </button>
-            <button type="button" onClick={markSelectionStart} disabled={cutting}>
+            <button type="button" onClick={markSelectionStart} disabled={busy}>
               Marcar inicio da selecao
             </button>
-            <button type="button" onClick={markSelectionEnd} disabled={cutting}>
+            <button type="button" onClick={markSelectionEnd} disabled={busy}>
               Marcar fim da selecao
             </button>
             <button
               type="button"
               onClick={removeSelection}
-              disabled={cutting || !selection || selection.startMs >= selection.endMs}
+              disabled={busy || !selection || selection.startMs >= selection.endMs}
             >
               Remover trecho selecionado
             </button>
@@ -263,9 +336,9 @@ function EditorProjectView({
               </span>
             )}
           </div>
-          {cutError && (
+          {actionError && (
             <p className="editor-edit-controls__error" role="alert">
-              {cutError}
+              {actionError}
             </p>
           )}
         </>
@@ -283,7 +356,7 @@ function EditorProjectView({
       ) : (
         <p>Carregando timeline...</p>
       )}
-      <EmptyState message="Desfazer/refazer, ganho/mudo/fade, transformacao de camera e layout chegam nos proximos incrementos da Fase 3." />
+      <EmptyState message="Ganho/mudo/fade, transformacao de camera e layout chegam nos proximos incrementos da Fase 3." />
     </div>
   )
 }

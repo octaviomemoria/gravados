@@ -11,7 +11,11 @@ import {
   GetEditedTimelineRequestSchema,
   GetEditedTimelineResponseSchema,
   RemoveRangeRequestSchema,
-  RemoveRangeResponseSchema
+  RemoveRangeResponseSchema,
+  UndoRequestSchema,
+  UndoResponseSchema,
+  RedoRequestSchema,
+  RedoResponseSchema
 } from '../../shared/schemas/editor.schema'
 import type { EditorApi } from '../../shared/types/preload-api'
 import { invokeChannel } from '../invoke'
@@ -53,6 +57,18 @@ export function createEditorApi(): EditorApi {
         IPC_CHANNELS.editor.removeRange,
         { request: RemoveRangeRequestSchema, response: RemoveRangeResponseSchema },
         { editProjectId, startMs, endMs }
+      ),
+    undo: (editProjectId: string) =>
+      invokeChannel(
+        IPC_CHANNELS.editor.undo,
+        { request: UndoRequestSchema, response: UndoResponseSchema },
+        { editProjectId }
+      ),
+    redo: (editProjectId: string) =>
+      invokeChannel(
+        IPC_CHANNELS.editor.redo,
+        { request: RedoRequestSchema, response: RedoResponseSchema },
+        { editProjectId }
       )
   }
 }

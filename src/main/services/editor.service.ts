@@ -5,7 +5,11 @@ import type { TrackRepository } from '../database/repositories/track.repository'
 import type { SegmentRepository } from '../database/repositories/segment.repository'
 import type { EditOperationRepository } from '../database/repositories/edit-operation.repository'
 import type { EditProjectEntity, EditOperationEntity } from '../../shared/types/entities'
-import type { GetTimelineResponse, TimelineTrack } from '../../shared/schemas/editor.schema'
+import type {
+  GetTimelineResponse,
+  GetEditedTimelineResponse,
+  TimelineTrack
+} from '../../shared/schemas/editor.schema'
 import { NotFoundError, ValidationError } from '../../shared/types/domain-errors'
 import { applyRemoveRange } from './apply-remove-range'
 
@@ -46,7 +50,8 @@ export class EditorService {
       name: name ?? project.title,
       createdAt: now,
       updatedAt: now,
-      revision: 1
+      revision: 1,
+      activeOperationSequence: 0
     }
     return this.editProjectRepository.create(editProject)
   }
@@ -131,13 +136,21 @@ export class EditorService {
    * diretamente. Tipos de operacao ainda nao implementados (gain/fade/camera transform - EDIT-008
    * em diante) sao ignorados silenciosamente - o compilador nunca quebra so porque um tipo futuro
    * apareceu no log.
+   *
+   * EDIT-007 (decimo oitavo incremento - undo/redo) - so reproduz operacoes com
+   * `sequence <= activeOperationSequence` (o cursor no historico); linhas alem do cursor existem
+   * fisicamente no banco (sao o "refazer" pendente) mas nao entram no calculo ate um `redo`.
    */
-  getEditedTimeline(editProjectId: string): GetTimelineResponse {
+  getEditedTimeline(editProjectId: string): GetEditedTimelineResponse {
+    const editProject = this.getEditProject(editProjectId)
     const raw = this.getTimeline(editProjectId)
-    const operations = this.editOperationRepository.listByEditProject(editProjectId)
+    const allOperations = this.editOperationRepository.listByEditProject(editProjectId)
+    const activeOperations = allOperations.filter(
+      (operation) => operation.sequence <= editProject.activeOperationSequence
+    )
 
     let tracks = raw.tracks
-    for (const operation of operations) {
+    for (const operation of activeOperations) {
       if (operation.type !== 'REMOVE_RANGE') continue
       if (operation.startMs === null || operation.endMs === null) continue
       tracks = applyRemoveRange(tracks, operation.startMs, operation.endMs)
@@ -146,7 +159,13 @@ export class EditorService {
     // video inteira) some da timeline, mesmo raciocinio ja aplicado em `getTimeline`.
     tracks = tracks.filter((track) => track.clips.length > 0)
 
-    return { ...raw, tracks, totalDurationMs: computeTotalDurationMs(tracks) }
+    return {
+      ...raw,
+      tracks,
+      totalDurationMs: computeTotalDurationMs(tracks),
+      canUndo: editProject.activeOperationSequence > 0,
+      canRedo: editProject.activeOperationSequence < allOperations.length
+    }
   }
 
   /**
@@ -154,8 +173,13 @@ export class EditorService {
    * `RemoveRangeRequestSchema` (shared) sobre os tres serem o MESMO primitivo aqui. Valida contra
    * a timeline EDITADA ATUAL (nao a bruta) - `endMs` alem do fim atual, ou um intervalo vazio,
    * sao rejeitados antes de qualquer escrita.
+   *
+   * EDIT-007 - se o cursor NAO estiver no fim do log (o usuario desfez uma ou mais operacoes e
+   * agora esta criando algo novo), poda fisicamente qualquer coisa alem do cursor ANTES de
+   * inserir - mesmo comportamento padrao de qualquer editor: uma acao nova invalida o "refazer"
+   * pendente, entao aquele ramo do historico nunca mais seria alcancavel de qualquer forma.
    */
-  removeRange(editProjectId: string, startMs: number, endMs: number): GetTimelineResponse {
+  removeRange(editProjectId: string, startMs: number, endMs: number): GetEditedTimelineResponse {
     const editProject = this.getEditProject(editProjectId)
     const current = this.getEditedTimeline(editProjectId)
     if (startMs >= endMs) {
@@ -165,11 +189,15 @@ export class EditorService {
       throw new ValidationError('O intervalo informado vai alem do fim atual da timeline')
     }
 
-    const operations = this.editOperationRepository.listByEditProject(editProjectId)
+    this.editOperationRepository.deleteAfterSequence(
+      editProjectId,
+      editProject.activeOperationSequence
+    )
+    const newSequence = editProject.activeOperationSequence + 1
     const operation: EditOperationEntity = {
       id: randomUUID(),
       editProjectId,
-      sequence: operations.length + 1,
+      sequence: newSequence,
       type: 'REMOVE_RANGE',
       startMs,
       endMs,
@@ -177,8 +205,46 @@ export class EditorService {
       payloadJson: '{}'
     }
     this.editOperationRepository.create(operation)
-    this.editProjectRepository.touchAfterEdit(editProjectId, editProject.revision + 1)
+    this.editProjectRepository.touchAfterEdit(editProjectId, {
+      revision: editProject.revision + 1,
+      activeOperationSequence: newSequence
+    })
 
+    return this.getEditedTimeline(editProjectId)
+  }
+
+  /**
+   * EDIT-007 (decimo oitavo incremento - desfazer/refazer). NUNCA apaga uma operacao do log -
+   * so move o cursor (`activeOperationSequence`) uma posicao para tras. Rejeita se ja nao houver
+   * nada ativo pra desfazer (cursor no zero).
+   */
+  undo(editProjectId: string): GetEditedTimelineResponse {
+    const editProject = this.getEditProject(editProjectId)
+    if (editProject.activeOperationSequence <= 0) {
+      throw new ValidationError('Nao ha nada para desfazer')
+    }
+    this.editProjectRepository.touchAfterEdit(editProjectId, {
+      revision: editProject.revision + 1,
+      activeOperationSequence: editProject.activeOperationSequence - 1
+    })
+    return this.getEditedTimeline(editProjectId)
+  }
+
+  /**
+   * EDIT-007 - move o cursor uma posicao pra frente, reativando a proxima operacao do log (se
+   * houver uma alem do cursor atual - o "refazer" so existe enquanto nenhuma operacao NOVA foi
+   * criada depois do undo que a tornou pendente, ver `removeRange`).
+   */
+  redo(editProjectId: string): GetEditedTimelineResponse {
+    const editProject = this.getEditProject(editProjectId)
+    const allOperations = this.editOperationRepository.listByEditProject(editProjectId)
+    if (editProject.activeOperationSequence >= allOperations.length) {
+      throw new ValidationError('Nao ha nada para refazer')
+    }
+    this.editProjectRepository.touchAfterEdit(editProjectId, {
+      revision: editProject.revision + 1,
+      activeOperationSequence: editProject.activeOperationSequence + 1
+    })
     return this.getEditedTimeline(editProjectId)
   }
 }

@@ -1,0 +1,1 @@
+ALTER TABLE `edit_projects` ADD `active_operation_sequence` integer DEFAULT 0 NOT NULL;
