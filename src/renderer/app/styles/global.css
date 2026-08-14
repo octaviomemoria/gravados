@@ -535,3 +535,13 @@ body {
   border-radius: var(--ms-radius-sm);
   min-width: 2px;
 }
+
+/* EDIT-003 - preview minimo (uma trilha por vez, sem playhead sincronizado ainda). */
+.editor-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  margin: var(--ms-space-2) 0;
+  border-radius: var(--ms-radius-md);
+  background: #000;
+}

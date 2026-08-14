@@ -1,19 +1,22 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { EmptyState } from '../../components/EmptyState'
 import { formatFileSize } from '../library/format-file-size'
 import { formatElapsed } from '../recording/format-elapsed'
 import { Timeline } from './Timeline'
+import { pickPreviewTrack, isVideoTrackType } from './pick-preview-track'
+import { buildMeetingMediaUrl } from '@shared/constants/media-protocol'
 import type { EditProjectResponse, GetTimelineResponse } from '@shared/schemas/editor.schema'
 import type { ProjectDetailsResponse } from '@shared/schemas/project.schema'
 
 /**
- * EDIT-001/EDIT-002 (decimo segundo/decimo terceiro incrementos - Fase 3, Editor MVP). Pagina de
- * detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura da
- * gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a timeline compilada
- * (`Timeline.tsx`, EDIT-002). Ainda sem playhead/preview de video (EDIT-003) nem
- * corte/split/undo-redo/layout (EDIT-004 em diante) - incrementos futuros deliberadamente
- * separados dado o tamanho da Fase 3.
+ * EDIT-001/EDIT-002/EDIT-003 (decimo segundo/terceiro/quarto incrementos - Fase 3, Editor MVP).
+ * Pagina de detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura
+ * da gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a timeline compilada
+ * (`Timeline.tsx`, EDIT-002) + um preview MINIMO de uma unica trilha (EDIT-003 - sem playhead
+ * sincronizado com a timeline ainda, isso e um incremento futuro). Sem corte/split/undo-redo/
+ * layout ainda (EDIT-004 em diante) - incrementos futuros deliberadamente separados dado o
+ * tamanho da Fase 3.
  */
 export function EditorProjectPage() {
   const { id } = useParams<{ id: string }>()
@@ -68,6 +71,37 @@ export function EditorProjectPage() {
   }
 
   return (
+    <EditorProjectView editProject={editProject} recording={recording} timeline={timeline} />
+  )
+}
+
+/**
+ * EDIT-003 - preview MINIMO: uma unica trilha (`pickPreviewTrack`), primeiro clip, sem playhead
+ * sincronizado com a timeline ainda (proximo incremento). `<video>`/`<audio src>` aponta pro
+ * esquema customizado `meeting-media://` (`main/media/media-protocol.ts`) - a unica forma de
+ * tocar midia local em Electron sem desativar `webSecurity` nem expor Node.js ao renderer.
+ */
+function EditorProjectView({
+  editProject,
+  recording,
+  timeline
+}: {
+  editProject: EditProjectResponse
+  recording: ProjectDetailsResponse | null
+  timeline: GetTimelineResponse | null
+}) {
+  const preview = useMemo(() => {
+    if (!timeline) return null
+    const track = pickPreviewTrack(timeline.tracks)
+    const clip = track?.clips[0]
+    if (!track || !clip) return null
+    return {
+      isVideo: isVideoTrackType(track.type),
+      src: buildMeetingMediaUrl(timeline.projectId, clip.relativePath)
+    }
+  }, [timeline])
+
+  return (
     <div className="feature-page">
       <h1>{editProject.name}</h1>
       <p>
@@ -81,6 +115,16 @@ export function EditorProjectPage() {
           {' · '}
           {formatFileSize(recording.totalBytes)}
         </p>
+      )}
+      <h2>Preview</h2>
+      {preview ? (
+        preview.isVideo ? (
+          <video controls src={preview.src} className="editor-preview" />
+        ) : (
+          <audio controls src={preview.src} className="editor-preview" />
+        )
+      ) : (
+        <p>Sem midia para pre-visualizar.</p>
       )}
       <h2>Timeline</h2>
       {timeline ? (

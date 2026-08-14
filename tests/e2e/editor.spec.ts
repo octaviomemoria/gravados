@@ -209,3 +209,77 @@ test.describe('editor (timeline)', () => {
     await expect(appWindow.locator('.timeline__clip')).toHaveCount(2)
   })
 })
+
+/**
+ * EDIT-003 (decimo quarto incremento - preview). Confirma que o `<video>` de preview carrega
+ * dados REAIS servidos pelo esquema customizado `meeting-media://` (`main/media/media-protocol.ts`)
+ * - nao so que o elemento existe no DOM, mas que o navegador conseguiu buscar/decodificar bytes
+ * reais do arquivo no disco (via `videoWidth > 0`, que so fica positivo apos o primeiro frame
+ * real ser decodificado - `duration` sozinho e um sinal menos confiavel aqui: WebM produzido por
+ * `MediaRecorder` em chunks sucessivos costuma reportar `Infinity` ate o navegador escanear mais
+ * do stream, um comportamento conhecido do Chromium, nao um bug deste app).
+ */
+test.describe('editor (preview)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await electronApp.close()
+  })
+
+  test('loads real video data through the custom media protocol', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - preview ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const cameraSelect = appWindow.getByLabel('Camera', { exact: true })
+    await expect(cameraSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cameraSelect.selectOption({ index: 1 })
+    await expect(appWindow.locator('video.camera-preview')).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const cameraPath = join(rootPath, 'source', 'camera', 'camera_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(cameraPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de video ser persistido em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+
+    const video = appWindow.locator('video.editor-preview')
+    await expect(video).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await appWindow.waitForFunction(
+      () => {
+        const element = document.querySelector('video.editor-preview') as HTMLVideoElement | null
+        return !!element && element.readyState >= 1 && element.videoWidth > 0
+      },
+      { timeout: POLL_TIMEOUT_MS }
+    )
+  })
+})

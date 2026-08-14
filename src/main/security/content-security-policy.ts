@@ -1,11 +1,16 @@
 import type { Session } from 'electron'
 
+// EDIT-003 (Fase 3 - preview): `media-src` precisa liberar o esquema customizado
+// `meeting-media:` (ver `main/media/media-protocol.ts`) - a unica forma de um `<video>`/`<audio>`
+// tocar midia local sem desativar `webSecurity` nem expor Node.js ao renderer. Sem essa entrada,
+// `default-src 'self'` bloquearia qualquer `<video src="meeting-media://...">`.
 const PROD_CSP_DIRECTIVES = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self' data:",
+  "media-src 'self' meeting-media:",
   "connect-src 'self'",
   "object-src 'none'",
   "base-uri 'self'"
@@ -18,6 +23,7 @@ const DEV_CSP_DIRECTIVES = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self' data:",
+  "media-src 'self' meeting-media:",
   "connect-src 'self' ws://localhost:* http://localhost:*",
   "object-src 'none'",
   "base-uri 'self'"

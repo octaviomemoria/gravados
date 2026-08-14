@@ -24,10 +24,11 @@ está completa: detecção e reparo de gravações interrompidas por um encerram
 ponta a ponta - ver [Recuperação de gravações incompletas](#recuperação-de-gravações-incompletas-fase-2)
 e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-excluir-fase-2). A
 **Fase 3 — Editor MVP** está em andamento: criar/abrir um projeto de edição vinculado a uma
-gravação concluída (EDIT-001) e a timeline compilada somente-leitura (EDIT-002) já funcionam de
-ponta a ponta - ver
-[Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3) e
-[Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3).
+gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002) e um preview
+mínimo de uma trilha via protocolo de mídia local seguro (EDIT-003) já funcionam de ponta a ponta
+- ver [Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3),
+[Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3)
+e [Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -597,6 +598,53 @@ visual sobre a qual os próximos incrementos constroem interatividade.
   microfone + câmera, cria o projeto de edição, confirma duas faixas (uma por trilha) com um clip
   cada.
 
+### Preview: protocolo de mídia local + player mínimo (Fase 3)
+
+Décimo quarto incremento - EDIT-003 (parte 1 de 2 - só o preview de UMA trilha por vez; sincronizar
+múltiplas trilhas simultaneamente com um playhead único fica para o próximo incremento, dado o
+tamanho do desafio de reprodução multi-track). Sem esse incremento, o único jeito de ver o que foi
+gravado era abrir a pasta do projeto no explorador de arquivos - agora dá pra assistir/ouvir direto
+no app.
+
+- **Desafio central**: os segmentos gravados vivem em caminhos reais no disco
+  (`Documentos\MeetingStudio\projects\<id>\source\...`), fora do alcance de um `<video src="file://...">`
+  no renderer - `webSecurity` nunca é desativado e Node.js nunca é exposto ao renderer (ambos
+  proibidos por este projeto). A solução é um **esquema de protocolo customizado**
+  (`meeting-media://`, `main/media/media-protocol.ts`) registrado via `protocol.handle` do
+  Electron - o processo main resolve `projectId` para o `rootPath` real (nunca um path bruto vindo
+  do renderer, mesmo padrão de `project.openFolder`/`recovery.repair`), valida o resultado contra
+  o boundary do projeto, e serve o arquivo com suporte real a `Range` (essencial para o
+  `<video>`/`<audio>` conseguir buscar/adiantar sem baixar o arquivo inteiro primeiro).
+- **`registerSchemesAsPrivileged` roda no TOPO do módulo `main/index.ts`, antes de
+  `app.whenReady()`** - exigência do próprio Electron para marcar um esquema como
+  `standard`/`secure`/com suporte a Fetch e streaming; só depois disso, já dentro de `bootstrap()`
+  com o `ProjectRepository` real disponível, o handler de fato (`protocol.handle`) é registrado.
+- **CSP ganhou `media-src 'self' meeting-media:`** em ambos os conjuntos de diretivas (dev/prod) -
+  sem essa entrada, `default-src 'self'` bloquearia qualquer `<video src="meeting-media://...">`.
+- **Validação em duas camadas**: um filtro de FORMATO (`isValidMediaRelativePath`, regex que só
+  aceita exatamente `source/<tipo>/<arquivo>.webm`) roda ANTES de qualquer acesso a banco/disco,
+  em defesa profunda; `assertPathWithinBoundary` (já existente, reaproveitado) garante que o
+  caminho final nunca escapa do `rootPath` do projeto.
+- **Content-Type derivado da SUBPASTA dentro de `source/`, nunca da extensão isolada** - todo
+  segmento é sempre `.webm`, mas o container carrega vídeo+áudio (tela/câmera) ou só áudio
+  (microfone/áudio do sistema); o navegador precisa do tipo certo pra decidir como decodificar.
+- **Preview escolhe UMA trilha só** (`pickPreviewTrack`: prioriza tela, depois câmera, cai para a
+  primeira trilha de áudio se não houver vídeo) e toca só o PRIMEIRO clip dela - sem playhead
+  ligado à timeline ainda (isso é o próximo incremento).
+- Testado via 15 novos testes sintéticos: `guessMediaContentType`/`parseRangeHeader`/
+  `isValidMediaRelativePath` (`tests/unit/main/media-protocol-utils.test.ts` - funções puras sem
+  nenhum import de `electron`, mesmo padrão já usado por `disk-space-thresholds.ts`/
+  `segmentation-thresholds.ts`: nada que importa `electron` de verdade neste projeto tem teste
+  unitário dedicado, só o que fica livre disso), `buildMeetingMediaUrl`
+  (`tests/unit/shared/media-protocol.test.ts` - encoding de path com espaços/acentos, separadores
+  Windows normalizados, segmentos vazios descartados), `pickPreviewTrack`/`isVideoTrackType`
+  (`tests/unit/renderer/pick-preview-track.test.ts`). Ponta a ponta em novo
+  `test.describe('editor (preview)')`: grava com câmera, cria o projeto de edição, confirma que o
+  `<video>` decodificou um frame real (`videoWidth > 0`) via o protocolo customizado - `duration`
+  sozinho não é usado como sinal (WebM produzido por `MediaRecorder` em chunks sucessivos costuma
+  reportar `Infinity` até o navegador escanear mais do stream, comportamento conhecido do
+  Chromium, não um bug deste app).
+
 ## Estrutura de diretórios
 
 ```text
@@ -918,6 +966,35 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     não por pixel fixo** — responsivo à largura do container sem recalcular nada em JS ao
     redimensionar a janela; a régua usa intervalos "redondos" pré-definidos (1/2/5/10/15/30/60s
     etc.), nunca uma casa decimal de milissegundo ilegível.
+62. **Esquema de protocolo customizado (`meeting-media://`), não `webSecurity: false` nem expor
+    Node.js ao renderer** — as duas alternativas mais óbvias pra tocar mídia local em Electron são
+    exatamente as duas coisas que este projeto proíbe por desenho (ver `secure-webpreferences.ts`/
+    AGENTS.md); um `protocol.handle` que resolve `projectId` → `rootPath` real e valida o boundary
+    é a única forma de servir os arquivos sem abrir mão de nenhuma das duas garantias.
+63. **`registerSchemesAsPrivileged` no topo do módulo, `protocol.handle` só dentro de
+    `bootstrap()`** — exigência do próprio Electron (o registro de privilégio precisa acontecer
+    antes de `app.whenReady()`), mas o handler de fato precisa do `ProjectRepository` real, que só
+    existe depois de `createAppContext()`. Duas chamadas, dois momentos, cada uma no ponto mais
+    cedo possível em que tem tudo que precisa.
+64. **Content-Type derivado da subpasta dentro de `source/`, nunca da extensão isolada** — todo
+    segmento é sempre `.webm`, mas o container carrega vídeo+áudio (tela/câmera) ou só áudio
+    (microfone/áudio do sistema); o navegador precisa do tipo certo pra decidir como decodificar.
+65. **Validação em duas camadas antes de servir qualquer byte**: um filtro de FORMATO
+    (`isValidMediaRelativePath`, regex que só aceita `source/<tipo>/<arquivo>.webm` exatamente)
+    roda ANTES de qualquer acesso a banco/disco, em defesa profunda; `assertPathWithinBoundary`
+    (já existente, reaproveitado) garante que o caminho final nunca escapa do `rootPath` do
+    projeto - a mesma dupla camada já usada por `RecoveryService`/`ProjectService`.
+66. **Preview desta etapa mostra só UMA trilha por vez, sem sincronizar múltiplas** —
+    sincronização de playback entre até 4 trilhas simultâneas (cada uma potencialmente com
+    múltiplos segmentos por rotação) é um desafio técnico grande o suficiente pra merecer seu
+    próprio incremento; entregar "conseguir assistir/ouvir uma trilha" primeiro já é um salto real
+    de valor (antes disso, só dava pra abrir a pasta no explorador de arquivos).
+67. **Teste E2E do preview usa `videoWidth > 0`, não `duration`, como sinal de sucesso** — WebM
+    produzido por `MediaRecorder` em chunks sucessivos costuma reportar `duration: Infinity` até o
+    navegador escanear mais do stream (comportamento conhecido do Chromium com esse tipo de
+    arquivo, não um bug deste app); `videoWidth > 0` só fica positivo depois que um frame real foi
+    de fato decodificado, um sinal mais confiável de que o protocolo customizado funcionou de
+    ponta a ponta.
 
 ## Testes
 
@@ -955,9 +1032,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   inexistente, timeline vazia, um clip próximo do início, múltiplas trilhas ancoradas na mesma
   sessão (não cada uma no seu próprio zero), segmentos rotacionados como clips separados e
   ordenados, segmento nunca finalizado excluído (e a trilha inteira junto, se nada sobrevive)**,
-  wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de
-  domínio, migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço
-  de configurações, store de tema, smoke test de componente (jsdom). **167 testes, 25 arquivos.**
+  **protocolo de mídia local: `guessMediaContentType` (vídeo vs. áudio por subpasta),
+  `parseRangeHeader` (range simples/aberto/inválido/fora dos limites), `isValidMediaRelativePath`
+  (aceita só o padrão exato, rejeita directory traversal), `buildMeetingMediaUrl` (encoding de
+  path, separadores Windows normalizados), `pickPreviewTrack`/`isVideoTrackType` (prioridade
+  tela > câmera > áudio)**, wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo
+  `project.openFolder`), erros de domínio, migrations (tabelas/índices/FKs), repositórios
+  (project/settings/export-job), serviço de configurações, store de tema, smoke test de
+  componente (jsdom). **193 testes, 28 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -996,10 +1078,12 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   "/editor"; segundo teste confirma a rejeição ao tentar criar um projeto de edição para uma
   gravação que nunca chegou a `COMPLETED`; terceiro teste (`test.describe('editor (timeline)')`,
   EDIT-002) grava microfone + câmera, cria o projeto de edição, confirma duas faixas (uma por
-  trilha) com um clip cada. **3 testes**, validados estáveis em múltiplas execuções isoladas
-  consecutivas - a flakiness observada uma vez no terceiro teste (`getByLabel('Camera')` sem
-  aparecer a tempo) é a mesma classe já documentada para a trilha de câmera (decisão #23),
-  recuperada limpo no retry.
+  trilha) com um clip cada; quarto teste (`test.describe('editor (preview)')`, EDIT-003) grava com
+  câmera, cria o projeto de edição, confirma que o `<video>` decodificou um frame real
+  (`videoWidth > 0`) via o protocolo `meeting-media://`. **4 testes**, validados estáveis em
+  múltiplas execuções isoladas consecutivas - a flakiness observada em alguns retries
+  (`getByLabel('Camera')` sem aparecer a tempo) é a mesma classe já documentada para a trilha de
+  câmera (decisão #23), sempre recuperada limpo no retry.
 
 ## Pendências conhecidas
 
@@ -1074,9 +1158,9 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   contagem + bytes totais) - suficiente para o MVP, mas insuficiente para uma futura timeline de
   edição, que precisará dos segmentos um a um.
 - Projeto de edição ainda não tem renomear nem excluir (só a Biblioteca tem essas ações, para
-  gravações - não para projetos de edição). A timeline (EDIT-002) é só leitura: sem playhead,
-  preview de vídeo, corte/split, undo/redo, gain/fade, transformação de câmera nem layout ainda
-  (EDIT-003 em diante). `edit_operations` (tabela já existente desde a Fase 0) segue sem nenhum
+  gravações - não para projetos de edição). A timeline (EDIT-002) é só leitura: sem
+  corte/split/remover intervalo, undo/redo, gain/fade, transformação de câmera nem layout ainda
+  (EDIT-004 em diante). `edit_operations` (tabela já existente desde a Fase 0) segue sem nenhum
   canal IPC/uso - chega junto com a primeira operação de edição real.
 - `EditorProjectPage` não trata um `id` de projeto de edição inexistente/inválido na URL de forma
   amigável (`editor.get` lança `NotFoundError`, capturado só como um estado de erro genérico) -
@@ -1087,6 +1171,15 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - Sem indicação visual de gaps entre clips na mesma trilha (ex.: um pause/resume real deixaria
   dois segmentos consecutivos sem intervalo, mas uma trilha que só rotacionou por tamanho/tempo
   também não tem gap perceptível hoje) - refinamento futuro, não bloqueante para esta etapa.
+- **Preview (EDIT-003) só toca UMA trilha por vez**, sem nenhuma sincronização com as demais nem
+  com o playhead da timeline - clicar em "play" no `<video>`/`<audio>` não move nada na régua
+  acima, e vice-versa; isso é justamente o próximo incremento planejado.
+- Preview não troca de segmento automaticamente ao cruzar uma fronteira de rotação - só o
+  PRIMEIRO clip da trilha escolhida é tocado; uma gravação segmentada (por tempo/tamanho) mostra
+  só o começo. Concatenar/trocar de arquivo automaticamente ao alcançar o fim de um clip é parte
+  do trabalho do playhead sincronizado, ainda não implementado.
+- Sem controle de qual trilha usar no preview - `pickPreviewTrack` decide sozinho (tela > câmera >
+  primeira disponível), sem nenhuma forma de o usuário escolher outra trilha manualmente.
 
 ## Próximo passo
 
@@ -1096,15 +1189,18 @@ marcadores (RF-016) e monitor de espaço em disco (RF-042) estão implementados 
 ponta. A **Fase 2 — Recovery + Library** também está completa: RECOV-001/002/003 (manifest,
 detecção e reparo de gravações incompletas) e LIB-001/002/004/005/006 (listar, detalhes, renomear,
 mostrar na pasta, excluir) funcionam de ponta a ponta. A **Fase 3 — Editor MVP** está em andamento:
-EDIT-001 (criar/abrir projeto de edição) e EDIT-002 (timeline compilada somente-leitura) já
-funcionam de ponta a ponta.
+EDIT-001 (criar/abrir projeto de edição), EDIT-002 (timeline compilada somente-leitura) e EDIT-003
+parte 1 (preview de uma trilha via protocolo de mídia local seguro) já funcionam de ponta a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 3 — Editor MVP**: preview de vídeo com playhead/scrubber (EDIT-003),
-   corte/split/remover intervalo (EDIT-004/005/006), undo/redo (EDIT-007), ganho/mudo/fade
+1. Continuar a **Fase 3 — Editor MVP**: EDIT-003 parte 2 - playhead/scrubber sincronizado com a
+   timeline (mover o player ao arrastar a régua, e vice-versa) e reprodução simultânea de múltiplas
+   trilhas (o desafio técnico maior desta fase: sincronizar até 4 elementos `<video>`/`<audio>`,
+   cada um trocando de arquivo automaticamente ao cruzar uma fronteira de segmento/rotação) -
+   depois corte/split/remover intervalo (EDIT-004/005/006), undo/redo (EDIT-007), ganho/mudo/fade
    (EDIT-008/009), visibilidade/transformação de câmera (EDIT-010), layout (PiP/lado-a-lado/
    só-tela/só-câmera, EDIT-011), autosave (EDIT-012) - cada operação provavelmente seu próprio
    incremento, dado o tamanho desta fase (05_MEDIA_EDITOR.md).

@@ -11,10 +11,19 @@ import {
   getMigrationsFolderPath
 } from './services/app-paths'
 import { configureLogger, createScopedLogger, type LogLevel } from './services/logger'
+import {
+  registerMeetingMediaSchemeAsPrivileged,
+  registerMeetingMediaProtocolHandler
+} from './media/media-protocol'
 import { APP_ID } from '../shared/constants/app-info'
 
 const logger = createScopedLogger('main')
 const VALID_LOG_LEVELS: readonly LogLevel[] = ['error', 'warn', 'info', 'verbose', 'debug', 'silly']
+
+// EDIT-003 (Fase 3 - preview): PRECISA rodar antes de `app.whenReady()`, no topo do modulo, fora
+// de qualquer funcao - exigencia do Electron para marcar o esquema `meeting-media:` como
+// privilegiado (standard/secure/com suporte a Fetch e streaming).
+registerMeetingMediaSchemeAsPrivileged()
 
 function resolveLogLevel(): LogLevel {
   const raw = process.env.MEETING_STUDIO_LOG_LEVEL
@@ -63,6 +72,10 @@ async function bootstrap(): Promise<void> {
     databaseClient,
     libraryRootPath: getDefaultLibraryRootPath()
   })
+
+  // EDIT-003: registrado so agora, com o ProjectRepository real disponivel - o esquema em si ja
+  // foi marcado privilegiado no topo do modulo (antes de `app.whenReady()`).
+  registerMeetingMediaProtocolHandler(appContext.projectRepository)
 
   // RECOV-002: roda ANTES do IPC ficar acessivel - nenhuma tela pode chegar a interagir com um
   // projeto ainda marcado com um status de sessao "em andamento" que na verdade morreu com o
