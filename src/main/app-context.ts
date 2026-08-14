@@ -4,11 +4,13 @@ import {
   TrackRepository,
   SegmentRepository,
   MarkerRepository,
+  EditProjectRepository,
   ExportJobRepository,
   SettingsRepository
 } from './database/repositories'
 import { ProjectService } from './services/project.service'
 import { RecoveryService } from './services/recovery.service'
+import { EditorService } from './services/editor.service'
 import { SettingsService, buildDefaultSettings } from './services/settings.service'
 import { JobRunner } from './jobs/job-runner'
 import { ExportJobStore, type ExportJobPayload, type ExportJobResult } from './jobs/export-job-store'
@@ -26,8 +28,10 @@ export interface AppContext {
   exportJobRepository: ExportJobRepository
   settingsRepository: SettingsRepository
   markerRepository: MarkerRepository
+  editProjectRepository: EditProjectRepository
   projectService: ProjectService
   recoveryService: RecoveryService
+  editorService: EditorService
   settingsService: SettingsService
   exportJobRunner: JobRunner<ExportJobPayload, ExportJobResult>
   recordingStateMachine: RecordingStateMachine
@@ -46,6 +50,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
   const trackRepository = new TrackRepository(databaseClient.db)
   const segmentRepository = new SegmentRepository(databaseClient.db)
   const markerRepository = new MarkerRepository(databaseClient.db)
+  const editProjectRepository = new EditProjectRepository(databaseClient.db)
   const exportJobRepository = new ExportJobRepository(databaseClient.db)
   const settingsRepository = new SettingsRepository(databaseClient.db)
 
@@ -61,6 +66,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     segmentRepository,
     libraryRootPath
   )
+  const editorService = new EditorService(editProjectRepository, projectRepository)
   const settingsService = new SettingsService(
     settingsRepository,
     buildDefaultSettings(libraryRootPath)
@@ -84,8 +90,10 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     exportJobRepository,
     settingsRepository,
     markerRepository,
+    editProjectRepository,
     projectService,
     recoveryService,
+    editorService,
     settingsService,
     exportJobRunner,
     recordingStateMachine,

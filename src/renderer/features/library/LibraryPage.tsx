@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { EmptyState } from '../../components/EmptyState'
 import { Button } from '../../components/Button'
 import { formatFileSize } from './format-file-size'
@@ -17,6 +18,12 @@ function isRecoverable(status: ProjectResponse['status']): boolean {
   return status === 'RECOVERABLE'
 }
 
+/** EDIT-001 (Fase 3 - Editor MVP): so uma gravacao `COMPLETED` pode virar um projeto de edicao -
+ * editar uma gravacao ainda em andamento ou incompleta corromperia arquivos ainda em uso. */
+function isCompleted(status: ProjectResponse['status']): boolean {
+  return status === 'COMPLETED'
+}
+
 const TRACK_TYPE_LABELS: Record<TrackType, string> = {
   SCREEN: 'Tela',
   CAMERA: 'Câmera',
@@ -26,6 +33,7 @@ const TRACK_TYPE_LABELS: Record<TrackType, string> = {
 
 /** RF-017: lista de reunioes. Consulta real via IPC (`library.list`, alias de `project.list`). */
 export function LibraryPage() {
+  const navigate = useNavigate()
   const [projects, setProjects] = useState<ProjectResponse[] | null>(null)
   const [error, setError] = useState(false)
   // Id do projeto cujo "Abrir pasta" acabou de falhar (pasta movida/apagada por fora do app) -
@@ -54,6 +62,10 @@ export function LibraryPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deleteErrorId, setDeleteErrorId] = useState<string | null>(null)
+
+  // EDIT-001: "Editar" cria um novo projeto de edicao e navega direto pra ele.
+  const [creatingEditId, setCreatingEditId] = useState<string | null>(null)
+  const [createEditErrorId, setCreateEditErrorId] = useState<string | null>(null)
 
   // Sem guarda de "cancelado" (diferente do `useEffect` de montagem abaixo) - reusada so apos uma
   // acao explicita do usuario (reparo/renomear/excluir) enquanto a pagina ja esta montada, nunca
@@ -150,6 +162,18 @@ export function LibraryPage() {
     }
   }
 
+  async function handleCreateEdit(projectId: string): Promise<void> {
+    setCreateEditErrorId(null)
+    setCreatingEditId(projectId)
+    try {
+      const editProject = await window.meetingStudio.editor.create(projectId)
+      navigate(`/editor/${editProject.id}`)
+    } catch {
+      setCreateEditErrorId(projectId)
+      setCreatingEditId(null)
+    }
+  }
+
   async function handleConfirmDelete(projectId: string): Promise<void> {
     setDeleteErrorId(null)
     setDeletingId(projectId)
@@ -223,6 +247,15 @@ export function LibraryPage() {
                   <Button variant="secondary" onClick={() => void handleOpenFolder(project.id)}>
                     Abrir pasta
                   </Button>
+                  {isCompleted(project.status) && (
+                    <Button
+                      variant="secondary"
+                      disabled={creatingEditId === project.id}
+                      onClick={() => void handleCreateEdit(project.id)}
+                    >
+                      {creatingEditId === project.id ? 'Abrindo...' : 'Editar'}
+                    </Button>
+                  )}
                   <Button variant="secondary" onClick={() => handleStartRename(project)}>
                     Renomear
                   </Button>
@@ -266,6 +299,11 @@ export function LibraryPage() {
               {deleteErrorId === project.id && (
                 <p className="library-list__error">
                   Nao foi possivel excluir esta gravacao. Tente novamente.
+                </p>
+              )}
+              {createEditErrorId === project.id && (
+                <p className="library-list__error">
+                  Nao foi possivel criar o projeto de edicao. Tente novamente.
                 </p>
               )}
 

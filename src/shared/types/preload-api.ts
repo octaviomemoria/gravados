@@ -26,6 +26,7 @@ import type {
 } from '../schemas/recording.schema'
 import type { MarkerResponse } from '../schemas/markers.schema'
 import type { RepairProjectResponse } from '../schemas/recovery.schema'
+import type { EditProjectResponse } from '../schemas/editor.schema'
 import type { StartExportRequest, ExportJobResponse } from '../schemas/export.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
 import type { RecordingState } from './recording-state'
@@ -84,6 +85,16 @@ export interface RecoveryApi {
   repair: (id: string) => Promise<RepairProjectResponse>
 }
 
+export interface EditorApi {
+  /** EDIT-001 - cria um novo projeto de edicao para uma gravacao `COMPLETED`. `name` opcional
+   * (padrao: titulo da gravacao). Nenhuma restricao de unicidade - a mesma gravacao pode ter
+   * varios projetos de edicao. */
+  create: (projectId: string, name?: string) => Promise<EditProjectResponse>
+  get: (id: string) => Promise<EditProjectResponse>
+  /** Lista TODOS os projetos de edicao (de qualquer gravacao) - visao geral da tela "/editor". */
+  list: () => Promise<EditProjectResponse[]>
+}
+
 export interface ExportApi {
   start: (request: StartExportRequest) => Promise<ExportJobResponse>
   list: () => Promise<ExportJobResponse[]>
@@ -107,6 +118,7 @@ export interface MeetingStudioApi {
   recording: RecordingApi
   markers: MarkersApi
   recovery: RecoveryApi
+  editor: EditorApi
   export: ExportApi
   system: SystemApi
   devices: DevicesApi

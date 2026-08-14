@@ -22,7 +22,10 @@ disco** (RF-042) implementados. Ver
 está completa: detecção e reparo de gravações interrompidas por um encerramento abrupto
 (RECOV-002/RECOV-003), e detalhes/renomear/excluir na Biblioteca (LIB-002/004/006) funcionam de
 ponta a ponta - ver [Recuperação de gravações incompletas](#recuperação-de-gravações-incompletas-fase-2)
-e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-excluir-fase-2).
+e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-excluir-fase-2). A
+**Fase 3 — Editor MVP** está em andamento: criar/abrir um projeto de edição vinculado a uma
+gravação concluída (EDIT-001) já funciona de ponta a ponta - ver
+[Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -521,6 +524,41 @@ anteriores - com este, a Fase 2 - Recovery + Library fica completa.
   `library.spec.ts`: grava uma sessão curta real, expande detalhes, renomeia, exclui com
   confirmação, confirma que a pasta some do disco.
 
+### Editor: criar e abrir projeto de edição (Fase 3)
+
+Décimo segundo incremento - primeiro da **Fase 3 — Editor MVP** - EDIT-001. As tabelas
+`edit_projects`/`edit_operations` (06_DATA_MODEL.md) já existiam desde o scaffolding da Fase 0,
+sem nenhum canal IPC nem UI até agora. Este incremento entrega só "criar/abrir um projeto de
+edição vinculado a uma gravação" - a timeline em si (playhead, corte, split, undo/redo, layout,
+preview, EDIT-002 em diante) fica para os próximos incrementos, deliberadamente separados dado o
+tamanho da Fase 3 (12 sub-itens no roadmap).
+
+- **Sem restrição de unicidade entre gravação e projeto de edição** (por desenho do schema,
+  `edit_projects.projectId` não é `UNIQUE`) - a mesma gravação pode ter vários projetos de edição
+  independentes (ex.: "versão completa" e "versão curta" da mesma reunião). `editor.create` por
+  isso NUNCA é idempotente/"abre se já existe" - sempre cria um novo.
+- **Só é possível criar um projeto de edição para uma gravação `COMPLETED`** - mesmo raciocínio já
+  registrado para `ProjectService.renameProject`/`deleteProject` (decisão #52): editar uma
+  gravação ainda em andamento corromperia arquivos ainda em uso pelo `RecordingSessionManager`;
+  editar uma `RECOVERABLE`/`FAILED` não faz sentido antes de reparar (RECOV-003) ou aceitar a
+  perda dos dados.
+- **`name` é opcional, com o título da gravação original como padrão** - mesma convenção já usada
+  em outros lugares do app ("nome derivado, editável depois").
+- **UI**: a Biblioteca ganha um botão "Editar" (só em gravações `COMPLETED`) que cria o projeto de
+  edição e navega direto para ele. A nova tela "/editor" (rota `Projetos` na barra lateral) lista
+  TODOS os projetos de edição de qualquer gravação - equivalente à Biblioteca, mas para edições. A
+  página de detalhe (`/editor/:id`) por enquanto só mostra metadados + um resumo somente-leitura
+  da gravação vinculada (reaproveitando `library.getDetails`, já existente desde LIB-002) - a
+  timeline chega nos próximos incrementos.
+- Testado via 13 testes sintéticos em `editor.service.test.ts`: cria com nome padrão/customizado,
+  rejeita gravação inexistente e todo status que não seja `COMPLETED` (`IDLE`/`RECORDING`/
+  `PAUSED`/`RECOVERABLE`/`FAILED`, via `it.each`), permite múltiplos projetos de edição para a
+  mesma gravação, busca por id/rejeita id inexistente, lista vazia/com múltiplas gravações. Ponta
+  a ponta em novo arquivo `tests/e2e/editor.spec.ts` (mesmo padrão de arquivo por área de produto,
+  decisão #54): grava uma sessão real curta, cria o projeto de edição pela Biblioteca, confirma a
+  navegação e o resumo da gravação vinculada, reabre pela lista geral "/editor"; segundo teste
+  confirma a rejeição ao tentar editar uma gravação que nunca chegou a `COMPLETED`.
+
 ## Estrutura de diretórios
 
 ```text
@@ -547,7 +585,8 @@ src/
     constants/    app-info, filesystem, error-codes, error-messages
 tests/
   unit/{main,shared,db,renderer}/
-  e2e/            app-launch.spec.ts, navigation.spec.ts, recording.spec.ts, library.spec.ts
+  e2e/            app-launch.spec.ts, navigation.spec.ts, recording.spec.ts, library.spec.ts,
+                  editor.spec.ts
   fixtures/       tmp-db.ts
   setup/          vitest.setup.ts
 ```
@@ -815,6 +854,19 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     primeiro cenário desta suíte que não é "sobre gravação" (é sobre a tela da Biblioteca em si);
     registrado como o padrão daqui pra frente - um arquivo por área de produto, não um arquivo
     monolítico crescendo indefinidamente conforme o roadmap avança.
+55. **`edit_projects.projectId` não é `UNIQUE`, então `editor.create` nunca é "abre se já
+    existe"** — sempre cria um novo projeto de edição. Um botão "Editar" que fosse idempotente
+    (reabrir o mesmo projeto de edição sempre) impediria o caso de uso explícito do modelo de
+    dados: duas edições independentes da mesma gravação (ex.: "versão completa" vs. "versão
+    curta" para redes sociais).
+56. **Criar projeto de edição exige `status === 'COMPLETED'` na gravação** — mesmo raciocínio já
+    registrado para renomear/excluir na Biblioteca (decisão #52): editar uma gravação ainda em
+    andamento arriscaria arquivos ainda abertos pelo `RecordingSessionManager`; `RECOVERABLE`/
+    `FAILED` precisam passar por reparo (ou aceitar a perda) antes de fazer sentido editar.
+57. **A tela de detalhe do projeto de edição (`/editor/:id`) reaproveita `library.getDetails`
+    (LIB-002) para mostrar um resumo da gravação vinculada** — em vez de duplicar a mesma lógica
+    de agregação de trilhas/segmentos/bytes já testada e correta; o editor não precisa de uma
+    visão diferente dos dados da gravação nesta etapa (sem timeline ainda).
 
 ## Testes
 
@@ -844,10 +896,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   de ponta a ponta (`project.service.test.ts`, mesmo padrão de reaproveitar o
   `RecordingSessionManager` real): agregação de detalhes por trilha com/sem dados gravados,
   renomear com sucesso/projeto inexistente/gravação ativa, excluir com sucesso (remove banco E
-  disco)/projeto inexistente/gravação ativa (mantendo banco e arquivos intactos)**, wrapper de IPC
-  (validação/erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de domínio,
-  migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço de
-  configurações, store de tema, smoke test de componente (jsdom). **148 testes, 24 arquivos.**
+  disco)/projeto inexistente/gravação ativa (mantendo banco e arquivos intactos)**, **`EditorService`
+  de ponta a ponta (`editor.service.test.ts`): cria com nome padrão (título da gravação) ou
+  customizado, rejeita gravação inexistente e qualquer status que não seja `COMPLETED` (via
+  `it.each`), permite múltiplos projetos de edição independentes para a mesma gravação, busca por
+  id/rejeita id inexistente, lista vazia ou com múltiplas gravações**, wrapper de IPC (validação/
+  erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de domínio, migrations
+  (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço de configurações,
+  store de tema, smoke test de componente (jsdom). **161 testes, 25 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -880,6 +936,12 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   com bytes reais), renomeia inline, exclui com o passo de confirmação, confirma que o item some da
   lista E que a pasta some do disco. **1 teste**, validado limpo e rápido (7.6-10.2s) em múltiplas
   execuções isoladas consecutivas.
+- **Playwright** (`tests/e2e/editor.spec.ts`, arquivo próprio - mesmo padrão da decisão #54): grava
+  uma sessão real curta, cria o projeto de edição pelo botão "Editar" na Biblioteca, confirma a
+  navegação e o resumo da gravação vinculada na página de detalhe, reabre pela lista geral
+  "/editor"; segundo teste confirma a rejeição ao tentar criar um projeto de edição para uma
+  gravação que nunca chegou a `COMPLETED`. **2 testes**, validados limpos e rápidos (8.9-12.3s) em
+  múltiplas execuções isoladas consecutivas.
 
 ## Pendências conhecidas
 
@@ -953,6 +1015,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - `getProjectDetails` não expõe a lista de segmentos individualmente (só o resumo por trilha:
   contagem + bytes totais) - suficiente para o MVP, mas insuficiente para uma futura timeline de
   edição, que precisará dos segmentos um a um.
+- Projeto de edição ainda não tem timeline (playhead, corte, split, undo/redo, layout, preview -
+  EDIT-002 em diante), renomear, nem excluir - só criar (a partir de uma gravação `COMPLETED`),
+  listar e ver um resumo somente-leitura da gravação vinculada. `edit_operations` (tabela já
+  existente desde a Fase 0) segue sem nenhum canal IPC/uso - chega junto com a timeline.
+- `EditorProjectPage` não trata um `id` de projeto de edição inexistente/inválido na URL de forma
+  amigável (`editor.get` lança `NotFoundError`, capturado só como um estado de erro genérico) -
+  refinamento futuro, não bloqueante.
 
 ## Próximo passo
 
@@ -961,14 +1030,17 @@ quatro fontes de captura simultâneas, segmentação por tempo/tamanho, pausar/r
 marcadores (RF-016) e monitor de espaço em disco (RF-042) estão implementados e testados de ponta a
 ponta. A **Fase 2 — Recovery + Library** também está completa: RECOV-001/002/003 (manifest,
 detecção e reparo de gravações incompletas) e LIB-001/002/004/005/006 (listar, detalhes, renomear,
-mostrar na pasta, excluir) funcionam de ponta a ponta.
+mostrar na pasta, excluir) funcionam de ponta a ponta. A **Fase 3 — Editor MVP** está em andamento:
+EDIT-001 (criar/abrir projeto de edição) já funciona de ponta a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. **Fase 3 — Editor MVP** (EDIT-001..012): timeline, corte/split, undo/redo, ganho/mudo, fade,
-   transformação de câmera, layout, autosave.
+1. Continuar a **Fase 3 — Editor MVP** (EDIT-002..012): timeline (dados + UI: playhead, zoom,
+   seleção), preview, corte/split, remover intervalo, undo/redo, ganho/mudo, fade, visibilidade/
+   transformação de câmera, layout (PiP/lado-a-lado/só-tela/só-câmera), autosave - cada operação
+   provavelmente seu próprio incremento, dado o tamanho desta fase (05_MEDIA_EDITOR.md).
 2. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
    ainda não instalados - `main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`,
    nenhum binário real, `export.start` sempre lança `NotImplementedError`), MP4 720p/1080p, faixa

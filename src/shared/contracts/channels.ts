@@ -33,6 +33,11 @@ export const IPC_CHANNELS = {
   recovery: {
     repair: 'recovery.repair'
   },
+  editor: {
+    create: 'editor.create',
+    get: 'editor.get',
+    list: 'editor.list'
+  },
   export: {
     start: 'export.start',
     list: 'export.list',
