@@ -17,7 +17,7 @@ import { ExportService } from '../../../src/main/services/export.service'
 import { JobRunner } from '../../../src/main/jobs/job-runner'
 import { ExportJobStore } from '../../../src/main/jobs/export-job-store'
 import { initializeProjectOnDisk } from '../../../src/main/media/project-filesystem'
-import { runFfmpegProcess } from '../../../src/main/media/ffmpeg/ffmpeg-runner'
+import { runFfmpegProcess, runFfprobeProcess } from '../../../src/main/media/ffmpeg/ffmpeg-runner'
 import { resolveFfmpegBinaries } from '../../../src/main/media/ffmpeg/ffmpeg-locator'
 import { NotFoundError, ValidationError } from '../../../src/shared/types/domain-errors'
 import type { DatabaseClient } from '../../../src/main/database/client'
@@ -25,9 +25,9 @@ import type { ProjectEntity, TrackType } from '../../../src/shared/types/entitie
 
 /**
  * EXP-003/004 (vigesimo quinto incremento - Fase 4). Duas camadas de teste:
- * - `describe('startExport - validacao')`: repositorios reais, mas SEM spawnar FFmpeg (cobre so
- *   os caminhos que rejeitam ANTES de enfileirar - projeto ausente, timeline vazia, layout
- *   PiP/lado-a-lado fora do escopo deste incremento).
+ * - `describe('startExport - validacao')`: repositorios reais, mas SEM spawnar FFmpeg de proposito
+ *   pra cada caso (cobre os caminhos que rejeitam ANTES de enfileirar - projeto ausente, timeline
+ *   vazia, timeline sem trilha de audio pra um target AUDIO, `rangeMs` alem da duracao real).
  * - `describe('startExport - render real (integracao)')`: gera um clipe SINTETICO de verdade via
  *   o proprio binario `ffmpeg-static` (lavfi `testsrc`/`sine`, sem depender de nenhum arquivo de
  *   midia externo) e roda o pipeline COMPLETO ate um MP4 real em disco - a unica forma de provar
@@ -130,17 +130,34 @@ describe('ExportService', () => {
       ).toThrow(ValidationError)
     })
 
-    it('throws ValidationError when layoutPreset resolves to PiP (screen+camera, default layout)', () => {
-      const project = createProject(join(libraryRoot, 'p2'))
-      addTrackWithSegment(project.id, 'SCREEN', 'source/screen/screen_000001.webm')
-      addTrackWithSegment(project.id, 'CAMERA', 'source/camera/camera_000001.webm')
-      const editProject = editorService.createEditProject(project.id)
-      // DEFAULT_LAYOUT_PRESET e 'PIP' - com tela+camera presentes, computePreviewLayout resolve
-      // pra 'pip', fora do escopo deste incremento (buildFfmpegArgs retorna null).
-      expect(() =>
-        exportService.startExport(editProject.id, { kind: 'VIDEO', resolution: 'HD_720P' })
-      ).toThrow(ValidationError)
-    })
+    it(
+      'does NOT reject a PiP layout anymore (EXP-004b) - enqueues normally like any other layout',
+      async () => {
+        const project = createProject(join(libraryRoot, 'p2'))
+        addTrackWithSegment(project.id, 'SCREEN', 'source/screen/screen_000001.webm')
+        addTrackWithSegment(project.id, 'CAMERA', 'source/camera/camera_000001.webm')
+        const editProject = editorService.createEditProject(project.id)
+        // DEFAULT_LAYOUT_PRESET e 'PIP' - com tela+camera presentes, computePreviewLayout resolve
+        // pra 'pip'; `buildFfmpegArgs` agora compoe um overlay de verdade (EXP-004b), entao isto
+        // nao lanca `ValidationError` mais - o que este teste prova. Espera o job terminar
+        // (referencia arquivos que nao existem de verdade neste describe, entao o proprio FFmpeg
+        // real falha rapido - `FAILED`, nao `COMPLETED`) so pra nao deixar um spawn em segundo
+        // plano pendente apos o teste acabar (o `afterEach` fecha o banco logo em seguida). A
+        // exportacao REAL de um PiP, com media sintetica de verdade, e testada na secao de
+        // integracao abaixo.
+        const job = exportService.startExport(editProject.id, { kind: 'VIDEO', resolution: 'HD_720P' })
+        expect(['QUEUED', 'RUNNING']).toContain(job.status)
+
+        const deadline = Date.now() + 10_000
+        let finalJob = exportJobRepository.findById(job.id)!
+        while (Date.now() < deadline && (finalJob.status === 'QUEUED' || finalJob.status === 'RUNNING')) {
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
+          finalJob = exportJobRepository.findById(job.id)!
+        }
+        expect(finalJob.status).toBe('FAILED')
+      },
+      15_000
+    )
 
     it('throws ValidationError for an AUDIO target when no audio-capable track exists (EXP-005)', () => {
       const project = createProject(join(libraryRoot, 'p3'))
@@ -280,6 +297,114 @@ describe('ExportService', () => {
       return { editProjectId: editProject.id, paths }
     }
 
+    /**
+     * EXP-004b - gera DOIS clipes de video sinteticos (tela + camera, ambos video-only via `-an`,
+     * mesma forma real de captura ja usada por `setupScreenAndMicProject`) e cria um projeto de
+     * edicao com layout PIP (`DEFAULT_LAYOUT_PRESET`) por padrao - `computePreviewLayout` resolve
+     * pra `pip` automaticamente com tela+camera presentes, sem precisar chamar
+     * `setLayoutPreset` explicitamente. Reusado pelo teste de PiP (layout padrao) e pelo de
+     * lado-a-lado (que chama `setLayoutPreset(..., 'SIDE_BY_SIDE')` em cima do mesmo par de
+     * trilhas).
+     */
+    async function setupScreenAndCameraProject(): Promise<{ editProjectId: string }> {
+      const { ffmpegPath } = resolveFfmpegBinaries()
+      expect(ffmpegPath).toBeTruthy()
+
+      const projectId = randomUUID()
+      const { paths } = await initializeProjectOnDisk(libraryRoot, projectId)
+
+      const screenClipPath = join(paths.sourceScreenPath, 'screen_000001.webm')
+      const generateScreen = runFfmpegProcess({
+        binaryPath: ffmpegPath!,
+        args: [
+          '-y',
+          '-f',
+          'lavfi',
+          '-i',
+          'testsrc=size=320x240:duration=2:rate=10',
+          '-an',
+          '-c:v',
+          'libvpx',
+          '-b:v',
+          '300k',
+          screenClipPath
+        ]
+      })
+      expect((await generateScreen.result).exitCode).toBe(0)
+
+      const cameraClipPath = join(paths.sourceCameraPath, 'camera_000001.webm')
+      const generateCamera = runFfmpegProcess({
+        binaryPath: ffmpegPath!,
+        args: [
+          '-y',
+          '-f',
+          'lavfi',
+          '-i',
+          'testsrc2=size=320x240:duration=2:rate=10',
+          '-an',
+          '-c:v',
+          'libvpx',
+          '-b:v',
+          '300k',
+          cameraClipPath
+        ]
+      })
+      expect((await generateCamera.result).exitCode).toBe(0)
+
+      projectRepository.create({
+        id: projectId,
+        title: 'Reuniao sintetica tela+camera',
+        createdAt: new Date().toISOString(),
+        status: 'COMPLETED',
+        rootPath: paths.rootPath
+      })
+      const screenTrackId = randomUUID()
+      trackRepository.create({
+        id: screenTrackId,
+        projectId,
+        type: 'SCREEN',
+        enabled: true,
+        position: 0,
+        startOffsetMs: 0
+      })
+      segmentRepository.create({
+        id: randomUUID(),
+        trackId: screenTrackId,
+        seqIndex: 1,
+        relativePath: 'source/screen/screen_000001.webm',
+        startedAtMs: 0,
+        endedAtMs: 2000,
+        durationMs: 2000,
+        byteSize: (await stat(screenClipPath)).size,
+        mimeType: 'video/webm',
+        finalized: true
+      })
+      const cameraTrackId = randomUUID()
+      trackRepository.create({
+        id: cameraTrackId,
+        projectId,
+        type: 'CAMERA',
+        enabled: true,
+        position: 1,
+        startOffsetMs: 0
+      })
+      segmentRepository.create({
+        id: randomUUID(),
+        trackId: cameraTrackId,
+        seqIndex: 1,
+        relativePath: 'source/camera/camera_000001.webm',
+        startedAtMs: 0,
+        endedAtMs: 2000,
+        durationMs: 2000,
+        byteSize: (await stat(cameraClipPath)).size,
+        mimeType: 'video/webm',
+        finalized: true
+      })
+
+      const editProject = editorService.createEditProject(projectId)
+      return { editProjectId: editProject.id }
+    }
+
     /** `startExport` e fire-and-forget de proposito (ver comentario no proprio servico) - faz
      * poll na tabela `export_jobs` ate um estado terminal, mesmo espirito ja usado pelos testes
      * E2E deste projeto pra esperar por arquivos de segmento no disco. */
@@ -292,6 +417,64 @@ describe('ExportService', () => {
       }
       return job
     }
+
+    /** EXP-004b - confirma via ffprobe REAL que o arquivo de saida tem exatamente a resolucao de
+     * saida esperada (`WxH`) - a prova mais direta de que o video COMPOSITO (overlay/hstack) foi
+     * de fato gerado no tamanho certo, nao so "um MP4 nao-vazio qualquer" (o mesmo grau de
+     * verificacao ja usado pra provar `rangeMs` via tamanho de arquivo WAV, EXP-006). */
+    async function probeVideoDimensions(outputPath: string): Promise<{ width: number; height: number }> {
+      const { ffprobePath } = resolveFfmpegBinaries()
+      const result = await runFfprobeProcess(ffprobePath!, [
+        '-v',
+        'error',
+        '-select_streams',
+        'v:0',
+        '-show_entries',
+        'stream=width,height',
+        '-of',
+        'json',
+        outputPath
+      ])
+      const parsed = JSON.parse(result.stdout) as { streams: [{ width: number; height: number }] }
+      return { width: parsed.streams[0].width, height: parsed.streams[0].height }
+    }
+
+    it(
+      'EXP-004b: composes a real PiP export (screen background + camera overlay) at the requested resolution',
+      async () => {
+        const { editProjectId } = await setupScreenAndCameraProject()
+        // DEFAULT_LAYOUT_PRESET e 'PIP' - nao precisa chamar setLayoutPreset explicitamente.
+        const job = exportService.startExport(editProjectId, { kind: 'VIDEO', resolution: 'HD_720P' })
+        const finalJob = await waitForTerminalJob(job.id)
+        expect(finalJob.status).toBe('COMPLETED')
+        expect(finalJob.outputPath).toBeTruthy()
+        expect((await stat(finalJob.outputPath!)).size).toBeGreaterThan(0)
+
+        // A saida final tem exatamente 1280x720 (HD_720P) - so alcancavel se o `overlay` real foi
+        // composto sobre o fundo escalado/preenchido corretamente (um filter_complex malformado
+        // faria o FFmpeg rejeitar o comando inteiro, nunca produzir um arquivo com o tamanho errado).
+        expect(await probeVideoDimensions(finalJob.outputPath!)).toEqual({ width: 1280, height: 720 })
+      },
+      40_000
+    )
+
+    it(
+      'EXP-004b: composes a real side-by-side export (screen left + camera right) at the requested resolution',
+      async () => {
+        const { editProjectId } = await setupScreenAndCameraProject()
+        editorService.setLayoutPreset(editProjectId, 'SIDE_BY_SIDE')
+        const job = exportService.startExport(editProjectId, { kind: 'VIDEO', resolution: 'HD_720P' })
+        const finalJob = await waitForTerminalJob(job.id)
+        expect(finalJob.status).toBe('COMPLETED')
+        expect(finalJob.outputPath).toBeTruthy()
+        expect((await stat(finalJob.outputPath!)).size).toBeGreaterThan(0)
+
+        // Mesma prova de dimensoes - so alcancavel se o `hstack` real combinou as duas metades
+        // (640x720 cada) de volta pro quadro inteiro de 1280x720.
+        expect(await probeVideoDimensions(finalJob.outputPath!)).toEqual({ width: 1280, height: 720 })
+      },
+      40_000
+    )
 
     it(
       'produces a real, non-empty MP4 file and marks the job COMPLETED',

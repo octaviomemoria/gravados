@@ -1433,4 +1433,77 @@ test.describe('editor (export)', () => {
     expect(job.status).toBe('CANCELED')
     expect(job.outputPath).toBeNull()
   })
+
+  // EXP-004b (PiP/lado-a-lado reais no arquivo exportado) - grava tela E camera juntas (nao so
+  // tela+microfone como o teste de sucesso original) - com as duas trilhas de video presentes,
+  // `computePreviewLayout`/`buildRenderPlan` resolvem pro layout PADRAO ('PIP') automaticamente,
+  // sem precisar trocar o select de layout. Exercita o mesmo pipeline REAL de ponta a ponta (clique
+  // -> `export.start` -> FFmpeg real com o filtro `overlay` novo -> MP4 real em disco) - a unica
+  // forma de confirmar que a composicao PiP funciona de verdade pela UI, nao so em isolamento
+  // (`export.service.test.ts` ja prova as dimensoes exatas via ffprobe real).
+  test('exports a real PiP MP4 (screen background + camera overlay) via the UI', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - export PiP ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const firstScreenSource = appWindow.locator('.screen-source-card').first()
+    await expect(firstScreenSource).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await firstScreenSource.click()
+    const cameraSelect = appWindow.getByLabel('Camera', { exact: true })
+    await expect(cameraSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cameraSelect.selectOption({ index: 1 })
+    await expect(appWindow.locator('video.camera-preview')).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const screenPath = join(rootPath, 'source', 'screen', 'screen_000001.webm')
+    const cameraPath = join(rootPath, 'source', 'camera', 'camera_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(screenPath) && fileHasBytes(cameraPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando os primeiros chunks de tela e camera serem persistidos em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(appWindow.locator('.timeline__track')).toHaveCount(2, { timeout: POLL_TIMEOUT_MS })
+
+    const editProjectId = await appWindow.evaluate(async () => {
+      const list = await window.meetingStudio.editor.list()
+      return list[0]!.id
+    })
+    const timeline = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(timeline.layoutPreset).toBe('PIP') // confirma que este teste realmente exercita o caminho PiP.
+
+    await appWindow.getByRole('button', { name: 'Exportar em 720p' }).click()
+    const exportStatus = appWindow.locator('.editor-export-status')
+    await expect(exportStatus).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await expect(exportStatus).toContainText('Concluida', { timeout: 90_000 })
+
+    const outputPath = await appWindow.evaluate(async () => {
+      const jobs = await window.meetingStudio.export.list()
+      return jobs[0]!.outputPath
+    })
+    expect(outputPath).toBeTruthy()
+    expect(fileHasBytes(outputPath!)).toBe(true)
+  })
 })

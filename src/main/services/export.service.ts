@@ -34,24 +34,24 @@ const AUDIO_FILE_EXTENSION: Record<AudioExportFormat, string> = {
 }
 
 /**
- * EXP-003/004/005/008/009 (vigesimo quinto/sexto/oitavo/nono incrementos - Fase 4, "Render Job" da
- * doc - `05_MEDIA_EDITOR.md` §12: `Edit Model → Timeline Compiler → FFmpeg Plan → Render Job →
- * Validation → Output`, TODAS as etapas implementadas desde EXP-009). Orquestra o pipeline
- * inteiro: timeline editada -> `RenderPlan` (EXP-001) -> args FFmpeg (EXP-003 video / EXP-005
- * audio) -> job assincrono via `JobRunner`/`ExportJobRepository` (ja instanciados desde a
- * Fase 0/EXP-001, so agora exercitados de verdade) -> processo FFmpeg real (EXP-002, cancelavel de
- * verdade desde EXP-008) -> validacao real via ffprobe (EXP-009 - `exitCode 0` sozinho nunca
- * provava que o arquivo escrito e utilizavel de verdade) -> arquivo em `<rootPath>/exports/`.
- * Progresso (EXP-007) ja fluia pra UI desde EXP-003/004 (a mesma infraestrutura `onProgress`/
- * `JobRunner` ja existia, so nunca tinha sido exercitada de ponta a ponta).
+ * EXP-003/004/005/008/009/004b (vigesimo quinto/sexto/oitavo/nono/trigesimo incrementos - Fase 4,
+ * "Render Job" da doc - `05_MEDIA_EDITOR.md` §12: `Edit Model → Timeline Compiler → FFmpeg Plan →
+ * Render Job → Validation → Output`, TODAS as etapas implementadas desde EXP-009). Orquestra o
+ * pipeline inteiro: timeline editada -> `RenderPlan` (EXP-001) -> args FFmpeg (EXP-003 video, com
+ * PiP/lado-a-lado reais desde EXP-004b / EXP-005 audio) -> job assincrono via `JobRunner`/
+ * `ExportJobRepository` (ja instanciados desde a Fase 0/EXP-001, so agora exercitados de verdade)
+ * -> processo FFmpeg real (EXP-002, cancelavel de verdade desde EXP-008) -> validacao real via
+ * ffprobe (EXP-009 - `exitCode 0` sozinho nunca provava que o arquivo escrito e utilizavel de
+ * verdade) -> arquivo em `<rootPath>/exports/`. Progresso (EXP-007) ja fluia pra UI desde
+ * EXP-003/004 (a mesma infraestrutura `onProgress`/`JobRunner` ja existia, so nunca tinha sido
+ * exercitada de ponta a ponta).
  *
- * `target.kind` decide entre VIDEO (MP4 720p/1080p, `buildFfmpegArgs`) e AUDIO (M4A/MP3/WAV,
- * `buildAudioFfmpegArgs`) - ver `ExportTargetSchema`. `rangeMs` opcional (EXP-006, RF-034) recorta
- * a exportacao pra so uma FAIXA da timeline - validado aqui contra `totalDurationMs` (o schema em
- * si so garante `startMs < endMs`, nunca conhece a duracao real de uma timeline especifica).
- * ESCOPO AINDA LIMITADO no caminho de video: so uma unica trilha de fundo (`buildFfmpegArgs`
- * retorna `null`, rejeitado ANTES de enfileirar, pra qualquer plano PiP/lado-a-lado) - fica pro
- * incremento futuro EXP-004b.
+ * `target.kind` decide entre VIDEO (MP4 720p/1080p, `buildFfmpegArgs` - trilha unica, PiP OU
+ * lado-a-lado, o MESMO layout que `computePreviewLayout` resolveu pro editor, ver EXP-004b) e
+ * AUDIO (M4A/MP3/WAV, `buildAudioFfmpegArgs`) - ver `ExportTargetSchema`. `rangeMs` opcional
+ * (EXP-006, RF-034) recorta a exportacao pra so uma FAIXA da timeline - validado aqui contra
+ * `totalDurationMs` (o schema em si so garante `startMs < endMs`, nunca conhece a duracao real de
+ * uma timeline especifica).
  * `startExport` e SINCRONO no enfileiramento (cria o job, dispara o FFmpeg em segundo plano) -
  * o handler IPC devolve o job em `QUEUED` imediatamente, sem o renderer bloquear esperando o
  * render inteiro (o mesmo raciocinio ja usado pelo `JobRunner` desde que foi desenhado).
@@ -118,9 +118,8 @@ export class ExportService {
       totalDurationMs = plan.output.endMs - plan.output.startMs
       if (!args) {
         throw new ValidationError(
-          'Esta timeline nao pode ser exportada em video ainda: exportacao so suporta layout de ' +
-            'trilha unica (sem PiP/lado-a-lado) e exige pelo menos uma trilha de video. ' +
-            'PiP/lado-a-lado ficam para um incremento futuro.'
+          'Esta timeline nao pode ser exportada em video: exige pelo menos uma trilha de video ' +
+            'com conteudo (a gravacao pode ser so de audio, ou uma trilha de video sem nenhum clip).'
         )
       }
     } else {

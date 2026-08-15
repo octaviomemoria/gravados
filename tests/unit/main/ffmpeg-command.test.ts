@@ -36,11 +36,30 @@ describe('buildFfmpegArgs', () => {
     expect(args).toBeNull()
   })
 
-  it('returns null when the plan has an overlay (PiP deferred to a future increment)', () => {
+  it('returns null when the plan has BOTH overlay and sideBySideRight (defensive - unreachable via buildRenderPlan)', () => {
     const plan = basePlan({
       overlay: {
         trackId: 'camera',
         clips: [{ relativePath: 'source/camera/x.webm', sourceStartMs: 0, durationMs: 5000, timelineStartMs: 0 }],
+        xPercent: 70,
+        yPercent: 70,
+        widthPercent: 25,
+        heightPercent: 25,
+        shape: 'rectangle'
+      },
+      sideBySideRight: {
+        trackId: 'camera2',
+        clips: [{ relativePath: 'source/camera/y.webm', sourceStartMs: 0, durationMs: 5000, timelineStartMs: 0 }]
+      }
+    })
+    expect(buildFfmpegArgs(plan, PROJECT_ROOT, OUTPUT_PATH)).toBeNull()
+  })
+
+  it('returns null when the overlay layer has no clips (defensive)', () => {
+    const plan = basePlan({
+      overlay: {
+        trackId: 'camera',
+        clips: [],
         xPercent: 70,
         yPercent: 70,
         widthPercent: 25,
@@ -51,14 +70,107 @@ describe('buildFfmpegArgs', () => {
     expect(buildFfmpegArgs(plan, PROJECT_ROOT, OUTPUT_PATH)).toBeNull()
   })
 
-  it('returns null when the plan has a sideBySideRight layer (side-by-side deferred)', () => {
+  it('returns null when the sideBySideRight layer has no clips (defensive)', () => {
     const plan = basePlan({
-      sideBySideRight: {
-        trackId: 'camera',
-        clips: [{ relativePath: 'source/camera/x.webm', sourceStartMs: 0, durationMs: 5000, timelineStartMs: 0 }]
-      }
+      sideBySideRight: { trackId: 'camera', clips: [] }
     })
     expect(buildFfmpegArgs(plan, PROJECT_ROOT, OUTPUT_PATH)).toBeNull()
+  })
+
+  describe('PiP (overlay, EXP-004b)', () => {
+    function pipPlan() {
+      return basePlan({
+        overlay: {
+          trackId: 'camera',
+          clips: [
+            { relativePath: 'source/camera/camera_000001.webm', sourceStartMs: 0, durationMs: 5000, timelineStartMs: 0 }
+          ],
+          xPercent: 70,
+          yPercent: 70,
+          widthPercent: 25,
+          heightPercent: 25,
+          shape: 'rectangle'
+        }
+      })
+    }
+
+    it('scales/pads the background to the full output size, then overlays the camera scaled+cropped ("cover") at the right pixel position', () => {
+      const args = buildFfmpegArgs(pipPlan(), PROJECT_ROOT, OUTPUT_PATH)!
+      const filterComplex = args[args.indexOf('-filter_complex') + 1]!
+      // Fundo preenche o quadro inteiro (720p, o mesmo basePlan de sempre).
+      expect(filterComplex).toContain('scale=1280:720:force_original_aspect_ratio=decrease')
+      // Camera: 25% de 1280x720 = 320x180 (widthPercent/heightPercent), "cover" via
+      // force_original_aspect_ratio=increase + crop exato pro tamanho da caixa.
+      expect(filterComplex).toContain('scale=320:180:force_original_aspect_ratio=increase,crop=320:180')
+      // Posicao: 70% de 1280x720 = x=896,y=504 (canto superior esquerdo, igual ao CSS left/top).
+      expect(filterComplex).toContain('overlay=x=896:y=504:eof_action=pass')
+    })
+
+    it('references both the background AND the overlay source files as separate -i inputs', () => {
+      const args = buildFfmpegArgs(pipPlan(), PROJECT_ROOT, OUTPUT_PATH)!
+      const inputPaths = args.flatMap((arg, index) => (args[index - 1] === '-i' ? [arg] : []))
+      expect(inputPaths).toHaveLength(2)
+      expect(inputPaths[0]).toContain('screen_000001.webm')
+      expect(inputPaths[1]).toContain('camera_000001.webm')
+    })
+
+    it('maps the composited [vfinal] and still mixes audio normally alongside the PiP video', () => {
+      const plan = basePlan({
+        overlay: pipPlan().overlay,
+        audio: [
+          {
+            trackId: 'mic',
+            clips: [{ relativePath: 'source/microphone/mic_000001.webm', sourceStartMs: 0, durationMs: 5000, timelineStartMs: 0 }],
+            volume: 1,
+            fadeInMs: 0,
+            fadeOutMs: 0
+          }
+        ]
+      })
+      const args = buildFfmpegArgs(plan, PROJECT_ROOT, OUTPUT_PATH)!
+      expect(args).toEqual(expect.arrayContaining(['-map', '[vfinal]', '-map', '[afinal]']))
+    })
+  })
+
+  describe('lado-a-lado (sideBySideRight, EXP-004b)', () => {
+    function sideBySidePlan() {
+      return basePlan({
+        sideBySideRight: {
+          trackId: 'camera',
+          clips: [
+            { relativePath: 'source/camera/camera_000001.webm', sourceStartMs: 0, durationMs: 5000, timelineStartMs: 0 }
+          ]
+        }
+      })
+    }
+
+    it('scales/pads each side to exactly half the output width, full height, then hstacks them', () => {
+      const args = buildFfmpegArgs(sideBySidePlan(), PROJECT_ROOT, OUTPUT_PATH)!
+      const filterComplex = args[args.indexOf('-filter_complex') + 1]!
+      // Metade de 1280 = 640, altura inteira 720 - cada lado usa scale+pad (nunca recorta, ao
+      // contrario do overlay PiP - mesmo comportamento do preview ao vivo pro lado-a-lado).
+      const halfScalePad = 'scale=640:720:force_original_aspect_ratio=decrease,pad=640:720'
+      expect(filterComplex.split(halfScalePad).length - 1).toBe(2) // aparece duas vezes - esquerda e direita.
+      expect(filterComplex).toContain('hstack=inputs=2')
+    })
+
+    it('references both source files as separate -i inputs', () => {
+      const args = buildFfmpegArgs(sideBySidePlan(), PROJECT_ROOT, OUTPUT_PATH)!
+      const inputPaths = args.flatMap((arg, index) => (args[index - 1] === '-i' ? [arg] : []))
+      expect(inputPaths).toHaveLength(2)
+      expect(inputPaths[0]).toContain('screen_000001.webm')
+      expect(inputPaths[1]).toContain('camera_000001.webm')
+    })
+
+    it('applies the final output-range trim on top of the hstacked composite, same as the other two layouts', () => {
+      const plan = basePlan({
+        sideBySideRight: sideBySidePlan().sideBySideRight,
+        output: { width: 1280, height: 720, startMs: 1000, endMs: 4000 }
+      })
+      const args = buildFfmpegArgs(plan, PROJECT_ROOT, OUTPUT_PATH)!
+      const filterComplex = args[args.indexOf('-filter_complex') + 1]!
+      expect(filterComplex).toContain('trim=start=1.000:end=4.000')
+    })
   })
 
   it('builds -y, one -i per unique input, and never a concatenated string (AGENTS.md)', () => {

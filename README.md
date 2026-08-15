@@ -48,18 +48,19 @@ ponta - ver
 render plan estruturado), o "FFmpeg Plan" + "Render Job" de vídeo (EXP-003/004 - `export.start`
 produz um MP4 720p/1080p REAL em disco), áudio-only (EXP-005 - M4A/MP3/WAV, RF-033), exportação de
 intervalo selecionado (EXP-006, RF-034, reusa a seleção já existente do editor), cancelamento real
-de exportação (EXP-007/008, RF-035 - mata o processo FFmpeg de verdade, não só muda um status) e
-agora a etapa "Validation" da doc (EXP-009 - confirma via ffprobe REAL que o arquivo escrito é
-utilizável antes de marcar o job `COMPLETED`, não só confia no `exitCode` do FFmpeg), tudo com
-botões de exportação na tela do editor, funcionam de ponta a ponta - ver
+de exportação (EXP-007/008, RF-035 - mata o processo FFmpeg de verdade, não só muda um status), a
+etapa "Validation" da doc (EXP-009 - confirma via ffprobe REAL que o arquivo escrito é utilizável
+antes de marcar o job `COMPLETED`, não só confia no `exitCode` do FFmpeg) e agora PiP/lado-a-lado
+reais no arquivo exportado (EXP-004b - o mesmo layout que o editor mostra no preview, composto de
+verdade via `overlay`/`hstack` do FFmpeg), tudo com botões de exportação na tela do editor,
+funcionam de ponta a ponta - ver
 [Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
 [Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4),
 [Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4),
 [Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4),
-[Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4) e
-[Validação do arquivo exportado via ffprobe](#validação-do-arquivo-exportado-via-ffprobe-fase-4).
-Escopo de vídeo ainda limitado a uma única trilha de fundo (sem PiP/lado-a-lado real no arquivo
-exportado, EXP-004b) - próximo incremento, já fora do Marco MVP.
+[Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4),
+[Validação do arquivo exportado via ffprobe](#validação-do-arquivo-exportado-via-ffprobe-fase-4) e
+[PiP e lado-a-lado reais na exportação](#pip-e-lado-a-lado-reais-na-exportação-fase-4).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -1145,9 +1146,9 @@ indicador de progresso/status; `ExportsPage` também reconsulta `export.list` pe
   diferentes; tratados identicamente), `scale`+`pad` pra resolução de saída, `volume`+`afade` por
   trilha de áudio, `amix` só quando há MAIS de uma trilha de áudio (evita um estágio de filtro
   desnecessário pra uma única trilha), e um `trim`/`atrim` final aplicando a faixa de tempo
-  (`output.startMs`/`endMs`). Escopo deste incremento: só `background` (trilha única) - retorna
-  `null` (o chamador decide como reagir) quando o plano tem `overlay`/`sideBySideRight`
-  (PiP/lado-a-lado), deferido pra um incremento futuro (EXP-004b).
+  (`output.startMs`/`endMs`). Escopo deste incremento: só `background` (trilha única) - PiP
+  (`overlay`) e lado-a-lado (`sideBySideRight`) reais chegaram depois, em EXP-004b (ver
+  [PiP e lado-a-lado reais na exportação](#pip-e-lado-a-lado-reais-na-exportação-fase-4)).
 - **`main/services/export.service.ts` (`ExportService`) orquestra o pipeline inteiro**: timeline
   editada (`EditorService.getEditedTimeline`) → `buildRenderPlan` (EXP-001) → `buildFfmpegArgs` →
   enfileira via `exportJobRunner`/`ExportJobRepository` (já instanciados desde a Fase 0/EXP-001,
@@ -1375,6 +1376,56 @@ ainda faltando desde EXP-003/004, e o último item do roadmap da Fase 4: com est
   teste E2E dedicado - a validação é transparente pro fluxo de UI já existente (os testes E2E
   `editor (export)`, incluindo o de cancelamento, já exercitam o caminho de sucesso da validação em
   toda exportação real que fazem); reconfirmados passando limpos nesta validação.
+
+### PiP e lado-a-lado reais na exportação (Fase 4)
+
+Trigésimo incremento - EXP-004b. Último refinamento pendente dentro do escopo já entregue do
+Marco MVP (não um item do roadmap da Fase 4 em si, que já estava fechado desde EXP-009) -
+`buildFfmpegArgs` até aqui só suportava uma única trilha de vídeo de fundo, rejeitando
+(`null` → `ValidationError`) qualquer plano cujo `layoutPreset` resolvesse pra PiP ou lado-a-lado,
+mesmo esses dois já funcionando perfeitamente no PREVIEW ao vivo desde EDIT-010/011. Agora o
+arquivo exportado mostra exatamente o mesmo arranjo que o editor mostrou.
+
+- **PiP usa o filtro `overlay` do FFmpeg, lado-a-lado usa `hstack`** - os dois modos reais que
+  `computePreviewLayout`/`buildRenderPlan` já produziam (`overlay`/`sideBySideRight` no
+  `RenderPlan`), agora com uma composição de comando real por trás de cada um. `background`
+  (fundo/esquerda) e a segunda camada (`overlay`/`sideBySideRight`) reusam o mesmo helper de
+  concatenação de clips (`buildConcatVideoLabel`, extraído do código que antes só existia inline
+  pra `background`) - as três camadas têm exatamente a mesma forma (`RenderVideoLayer`).
+- **PiP usa "cover" (`scale`+`crop`), lado-a-lado usa "contain" (`scale`+`pad`)** - escolha
+  deliberada espelhando o CSS real do preview: `.editor-preview-overlay` usa `object-fit: cover`
+  (a câmera preenche a caixa inteira, recortando o excesso), enquanto o layout `SIDE_BY_SIDE` não
+  força nenhum `object-fit` (cada metade mostra o vídeo inteiro, com barras pretas se a proporção
+  não bater - igual ao comportamento já usado pro fundo em `background` desde EXP-003/004).
+- **Posição do overlay: `x`/`y` em pixels vêm direto de `xPercent`/`yPercent` × `width`/`height`
+  da saída** - mesma semântica CSS já usada pelo preview (`left`/`top` são o canto SUPERIOR
+  ESQUERDO da caixa relativo ao container INTEIRO, não um centro) - `overlay=x:y` do FFmpeg usa a
+  mesma convenção, então a tradução é uma multiplicação direta, sem nenhum ajuste de referencial.
+- **`overlay=...:eof_action=pass`, não o `repeat` padrão do FFmpeg** - se a trilha da câmera
+  terminar antes da trilha de fundo (câmera parou de gravar mais cedo que a tela, por exemplo), o
+  overlay simplesmente DESAPARECE dali em diante - o padrão do FFmpeg congelaria o último quadro da
+  câmera por cima do fundo pelo resto do vídeo, um resultado visualmente incorreto.
+- **`shape: 'circle'` continua sendo só uma aproximação, agora também no arquivo exportado, não só
+  no preview** - implementar um recorte circular real exigiria um filtro `geq`/`alphamerge`
+  adicional (mascarar canal alfa por coordenada) fora do escopo deste incremento; documentado como
+  pendência, mesma limitação que já existia no preview desde EDIT-010 (lá via `border-radius` CSS,
+  que também não é um círculo perfeito numa caixa não-quadrada).
+- Testado via 8 novos testes estruturais em `ffmpeg-command.test.ts` (dois guards defensivos -
+  overlay+sideBySideRight simultâneos, camada sem clip nenhum -, três confirmando o filtro `overlay`
+  real - fundo preenche o quadro inteiro, câmera escalada/recortada pro tamanho exato da caixa,
+  posição em pixels correta, `eof_action=pass`, ambos os inputs referenciados, `[vfinal]`+`[afinal]`
+  mapeados juntos -, e três confirmando `hstack` - cada metade com `scale`+`pad` pro tamanho exato,
+  ambos os inputs referenciados, o trim de faixa de tempo aplicado por cima do composto), e 2 novos
+  testes de integração REAL em `export.service.test.ts` que geram DOIS clipes sintéticos de vídeo
+  (tela + câmera, ambos video-only) e exportam de verdade - um em PiP (layout padrão automático com
+  as duas trilhas presentes) e outro em lado-a-lado (via `setLayoutPreset`) -, confirmando via
+  ffprobe REAL que a saída tem EXATAMENTE a resolução pedida (1280×720) - só alcançável se o
+  `overlay`/`hstack` real funcionou, não só "um MP4 não-vazio qualquer". **397 testes, 35 arquivos**
+  (mesma contagem de arquivos - tudo adicionado aos arquivos já existentes). 1 novo teste E2E
+  (`editor (export)` - grava tela E câmera juntas, confirma que `layoutPreset` resolve pra `'PIP'`
+  automaticamente, exporta em 720p, confirma "Concluída" e um MP4 real em disco) - a primeira vez
+  que um teste deste projeto grava as duas fontes de vídeo simultaneamente especificamente pra um
+  cenário de exportação.
 
 ## Estrutura de diretórios
 
@@ -2064,6 +2115,32 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
      precisar de uma variável de ambiente global (`MEETING_STUDIO_FFPROBE_PATH`), que vazaria pra
      qualquer outro teste rodando em paralelo no mesmo processo Vitest. Em produção,
      `app-context.ts` nunca passa esse parâmetro - sempre resolve os binários reais.
+136. **`buildConcatVideoLabel` extraído das três camadas de vídeo possíveis (`background`,
+     `overlay`, `sideBySideRight`) — mesma lógica de trim+concat, só o rótulo de saída muda** —
+     antes deste incremento só existia inline pra `background`; PiP/lado-a-lado precisavam da
+     MESMA operação pra uma segunda camada, então extrair evitou triplicar o mesmo `map`+`concat`.
+     As três camadas compartilham exatamente a mesma forma (`RenderVideoLayer`), então uma única
+     função genérica bastou, sem nenhum parâmetro condicional por camada.
+137. **PiP usa "cover" (`scale`+`crop`), lado-a-lado usa "contain" (`scale`+`pad`)** — escolha
+     deliberada espelhando o CSS real do preview ao vivo: `.editor-preview-overlay` (EDIT-010) usa
+     `object-fit: cover`, o layout `SIDE_BY_SIDE` (EDIT-011) não força nenhum `object-fit`. Manter
+     os dois comportamentos consistentes entre preview e export era o ponto inteiro deste
+     incremento - divergir teria recriado o mesmo tipo de "bug de confiança" já evitado desde
+     EXP-001 (mover `computePreviewLayout` pra `shared/`).
+138. **`overlay=...:eof_action=pass`, não o `repeat` padrão do FFmpeg** — se a trilha da câmera
+     terminar antes da trilha de fundo, o overlay desaparece dali em diante em vez de congelar o
+     último quadro pra sempre por cima do fundo (o comportamento padrão do FFmpeg) - um resultado
+     visualmente correto sem exigir nenhuma lógica adicional de "quando parar de mostrar".
+139. **`shape: 'circle'` continua sendo uma aproximação retangular no arquivo exportado, mesma
+     limitação já aceita no preview desde EDIT-010** — um recorte circular real exigiria um filtro
+     `geq`/`alphamerge` mascarando o canal alfa por coordenada, complexidade desproporcional ao
+     valor pra este incremento; documentado como pendência, não escondido.
+140. **Verificação de PiP/lado-a-lado via dimensão exata do arquivo de saída (ffprobe real), não
+     inspeção de pixels** — confirmar que a saída tem EXATAMENTE `WxH` (1280×720 pedido) só é
+     alcançável se o `overlay`/`hstack` gerado for sintaticamente válido E executado com sucesso
+     pelo FFmpeg real - suficiente pra provar que a composição funciona de ponta a ponta, sem
+     precisar decodificar frames individualmente pra comparar pixels (custo desproporcional ao que
+     esta verificação precisa provar).
 
 ## Testes
 
@@ -2178,8 +2255,12 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   `durationMs` calculado -, `runFfprobeProcess` via spawns reais de `process.execPath`, e
   integração REAL confirmando que um `ffprobePath` quebrado faz o job terminar `FAILED` mesmo com
   um MP4 genuinamente válido em disco e `exitCode 0` do FFmpeg, mais o caminho feliz confirmando
-  zero falsos negativos).
-  **388 testes, 35 arquivos.**
+  zero falsos negativos), **PiP e lado-a-lado reais na exportação (EXP-004b)** (estruturais em
+  `ffmpeg-command.test.ts` confirmando o filtro `overlay` real - posição/tamanho em pixels,
+  `eof_action=pass` - e o `hstack` real - cada metade escalada/preenchida pro tamanho exato -, mais
+  2 testes de integração REAL que exportam tela+câmera sintéticas em PiP e em lado-a-lado,
+  confirmando via ffprobe que a saída tem exatamente a resolução pedida).
+  **397 testes, 35 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2324,6 +2405,18 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   — exercita a superfície de UI/IPC nova (`export.cancel`) de ponta a ponta, complementando a
   cobertura de matar o processo real de verdade já feita em `export.service.test.ts`. Isolado,
   passou limpo em duas execuções consecutivas (12,0s e 11,0s, sem retry em nenhuma).
+  Décimo quinto teste (`editor (export)`, EXP-004b) grava tela E câmera JUNTAS (a primeira vez
+  neste projeto que um teste grava as duas fontes de vídeo simultaneamente especificamente pra um
+  cenário de exportação) - com as duas trilhas de vídeo presentes, `layoutPreset` resolve pro
+  padrão `'PIP'` automaticamente (confirmado explicitamente no teste antes de exportar), clica em
+  "Exportar em 720p", confirma "Concluída" e um MP4 real em disco - a única forma de confirmar que
+  a composição PiP real (filtro `overlay`) funciona de ponta a ponta pela UI, não só em isolamento
+  (`export.service.test.ts` já prova as dimensões exatas via ffprobe real, tanto pra PiP quanto
+  lado-a-lado). Passou limpo em duas execuções isoladas consecutivas (16,7s e 12,3s, sem retry em
+  nenhuma); uma rodada de regressão dedicada re-executando `editor (layout)` e
+  `editor (camera transform)` confirmou que nada quebrou - a única falha foi a mesma classe de
+  flakiness de bootstrap já documentada (`getByRole('status')` sem "REC" a tempo), recuperada no
+  retry, nunca dentro de código tocado por este incremento.
 
 ## Pendências conhecidas
 
@@ -2441,13 +2534,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   não existe um campo para escolher QUAL parte do vídeo original fica visível). Um `shape: 'circle'`
   usa `border-radius: 50%` sobre uma caixa possivelmente não-quadrada - um retângulo largo vira uma
   elipse, não um círculo perfeito, a menos que `widthPercent`/`heightPercent` já sejam
-  proporcionais ao aspecto real do elemento renderizado.
-- **Layout (EDIT-011) é aplicado ao PREVIEW apenas, não ainda a um export real** - a Fase 4
-  (`EXP-001..009`, próximo passo) precisará ler `layoutPreset` e compor os frames de saída de
-  acordo (renderizar o overlay/lado-a-lado de verdade num arquivo final), não só decidir o que
-  mostrar na tela durante a edição. Também não há UI pra ajustar a divisão do `SIDE_BY_SIDE` (fixo
-  em 50/50) nem uma prévia em miniatura de cada preset antes de aplicar - o usuário só vê o
-  resultado depois de escolher no select.
+  proporcionais ao aspecto real do elemento renderizado. **Desde EXP-004b, a mesma aproximação vale
+  pro arquivo EXPORTADO** (não só o preview) - `buildFfmpegArgs` compõe o overlay PiP como um
+  retângulo sempre, independente de `shape`; um recorte circular real exigiria um filtro
+  `geq`/`alphamerge` mascarando o canal alfa por coordenada, fora do escopo entregue.
+- Não há UI pra ajustar a divisão do `SIDE_BY_SIDE` (fixo em 50/50, tanto no preview quanto no
+  arquivo exportado desde EXP-004b) nem uma prévia em miniatura de cada preset antes de aplicar -
+  o usuário só vê o resultado depois de escolher no select.
 - O relógio do player não pausa sozinho ao final de cada clip em caso de gap real entre segmentos
   de uma mesma trilha (ex.: um pause/resume real) - a trilha simplesmente fica pausada durante o
   gap e retoma quando o próximo clip começa; comportamento correto, mas sem nenhuma indicação
@@ -2470,10 +2563,6 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - **Sem histórico/auditoria visível de saves** - o indicador (EDIT-012) só mostra o estado ATUAL
   ("salvando"/"salvo"/"falhou"), não um log de quando cada mutação foi persistida nem uma forma de
   reexibir uma falha antiga depois que o indicador já voltou pro estado "salvo".
-- **`export.start` agora produz um MP4 real, mas só pra uma única trilha de vídeo de fundo
-  (EXP-003/004)** - `buildFfmpegArgs` rejeita (retorna `null`, `ExportService` traduz pra
-  `ValidationError`) qualquer plano com `overlay`/`sideBySideRight` (layout PiP/lado-a-lado) -
-  PiP/lado-a-lado real no arquivo EXPORTADO (não só no preview) fica pro incremento EXP-004b.
 - **Exportação de faixa de tempo (EXP-006) usa a seleção existente, sem indicação visual na
   régua de QUAL trecho será exportado além de um texto** - não há destaque colorido/sombreado do
   intervalo selecionado sobre a régua da timeline (só o texto ".editor-export-range-hint"),
@@ -2521,28 +2610,32 @@ traduz o `RenderPlan` num comando FFmpeg real - o "FFmpeg Plan" da doc - e `Expo
 orquestra o pipeline inteiro até um MP4 720p/1080p de verdade em disco), EXP-005 (exportação só de
 áudio - M4A/MP3/WAV via `buildAudioFfmpegArgs`, RF-033), EXP-006 (exportação de faixa de tempo -
 RF-034, reusando a seleção já existente do editor), EXP-007/008 (progresso - já funcionava desde
-EXP-003/004 - e cancelamento de verdade pela UI, matando o processo FFmpeg real, RF-035) e agora
-EXP-009 (validação real via ffprobe, a etapa "Validation" da doc, confirmando que o arquivo
-exportado é utilizável antes de marcar o job `COMPLETED`) funcionam de ponta a ponta, com botões de
-exportação (vídeo E áudio, com/sem seleção, com cancelar) na `EditorProjectPage` - ver
+EXP-003/004 - e cancelamento de verdade pela UI, matando o processo FFmpeg real, RF-035), EXP-009
+(validação real via ffprobe, a etapa "Validation" da doc, confirmando que o arquivo exportado é
+utilizável antes de marcar o job `COMPLETED`) e EXP-004b (PiP e lado-a-lado reais no arquivo
+exportado, via `overlay`/`hstack` do FFmpeg - o mesmo arranjo que o editor mostra no preview)
+funcionam de ponta a ponta, com botões de exportação (vídeo E áudio, com/sem seleção, com cancelar)
+na `EditorProjectPage` - ver
 [Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
 [Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4),
 [Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4),
 [Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4),
-[Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4) e
-[Validação do arquivo exportado via ffprobe](#validação-do-arquivo-exportado-via-ffprobe-fase-4).
-Com EXP-009, o roadmap desta fase está completo e o **Marco MVP** (`11_ROADMAP_BACKLOG.md`) foi
+[Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4),
+[Validação do arquivo exportado via ffprobe](#validação-do-arquivo-exportado-via-ffprobe-fase-4) e
+[PiP e lado-a-lado reais na exportação](#pip-e-lado-a-lado-reais-na-exportação-fase-4). Desde
+EXP-009, o roadmap desta fase está completo e o **Marco MVP** (`11_ROADMAP_BACKLOG.md`) foi
 atingido: as quatro fases do MVP (Recording Core, Recovery + Library, Editor MVP, Export) estão
-todas completas e testadas de ponta a ponta.
+todas completas e testadas de ponta a ponta - EXP-004b é um refinamento dentro desse escopo já
+entregue, não um item do roadmap em si.
 
 Desenvolvimento segue de forma incremental e contínua, cada incremento validado
 (lint/typecheck/testes/build/E2E) e documentado neste README antes do próximo começar. Ordem
 planejada a partir daqui:
 
-1. Refinamentos ainda pendentes dentro do escopo já entregue do MVP, sem fase própria no roadmap:
-   EXP-004b (PiP/lado-a-lado real no arquivo exportado - hoje `buildFfmpegArgs` rejeita esse caso,
-   só suporta uma única trilha de vídeo de fundo) é o principal - ver "Pendências conhecidas" para
-   a lista completa de refinamentos menores acumulados ao longo das quatro fases.
+1. Refinamentos menores ainda pendentes dentro do escopo já entregue do MVP, sem fase própria no
+   roadmap - ver "Pendências conhecidas" para a lista completa acumulada ao longo das quatro fases
+   (ex.: `shape: 'circle'` continua uma aproximação retangular tanto no preview quanto no export
+   desde EXP-004b; `SIDE_BY_SIDE` continua fixo em 50/50).
 2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) - o trabalho
    pós-MVP propriamente dito, cada uma exigindo um replanejamento próprio (arquitetura, dependências
    novas, escopo) quando chegar a vez, dado o tamanho e a natureza distinta de cada uma.

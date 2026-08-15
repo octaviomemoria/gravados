@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { assertPathWithinBoundary } from './project-filesystem'
-import type { RenderPlan, RenderClip } from './render-plan'
+import type { RenderPlan, RenderClip, RenderVideoLayer } from './render-plan'
 import type { AudioExportFormat } from '../../shared/schemas/export.schema'
 
 /**
@@ -10,13 +10,15 @@ import type { AudioExportFormat } from '../../shared/schemas/export.schema'
  * comando FFmpeg - cada elemento separado (AGENTS.md: nunca uma string concatenada via `exec()`),
  * pronto pra `runFfmpegProcess` (EXP-002).
  *
- * `buildFfmpegArgs` (VIDEO): ESCOPO so trilha de fundo (`background`), sem `overlay`/
- * `sideBySideRight` - PiP e lado-a-lado exigem o filtro `overlay`/duas trilhas de vídeo
- * simultâneas, registrado como pendência pra um incremento futuro (EXP-004b).
- * `buildAudioFfmpegArgs` (EXP-005, AUDIO): mesma mixagem de audio compartilhada
- * (`buildAudioMixFilter`), sem trilha de video nenhuma - produz um M4A/MP3/WAV.
- * Ambas retornam `null` (nunca lancam) pra qualquer plano fora do proprio escopo - o CHAMADOR
- * (`ExportService`) decide como reagir (hoje: rejeita a exportação com uma mensagem clara).
+ * `buildFfmpegArgs` (VIDEO, EXP-004b): compoe TRES layouts de video possiveis, espelhando
+ * exatamente os 3 modos reais de `computePreviewLayout`/`buildRenderPlan` - trilha unica
+ * (`background`), PiP (`background` + `overlay`, filtro `overlay`) e lado-a-lado (`background` +
+ * `sideBySideRight`, filtro `hstack`). `buildAudioFfmpegArgs` (EXP-005, AUDIO): mesma mixagem de
+ * audio compartilhada (`buildAudioMixFilter`), sem trilha de video nenhuma - produz um M4A/MP3/WAV.
+ * Ambas retornam `null` (nunca lancam) pra qualquer plano fora do proprio escopo (ex.: `background`
+ * ausente, ou `overlay`+`sideBySideRight` simultaneos - inatingivel via `buildRenderPlan` real, mas
+ * um guard defensivo barato) - o CHAMADOR (`ExportService`) decide como reagir (hoje: rejeita a
+ * exportação com uma mensagem clara).
  */
 
 function resolveAbsolutePath(projectRootPath: string, relativePath: string): string {
@@ -133,37 +135,109 @@ function buildAudioMixFilter(
   return 'amix'
 }
 
+/**
+ * EXP-004b - concatena os clips de UMA camada de vídeo (fundo, overlay OU lado-a-lado direito -
+ * as tres tem exatamente a mesma forma, `RenderVideoLayer`) num unico rotulo de filtro, reusado
+ * pelos tres. Mesma logica que ja existia inline so pra `background` antes deste incremento -
+ * extraida pra evitar triplicar o mesmo `map`+`concat` pras outras duas camadas.
+ */
+function buildConcatVideoLabel(
+  layer: RenderVideoLayer,
+  labelPrefix: string,
+  filterParts: string[],
+  addInput: (relativePath: string) => number
+): string | null {
+  const clipLabels = layer.clips.map((clip, index) => {
+    const inputIndex = addInput(clip.relativePath)
+    const label = `${labelPrefix}${index}`
+    filterParts.push(buildTrimFilter('v', inputIndex, clip, label))
+    return label
+  })
+  if (clipLabels.length === 0) return null // camada sem nenhum clip - defensivo (getEditedTimeline ja filtra).
+  if (clipLabels.length === 1) return clipLabels[0]!
+  const concatLabel = `${labelPrefix}concat`
+  filterParts.push(
+    `${clipLabels.map((label) => `[${label}]`).join('')}concat=n=${clipLabels.length}:v=1:a=0[${concatLabel}]`
+  )
+  return concatLabel
+}
+
+/** `scale` (preserva proporcao, encolhe) + `pad` (preenche com preto ate o tamanho exato) - o
+ * mesmo par usado pra "caber" um vídeo de fundo/lado-a-lado inteiro dentro de uma caixa, sem
+ * cortar nada (equivalente ao comportamento observado no preview ao vivo pro lado-a-lado, que
+ * nunca recorta - so a camada PiP usa "cover", ver `buildOverlayScaleCrop`). */
+function scalePadFilter(label: string, width: number, height: number): string {
+  return `[${label}]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`
+}
+
 export function buildFfmpegArgs(
   plan: RenderPlan,
   projectRootPath: string,
   outputPath: string
 ): string[] | null {
   if (!plan.background) return null
-  if (plan.overlay || plan.sideBySideRight) return null
+  if (plan.overlay && plan.sideBySideRight) return null // inatingivel via buildRenderPlan real - guard defensivo barato.
 
   const args: string[] = ['-y']
   const filterParts: string[] = []
   const addInput = createInputRegistrar(projectRootPath, args)
+  const { width, height } = plan.output
 
-  // --- Vídeo (trilha de fundo) - concatena todos os clips (um REMOVE_RANGE no meio de um clip
-  // produz DOIS a partir do MESMO segmento; segmentação por tempo/tamanho produz varios arquivos
-  // diferentes - ambos os casos viram multiplos elementos aqui, tratados identicamente).
-  const videoClipLabels = (plan.background?.clips ?? []).map((clip, index) => {
-    const inputIndex = addInput(clip.relativePath)
-    const label = `bgv${index}`
-    filterParts.push(buildTrimFilter('v', inputIndex, clip, label))
-    return label
-  })
-  let videoLabel = videoClipLabels[0] ?? null
-  if (videoClipLabels.length > 1) {
+  const backgroundLabel = buildConcatVideoLabel(plan.background, 'bgv', filterParts, addInput)
+  if (!backgroundLabel) return null
+
+  let compositedLabel: string
+  if (plan.overlay) {
+    // --- PiP (EXP-004b) - camera sobreposta na tela de fundo, posicao/tamanho/forma vindos de
+    // `cameraTransform` (EDIT-010). `shape: 'circle'` NAO recorta um circulo de verdade no
+    // arquivo exportado (mesma simplificacao ja documentada no preview ao vivo, que so aproxima
+    // via `border-radius` CSS - ver "Pendências conhecidas") - implementar um mascaramento
+    // circular real via `geq`/`alphamerge` ficaria fora do escopo deste incremento.
+    const overlayLabel = buildConcatVideoLabel(plan.overlay, 'ovv', filterParts, addInput)
+    if (!overlayLabel) return null
+
+    filterParts.push(`${scalePadFilter(backgroundLabel, width, height)}[bgscaled]`)
+
+    // `object-fit: cover` no preview ao vivo (`.editor-preview-overlay`, EDIT-010) - o overlay
+    // preenche a caixa inteira, recortando o excesso, nunca deixando faixas pretas dentro dela.
+    // `scale=...:force_original_aspect_ratio=increase` + `crop` e o equivalente FFmpeg exato.
+    const overlayWidth = Math.round((plan.overlay.widthPercent / 100) * width)
+    const overlayHeight = Math.round((plan.overlay.heightPercent / 100) * height)
+    // `left`/`top` no CSS do preview (nao um centro) - `xPercent`/`yPercent` sao a posicao do
+    // canto SUPERIOR ESQUERDO da caixa, relativa ao container inteiro, exatamente como `overlay=x:y`.
+    const overlayX = Math.round((plan.overlay.xPercent / 100) * width)
+    const overlayY = Math.round((plan.overlay.yPercent / 100) * height)
     filterParts.push(
-      `${videoClipLabels.map((label) => `[${label}]`).join('')}concat=n=${videoClipLabels.length}:v=1:a=0[vconcat]`
+      `[${overlayLabel}]scale=${overlayWidth}:${overlayHeight}:force_original_aspect_ratio=increase,crop=${overlayWidth}:${overlayHeight},setsar=1[ovscaled]`
     )
-    videoLabel = 'vconcat'
+    // `eof_action=pass` (nao o `repeat` padrao do FFmpeg) - se a trilha da camera terminar antes
+    // da tela de fundo (ex.: camera parou de gravar mais cedo), o overlay simplesmente DESAPARECE
+    // dali em diante, em vez de congelar o ultimo quadro pra sempre por cima do fundo.
+    filterParts.push(
+      `[bgscaled][ovscaled]overlay=x=${overlayX}:y=${overlayY}:eof_action=pass[vcomposited]`
+    )
+    compositedLabel = 'vcomposited'
+  } else if (plan.sideBySideRight) {
+    // --- Lado-a-lado (EXP-004b) - cada trilha ocupa exatamente metade da largura de saida, altura
+    // inteira, cada uma com "scale+pad" (nunca recorta - mesmo comportamento do preview ao vivo,
+    // que nao usa `object-fit: cover` pro lado-a-lado, so pro overlay PiP). `RESOLUTION_DIMENSIONS`
+    // (render-plan.ts) sempre gera `width` par, entao a divisao por 2 e sempre exata.
+    const rightLabel = buildConcatVideoLabel(plan.sideBySideRight, 'rsv', filterParts, addInput)
+    if (!rightLabel) return null
+
+    const halfWidth = width / 2
+    filterParts.push(`${scalePadFilter(backgroundLabel, halfWidth, height)}[left]`)
+    filterParts.push(`${scalePadFilter(rightLabel, halfWidth, height)}[right]`)
+    filterParts.push('[left][right]hstack=inputs=2[vcomposited]')
+    compositedLabel = 'vcomposited'
+  } else {
+    // --- Trilha unica (comportamento original desde EXP-003/004).
+    filterParts.push(`${scalePadFilter(backgroundLabel, width, height)}[vcomposited]`)
+    compositedLabel = 'vcomposited'
   }
-  if (!videoLabel) return null // trilha de fundo sem nenhum clip - nao deveria acontecer (getEditedTimeline ja filtra), defensivo.
+
   filterParts.push(
-    `[${videoLabel}]scale=${plan.output.width}:${plan.output.height}:force_original_aspect_ratio=decrease,pad=${plan.output.width}:${plan.output.height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,trim=start=${toSeconds(plan.output.startMs)}:end=${toSeconds(plan.output.endMs)},setpts=PTS-STARTPTS[vfinal]`
+    `[${compositedLabel}]trim=start=${toSeconds(plan.output.startMs)}:end=${toSeconds(plan.output.endMs)},setpts=PTS-STARTPTS[vfinal]`
   )
 
   // --- Áudio (mixa todas as trilhas não-mutadas e capazes de audio - EXP-001/EXP-003/004 ja
