@@ -10,6 +10,27 @@ export const JobStatusSchema = z.enum(JOB_STATUSES)
 export const ExportResolutionSchema = z.enum(['HD_720P', 'FULL_HD_1080P'])
 export type ExportResolution = z.infer<typeof ExportResolutionSchema>
 
+/** EXP-005 (vigesimo sexto incremento - Fase 4, RF-033). M4A/AAC e WAV sempre disponiveis em
+ * qualquer build do FFmpeg; MP3 (`libmp3lame`) depende de licenciamento do build - o
+ * `ffmpeg-static` instalado (EXP-001/002) confirmadamente inclui `libmp3lame` (`ffmpeg -version`),
+ * entao os 3 ficam disponiveis sem nenhuma checagem de capabilities em runtime nesta fase. */
+export const AudioExportFormatSchema = z.enum(['M4A', 'MP3', 'WAV'])
+export type AudioExportFormat = z.infer<typeof AudioExportFormatSchema>
+
+/**
+ * EXP-005 - `target` substitui o antigo campo `resolution` direto (EXP-003/004) por uma uniao
+ * discriminada: exportar em VIDEO sempre exige uma resolucao (720p/1080p, RF-032), exportar so em
+ * AUDIO exige um formato (M4A/MP3/WAV, RF-033) e nunca uma resolucao (não faz sentido pra um
+ * arquivo sem stream de video). Um unico campo `kind` evita dois canais IPC separados pro mesmo
+ * conceito ("iniciar uma exportacao") - mesmo raciocinio ja usado em outras partes do app pra
+ * "uma operacao parametrizada" em vez de variantes redundantes.
+ */
+export const ExportTargetSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('VIDEO'), resolution: ExportResolutionSchema }),
+  z.object({ kind: z.literal('AUDIO'), format: AudioExportFormatSchema })
+])
+export type ExportTarget = z.infer<typeof ExportTargetSchema>
+
 export const ExportJobResponseSchema = z.object({
   id: IdSchema,
   editProjectId: IdSchema,
@@ -23,13 +44,13 @@ export const ExportJobResponseSchema = z.object({
 export type ExportJobResponse = z.infer<typeof ExportJobResponseSchema>
 
 /**
- * EXP-003/004 (vigesimo quinto incremento - Fase 4). `resolution` obrigatorio - a UI decide entre
- * 720p (EXP-003) e 1080p (EXP-004), a mesma operacao parametrizada (nao dois canais separados,
- * mesmo raciocinio ja usado pra outras diferencas de "so um parametro" ao longo do app).
+ * EXP-003/004/005 (vigesimo quinto/sexto incrementos - Fase 4). `target` decide entre exportar em
+ * VIDEO (720p/1080p, EXP-003/004) ou so em AUDIO (M4A/MP3/WAV, EXP-005) - a mesma operacao
+ * "iniciar exportacao" parametrizada, nao canais IPC separados.
  */
 export const StartExportRequestSchema = z.object({
   editProjectId: IdSchema,
-  resolution: ExportResolutionSchema
+  target: ExportTargetSchema
 })
 export type StartExportRequest = z.infer<typeof StartExportRequestSchema>
 export const StartExportResponseSchema = ExportJobResponseSchema

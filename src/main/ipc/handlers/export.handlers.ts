@@ -20,7 +20,7 @@ export function registerExportHandlers(context: AppContext): void {
   registerHandler(
     IPC_CHANNELS.export.start,
     { request: StartExportRequestSchema, response: StartExportResponseSchema },
-    async (request) => context.exportService.startExport(request.editProjectId, request.resolution)
+    async (request) => context.exportService.startExport(request.editProjectId, request.target)
   )
 
   registerHandler(

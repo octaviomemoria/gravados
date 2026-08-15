@@ -44,13 +44,15 @@ ponta - ver
 [Layout da composição](#layout-da-composição-fase-3) e
 [Autosave e indicador de salvamento](#autosave-e-indicador-de-salvamento-fase-3). A
 **Fase 4 — Export** avançou bastante: `ffmpeg-static`/`ffprobe-static` instalados, o "Timeline
-Compiler" (EXP-001/002 - traduz a timeline editada num render plan estruturado) e agora também o
-"FFmpeg Plan" + "Render Job" (EXP-003/004 - `export.start` produz um MP4 720p/1080p REAL em disco,
-com botões de exportação na tela do editor) funcionam de ponta a ponta - ver
-[Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4) e
-[Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4).
-Escopo ainda limitado a uma única trilha de vídeo de fundo (sem PiP/lado-a-lado real no arquivo
-exportado, nem exportação só de áudio) - próximos incrementos da fase.
+Compiler" (EXP-001/002 - traduz a timeline editada num render plan estruturado), o "FFmpeg Plan" +
+"Render Job" de vídeo (EXP-003/004 - `export.start` produz um MP4 720p/1080p REAL em disco) e
+agora também áudio-only (EXP-005 - M4A/MP3/WAV, RF-033), tudo com botões de exportação na tela do
+editor, funcionam de ponta a ponta - ver
+[Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
+[Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4) e
+[Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4).
+Escopo de vídeo ainda limitado a uma única trilha de fundo (sem PiP/lado-a-lado real no arquivo
+exportado) - próximo incremento da fase.
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -1188,6 +1190,57 @@ indicador de progresso/status; `ExportsPage` também reconsulta `export.list` pe
   o status "Concluída" e confirma que o arquivo MP4 existe de verdade em disco com bytes - a única
   forma de confirmar que a nova superfície de UI/IPC funciona de ponta a ponta, não só em isolamento.
 
+### Exportação só de áudio - M4A/MP3/WAV (Fase 4)
+
+Vigésimo sexto incremento - EXP-005, RF-033 ("Exportar áudio: M4A ou AAC; MP3 quando disponível no
+build/licenciamento escolhido; WAV"). Botões "Exportar áudio (M4A/MP3/WAV)" ao lado dos de vídeo
+na `EditorProjectPage`, mesmo indicador de status/progresso já compartilhado.
+
+- **`StartExportRequestSchema.target` substitui o antigo campo `resolution` direto (EXP-003/004)
+  por uma união discriminada** (`ExportTargetSchema`, `kind: 'VIDEO' | 'AUDIO'`) - exportar em
+  vídeo sempre exige uma resolução (RF-032), exportar só em áudio exige um formato (RF-033) e
+  nunca uma resolução (não faz sentido pra um arquivo sem stream de vídeo). Um único campo `kind`
+  evita dois canais IPC separados pro mesmo conceito ("iniciar uma exportação").
+- **`buildAudioFfmpegArgs` (`ffmpeg-command.ts`) é o "FFmpeg Plan" pro caminho de áudio** - ignora
+  inteiramente `background`/`overlay`/`sideBySideRight`/`output.width`/`height` do `RenderPlan`
+  (não fazem sentido sem stream de vídeo), só olha `audio[]`/`output.startMs`/`endMs`. Codec por
+  formato: `aac` (M4A), `libmp3lame` (MP3, confirmado disponível no build `ffmpeg-static`
+  instalado desde EXP-001/002 via `ffmpeg -version`), `pcm_s16le` sem `-b:a` (WAV - PCM linear não
+  tem bitrate configurável, é sempre `sample_rate × bit_depth × canais`).
+  Retorna `null` (nunca lança) quando o plano não tem nenhuma trilha de áudio - mesmo padrão de
+  `buildFfmpegArgs`.
+- **A mixagem de áudio (trim/concat/volume/afade/amix por trilha) foi extraída pra uma função
+  compartilhada (`buildAudioMixFilter`)**, reusada tanto por `buildFfmpegArgs` (vídeo - o resultado
+  vira uma trilha extra do MP4) quanto por `buildAudioFfmpegArgs` (o resultado É o arquivo de
+  saída inteiro) - a MESMA lógica de mixagem, só o destino final (`-map` de uma trilha extra vs.
+  `-map` único) e o codec de saída diferem entre os dois caminhos. `createInputRegistrar` (dedupe
+  de `-i` por caminho absoluto) também foi extraído pelo mesmo motivo.
+- **`buildRenderPlan.resolution` agora é opcional** (`BuildRenderPlanOptions`) - uma exportação só
+  de áudio nunca passa resolução (`ExportService` chama `buildRenderPlan(timeline, {})`);
+  `output.width`/`height` ficam `0` quando omitido, nunca lidos por `buildAudioFfmpegArgs`.
+- **`ExportService.startExport` agora recebe um `ExportTarget` em vez de uma `ExportResolution`
+  direta** - branch por `target.kind`: `VIDEO` monta o `RenderPlan` com resolução e chama
+  `buildFfmpegArgs`, produzindo `export_<resolucao>_<epoch>.mp4`; `AUDIO` monta o `RenderPlan` sem
+  resolução e chama `buildAudioFfmpegArgs`, produzindo `export_<formato>_<epoch>.<extensão>`
+  (`.m4a`/`.mp3`/`.wav`). Mensagem de erro de validação diferente por caminho ("PiP/lado-a-lado
+  fora do escopo" pra vídeo vs. "nenhuma trilha de áudio não-mutada encontrada" pra áudio) -
+  `buildFfmpegArgs`/`buildAudioFfmpegArgs` retornando `null` por razões DIFERENTES em cada
+  caminho, então uma mensagem genérica única confundiria mais do que ajudaria.
+- Testado via 8 novos testes estruturais de `buildAudioFfmpegArgs` (null sem trilha de áudio,
+  ignora completamente vídeo/resolução, mapeia `[afinal]`/nunca `[vfinal]`/sempre `-vn`, codec
+  certo por formato com/sem `-b:a`, `amix` com múltiplas trilhas, trim de faixa de tempo, rejeita
+  path fora do projeto, termina com `-progress pipe:1`/caminho de saída), 2 novos testes de
+  `ExportService` (1 de validação - `ValidationError` quando a única trilha é SCREEN, video-only
+  por design, sem nada exportável em áudio + 1 de integração REAL - gera um WAV de verdade a
+  partir da mesma gravação sintética tela+microfone reusada do teste de vídeo, confirmando que o
+  MICROFONE entra no arquivo e a TELA nunca teve stream de áudio pra começar). **367 testes, 35
+  arquivos** (mesma contagem de arquivos - os novos testes foram todos ADICIONADOS aos arquivos
+  já existentes de EXP-003/004, nenhum arquivo novo). Sem novo teste E2E dedicado - os botões de
+  áudio reusam o MESMO fluxo de UI/polling/status já coberto pelo teste E2E `editor (export)`
+  (EXP-003/004), só trocando qual botão é clicado; a cobertura real do caminho de áudio vem do
+  teste de integração `ExportService` (spawn real do FFmpeg) mais os estruturais de
+  `buildAudioFfmpegArgs`.
+
 ## Estrutura de diretórios
 
 ```text
@@ -1796,6 +1849,32 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 120. **Nome do arquivo exportado usa resolução + timestamp (`export_<res>_<epoch>.mp4`), não o
      nome/título da gravação** — simples e sem colisão entre exportações consecutivas; um nome
      amigável baseado no título fica como refinamento futuro de UX, não bloqueante.
+121. **`StartExportRequestSchema.target` é uma união discriminada (`kind: 'VIDEO' | 'AUDIO'`), não
+     um campo `resolution` opcional + um campo `format` opcional** — a união torna IMPOSSÍVEL, no
+     nível de tipo, pedir os dois ao mesmo tempo ou nenhum dos dois; um par de campos opcionais
+     exigiria validação runtime pra garantir exclusividade mútua, que o Zod `discriminatedUnion`
+     já garante de graça.
+122. **`buildAudioMixFilter` extraída como função compartilhada entre `buildFfmpegArgs` e
+     `buildAudioFfmpegArgs`** — a MESMA lógica de trim/concat/volume/afade/amix por trilha de
+     áudio, só o destino final (mapeada como trilha extra de um MP4 vs. sendo o arquivo de saída
+     inteiro) e o codec diferem; evita duas implementações que poderiam divergir silenciosamente
+     (o mesmo raciocínio já usado pra mover `computePreviewLayout`/`dbToLinearVolume` pra
+     `shared/` no EXP-001).
+123. **WAV usa `pcm_s16le` sem `-b:a`** — PCM linear não tem bitrate configurável (é sempre
+     `sample_rate × bit_depth × canais`); passar `-b:a` a um codec PCM é um no-op silencioso do
+     FFmpeg, omitido deliberadamente pra não sugerir uma opção que não faz nada.
+124. **`buildRenderPlan.resolution` tornou-se opcional** — uma exportação só de áudio nunca
+     precisa de `width`/`height`; em vez de duplicar `RenderPlan`/`buildRenderPlan` num "modo
+     vídeo" e "modo áudio" separados, a mesma função sempre produz a MESMA estrutura completa
+     (incluindo `background`/`overlay` computados, mesmo que descartados no caminho de áudio) -
+     `output.width`/`height` ficam `0` quando `resolution` é omitido, nunca lidos por
+     `buildAudioFfmpegArgs`.
+125. **Sem checagem de capabilities do FFmpeg em runtime pra MP3** — `libmp3lame` é confirmado
+     presente no build `ffmpeg-static` instalado (`ffmpeg -version`), então `AudioExportFormatSchema`
+     inclui `MP3` incondicionalmente; um fork que trocasse o binário por um sem esse codec só
+     descobriria o problema no `stderr` do processo FFmpeg (`FFmpeg falhou (código N): ...`, já
+     capturado e propagado como `job.error`), não numa checagem antecipada - aceitável dado que
+     este app sempre controla qual binário instala.
 
 ## Testes
 
@@ -1890,10 +1969,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   (EXP-003/004)** (null pra PiP/lado-a-lado/sem-vídeo, inputs/filtro bem formados, concat
   multi-clip com reuso de input, volume+fade+amix, sem amix pra trilha única, trim de faixa de
   tempo, rejeita path fora do projeto), **`ExportService` de ponta a ponta** (validação sem
-  spawnar FFmpeg + um teste de INTEGRAÇÃO REAL que gera clipes sintéticos via `ffmpeg-static` e
-  roda o pipeline inteiro até um MP4 real em disco), e a regressão dedicada do bug de
-  `JobRunner`/`ExportJobStore` (`export-job-store.test.ts`, via os dois reais, não um store fake).
-  **357 testes, 35 arquivos.**
+  spawnar FFmpeg + testes de INTEGRAÇÃO REAL que geram clipes sintéticos via `ffmpeg-static` e
+  rodam o pipeline inteiro até um MP4/WAV real em disco), e a regressão dedicada do bug de
+  `JobRunner`/`ExportJobStore` (`export-job-store.test.ts`, via os dois reais, não um store fake),
+  **`buildAudioFfmpegArgs` (EXP-005)** (null sem trilha de áudio, ignora vídeo/resolução
+  completamente, mapeia `[afinal]`/`-vn`, codec certo por formato M4A/MP3/WAV com/sem `-b:a`,
+  `amix`, trim de faixa de tempo, rejeita path fora do projeto).
+  **367 testes, 35 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2181,20 +2263,24 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   (EXP-003/004)** - `buildFfmpegArgs` rejeita (retorna `null`, `ExportService` traduz pra
   `ValidationError`) qualquer plano com `overlay`/`sideBySideRight` (layout PiP/lado-a-lado) -
   PiP/lado-a-lado real no arquivo EXPORTADO (não só no preview) fica pro incremento EXP-004b.
-- **Sem exportação de áudio-only (MP3/WAV/M4A-AAC), sem UI de faixa de tempo, sem cancelamento
-  pela UI** - `buildRenderPlan` já aceita `rangeMs` e `runFfmpegProcess`/`JobRunner.cancel` já
-  suportam progresso/cancelamento desde EXP-002, mas nenhum dos três tem UI/wiring ainda; ficam
-  pros incrementos EXP-005/006/007-008 respectivamente.
+- **Exportação de áudio (EXP-005) cobre M4A/MP3/WAV, mas ainda sem UI de faixa de tempo nem
+  cancelamento pela UI** - `buildRenderPlan` já aceita `rangeMs` e `runFfmpegProcess`/
+  `JobRunner.cancel` já suportam progresso/cancelamento desde EXP-002, mas nenhum dos dois tem
+  UI/wiring ainda; ficam pros incrementos EXP-006/007-008 respectivamente.
 - **Nenhuma validação via `ffprobe` do arquivo de saída antes de marcar o job `COMPLETED`
-  (EXP-009, ainda não implementado)** - um MP4 corrompido ou vazio (ex.: FFmpeg saiu com código 0
-  mas produziu um arquivo inválido, caso raro mas possível) seria marcado `COMPLETED` mesmo assim;
-  o `ExportService` só confia no `exitCode` do processo FFmpeg hoje.
+  (EXP-009, ainda não implementado)** - um arquivo corrompido ou vazio (ex.: FFmpeg saiu com
+  código 0 mas produziu um arquivo inválido, caso raro mas possível) seria marcado `COMPLETED`
+  mesmo assim; o `ExportService` só confia no `exitCode` do processo FFmpeg hoje.
 - **Sem suporte a multicamera nem a trilhas de vídeo além de SCREEN/CAMERA no render plan** -
   `RenderPlan.background`/`overlay`/`sideBySideRight` assumem exatamente essas duas trilhas de
   vídeo possíveis, o mesmo escopo do EDIT-010/011; qualquer expansão futura (`05_MEDIA_EDITOR.md`
   §5, "multicamera") exigiria revisitar o modelo.
 - **Nome do arquivo exportado não é configurável nem baseado no título da gravação** - sempre
-  `export_<resolucao>_<epoch>.mp4`; refinamento futuro de UX, não bloqueante.
+  `export_<resolucao-ou-formato>_<epoch>.<extensão>`; refinamento futuro de UX, não bloqueante.
+- **Exportação de áudio (EXP-005) não verifica se o build do FFmpeg de fato suporta `libmp3lame`
+  em runtime** - confirmado presente no `ffmpeg-static` instalado via `ffmpeg -version`, mas um
+  binário diferente (fork futuro) sem esse codec só falharia no `stderr` do processo (propagado
+  como `job.error`), nunca numa checagem antecipada; ver decisão registrada #125.
 
 ## Próximo passo
 
@@ -2217,25 +2303,25 @@ log, primeira a mirar a composição inteira em vez de uma trilha) e EDIT-012 (s
 de ponta a ponta. A **Fase 4 — Export** avançou bastante: EXP-001 (render plan - "Timeline
 Compiler" que traduz a timeline editada numa estrutura `background`/`overlay`/`sideBySideRight`/
 `audio`/`output`, reusando a mesma lógica de layout do preview), EXP-002 (`ffmpeg-static`/
-`ffprobe-static` instalados, `runFfmpegProcess` com progresso/cancelamento reais) e agora EXP-003/
-004 (`buildFfmpegArgs` traduz o `RenderPlan` num comando FFmpeg real - o "FFmpeg Plan" da doc -
-e `ExportService` orquestra o pipeline inteiro até um MP4 720p/1080p de verdade em disco, com
-botões de exportação na `EditorProjectPage`) já funcionam de ponta a ponta - ver
-[Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4) e
-[Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4).
+`ffprobe-static` instalados, `runFfmpegProcess` com progresso/cancelamento reais), EXP-003/004
+(`buildFfmpegArgs` traduz o `RenderPlan` num comando FFmpeg real - o "FFmpeg Plan" da doc - e
+`ExportService` orquestra o pipeline inteiro até um MP4 720p/1080p de verdade em disco) e agora
+EXP-005 (exportação só de áudio - M4A/MP3/WAV via `buildAudioFfmpegArgs`, RF-033) já funcionam de
+ponta a ponta, com botões de exportação (vídeo E áudio) na `EditorProjectPage` - ver
+[Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
+[Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4) e
+[Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4).
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 4 — Export** (próximo passo imediato): EXP-005 (exportação só de áudio -
-   inclui os formatos múltiplos pedidos explicitamente pelo usuário: MP3/WAV/M4A-AAC além do MP4
-   de vídeo, e possivelmente AVI/MPEG/OGG), EXP-006 (faixa de tempo - `buildRenderPlan` já aceita
-   `rangeMs`, só falta a UI + validação), EXP-007/008 (progresso/cancelamento pela UI -
-   `runFfmpegProcess`/`JobRunner.cancel` já suportam ambos no nível de infraestrutura, falta o
-   botão/wiring), EXP-009 (validação via ffprobe do arquivo de saída antes de marcar o job
-   `COMPLETED`), EXP-004b (PiP/lado-a-lado real no arquivo exportado, hoje `buildFfmpegArgs`
-   rejeita esse caso) - cada operação provavelmente seu próprio incremento, dado o tamanho desta
-   fase. O roadmap marca o fim desta fase como o **Marco MVP**.
+1. Continuar a **Fase 4 — Export** (próximo passo imediato): EXP-006 (faixa de tempo -
+   `buildRenderPlan` já aceita `rangeMs`, só falta a UI + validação), EXP-007/008
+   (progresso/cancelamento pela UI - `runFfmpegProcess`/`JobRunner.cancel` já suportam ambos no
+   nível de infraestrutura, falta o botão/wiring), EXP-009 (validação via ffprobe do arquivo de
+   saída antes de marcar o job `COMPLETED`), EXP-004b (PiP/lado-a-lado real no arquivo exportado,
+   hoje `buildFfmpegArgs` rejeita esse caso) - cada operação provavelmente seu próprio incremento,
+   dado o tamanho desta fase. O roadmap marca o fim desta fase como o **Marco MVP**.
 2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
    depois do MVP, replanejadas quando chegar a vez.

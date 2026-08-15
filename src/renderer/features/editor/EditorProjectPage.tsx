@@ -14,7 +14,12 @@ import type {
   LayoutPreset
 } from '@shared/schemas/editor.schema'
 import type { ProjectDetailsResponse } from '@shared/schemas/project.schema'
-import type { ExportJobResponse, ExportResolution } from '@shared/schemas/export.schema'
+import type {
+  ExportJobResponse,
+  ExportResolution,
+  AudioExportFormat,
+  ExportTarget
+} from '@shared/schemas/export.schema'
 
 /** EDIT-010 - posicao/tamanho/forma da trilha CAMERA overlay, convertidos em CSS inline
  * (porcentagens relativas ao container `.editor-preview-container`, ver global.css). */
@@ -36,10 +41,17 @@ const LAYOUT_PRESET_LABELS: Record<LayoutPreset, string> = {
   CAMERA_ONLY: 'Só câmera'
 }
 
-/** EXP-003/004 - rotulos em portugues pros botoes de resolucao de exportacao. */
+/** EXP-003/004 - rotulos em portugues pros botoes de resolucao de exportacao (video). */
 const EXPORT_RESOLUTION_LABELS: Record<ExportResolution, string> = {
   HD_720P: 'Exportar em 720p',
   FULL_HD_1080P: 'Exportar em 1080p'
+}
+
+/** EXP-005 - rotulos em portugues pros botoes de formato de exportacao (so audio). */
+const EXPORT_AUDIO_FORMAT_LABELS: Record<AudioExportFormat, string> = {
+  M4A: 'Exportar áudio (M4A)',
+  MP3: 'Exportar áudio (MP3)',
+  WAV: 'Exportar áudio (WAV)'
 }
 
 /** EXP-003/004 - mesmo raciocinio de `JOB_STATUSES` (shared/types/job.ts): so QUEUED/RUNNING
@@ -200,13 +212,13 @@ function EditorProjectView({
   const [exportBusy, setExportBusy] = useState(false)
 
   const startExport = useCallback(
-    async (resolution: ExportResolution) => {
+    async (target: ExportTarget) => {
       setExportError(null)
       setExportBusy(true)
       try {
         const job = await window.meetingStudio.export.start({
           editProjectId: editProject.id,
-          resolution
+          target
         })
         setExportJob(job)
       } catch {
@@ -690,19 +702,30 @@ function EditorProjectView({
         <p>Carregando timeline...</p>
       )}
       <h2>Exportar</h2>
-      {/* EXP-003/004 - so trilha unica (fundo) suportada nesta fase; PiP/lado-a-lado (`layoutPreset`
-          PIP/SIDE_BY_SIDE) sao rejeitados pelo proprio `ExportService` com uma mensagem clara -
-          nenhuma validacao duplicada aqui, o backend e a unica fonte de verdade sobre o que pode
-          ser exportado. */}
+      {/* EXP-003/004/005 - video so trilha unica (fundo) suportada nesta fase; PiP/lado-a-lado
+          (`layoutPreset` PIP/SIDE_BY_SIDE) sao rejeitados pelo proprio `ExportService` com uma
+          mensagem clara - nenhuma validacao duplicada aqui, o backend e a unica fonte de verdade
+          sobre o que pode ser exportado. Botoes de audio (EXP-005) exigem so uma trilha de audio
+          nao-mutada - o backend tambem rejeita com mensagem clara se nenhuma existir. */}
       <div className="editor-export-controls">
         {(Object.keys(EXPORT_RESOLUTION_LABELS) as ExportResolution[]).map((resolution) => (
           <button
             key={resolution}
             type="button"
-            onClick={() => void startExport(resolution)}
+            onClick={() => void startExport({ kind: 'VIDEO', resolution })}
             disabled={exportBusy || !hasPlayableMedia || (!!exportJob && isExportJobInProgress(exportJob))}
           >
             {EXPORT_RESOLUTION_LABELS[resolution]}
+          </button>
+        ))}
+        {(Object.keys(EXPORT_AUDIO_FORMAT_LABELS) as AudioExportFormat[]).map((format) => (
+          <button
+            key={format}
+            type="button"
+            onClick={() => void startExport({ kind: 'AUDIO', format })}
+            disabled={exportBusy || !hasPlayableMedia || (!!exportJob && isExportJobInProgress(exportJob))}
+          >
+            {EXPORT_AUDIO_FORMAT_LABELS[format]}
           </button>
         ))}
       </div>

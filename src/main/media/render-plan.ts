@@ -131,7 +131,10 @@ function toAudioLayer(track: TimelineTrack): RenderAudioLayer {
 }
 
 export interface BuildRenderPlanOptions {
-  resolution: ExportResolution
+  /** EXP-005 - omitido numa exportacao SO DE AUDIO (`ExportService` nao passa resolucao nenhuma
+   * nesse caso - nao faz sentido pra um arquivo sem stream de video). `output.width`/`height`
+   * ficam `0` quando omitido - `buildAudioFfmpegArgs` nunca os le, so `buildFfmpegArgs` (video). */
+  resolution?: ExportResolution
   /** EXP-006 (faixa de tempo) - `null`/omitido exporta a timeline inteira. Validado contra
    * `totalDurationMs` pelo chamador (`ExportService`), nao aqui - esta funcao e pura e nao lanca. */
   rangeMs?: { startMs: number; endMs: number } | null
@@ -169,8 +172,8 @@ export function buildRenderPlan(
     if (rightTrack) sideBySideRight = toVideoLayer(rightTrack)
   }
   // `layout.mode === 'none'` - gravacao sem nenhuma trilha de video (so audio); os tres campos
-  // ficam `null`, o `ExportService` decide o que fazer (audio-only ou rejeitar) num incremento
-  // futuro (EXP-005).
+  // ficam `null` - o `ExportService` usa isso pra decidir entre exportar so audio (EXP-005) ou
+  // rejeitar uma exportacao de VIDEO pedida sobre uma gravacao sem nenhum stream de video.
 
   // EXP-003/004 - bug real corrigido: CAMERA e SCREEN sao capturados SEMPRE sem audio embutido
   // neste app (`RecordingSetupPage.tsx`/`useRecordingSession.ts` pedem `getUserMedia`/
@@ -187,7 +190,7 @@ export function buildRenderPlan(
     .filter((track) => !track.muted && !isVideoTrackType(track.type))
     .map(toAudioLayer)
 
-  const dimensions = RESOLUTION_DIMENSIONS[options.resolution]
+  const dimensions = options.resolution ? RESOLUTION_DIMENSIONS[options.resolution] : { width: 0, height: 0 }
   const range = options.rangeMs ?? { startMs: 0, endMs: timeline.totalDurationMs }
 
   return {
