@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { buildMeetingMediaUrl } from '@shared/constants/media-protocol'
+import { dbToLinearVolume } from '@shared/media/audio-gain'
 import {
   findClipAtTime,
   clipLocalTimeSeconds,
   isDrifting,
-  dbToLinearVolume,
   fadeVolumeMultiplier
 } from './timeline-playback'
 import type { GetTimelineResponse, TimelineTrack } from '@shared/schemas/editor.schema'

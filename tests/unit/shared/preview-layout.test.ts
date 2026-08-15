@@ -4,7 +4,7 @@ import {
   isVideoTrackType,
   pickOverlayCameraTrack,
   computePreviewLayout
-} from '../../../src/renderer/features/editor/pick-preview-track'
+} from '../../../src/shared/media/preview-layout'
 import type { TimelineTrack, CameraTransform } from '../../../src/shared/schemas/editor.schema'
 
 const DEFAULT_TRANSFORM: CameraTransform = {

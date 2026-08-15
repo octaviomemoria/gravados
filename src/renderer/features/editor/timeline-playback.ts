@@ -81,19 +81,6 @@ export function msFromPointerOffset(
 }
 
 /**
- * EDIT-008 (decimo nono incremento - Fase 3, ganho/mudo). Converte `gainDb` (escala do editor,
- * ver `TimelineTrackSchema`) no `volume` LINEAR 0..1 que `HTMLMediaElement.volume` aceita -
- * `10^(dB/20)` e a formula padrao de conversao decibel->amplitude. `gainDb` ja e limitado a
- * [-60, 0] no schema (sem amplificacao acima do original - os elementos nativos `<video>`/
- * `<audio>` nao suportam `volume > 1`), entao o resultado sempre cai dentro de `[~0.001, 1]`, mas
- * o clamp aqui protege contra qualquer valor fora da faixa que escape da validacao Zod (ex.: um
- * valor antigo no banco de uma versao futura com faixa diferente).
- */
-export function dbToLinearVolume(gainDb: number): number {
-  return Math.min(1, Math.max(0, Math.pow(10, gainDb / 20)))
-}
-
-/**
  * EDIT-009 (vigesimo incremento - Fase 3, fade in/out). Multiplicador de volume (0..1) de uma
  * trilha num instante global, combinando fade-in (rampa de silencio ate o volume normal logo
  * apos `trackStartMs`) e fade-out (rampa ate silencio logo antes de `trackEndMs`) - ambos

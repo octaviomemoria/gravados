@@ -1,4 +1,4 @@
-import type { TimelineTrack, LayoutPreset } from '@shared/schemas/editor.schema'
+import type { TimelineTrack, LayoutPreset } from '../schemas/editor.schema'
 
 const VIDEO_TRACK_TYPES: ReadonlyArray<TimelineTrack['type']> = ['SCREEN', 'CAMERA']
 
@@ -9,6 +9,13 @@ const VIDEO_TRACK_TYPES: ReadonlyArray<TimelineTrack['type']> = ['SCREEN', 'CAME
  * depois câmera) sobre áudio - ver a tela/câmera é mais informativo do que só ouvir; cai para a
  * primeira trilha de áudio disponível se nenhuma trilha de vídeo sobreviveu na gravação (ex.:
  * gravação só de microfone).
+ *
+ * EXP-001 (vigesimo quarto incremento - Fase 4, render plan). Movido de
+ * `renderer/features/editor/pick-preview-track.ts` para `shared/media/` - o RENDER PLAN
+ * (`main/media/render-plan.ts`) precisa da EXATA mesma logica de "qual trilha e fundo/overlay"
+ * que o preview ja usa, senao o vídeo exportado poderia mostrar um arranjo DIFERENTE do que o
+ * usuário viu no editor (um bug de confiança, nao so cosmético). Reusar a mesma função pura dos
+ * dois lados garante que preview e exportação NUNCA divergem por construção.
  */
 export function pickPreviewTrack(tracks: TimelineTrack[]): TimelineTrack | null {
   for (const type of VIDEO_TRACK_TYPES) {

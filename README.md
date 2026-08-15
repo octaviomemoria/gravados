@@ -42,7 +42,13 @@ ponta - ver
 [Fade in/out por trilha](#fade-inout-por-trilha-fase-3),
 [Transformação de câmera (PiP)](#transformação-de-câmera-pip-fase-3),
 [Layout da composição](#layout-da-composição-fase-3) e
-[Autosave e indicador de salvamento](#autosave-e-indicador-de-salvamento-fase-3).
+[Autosave e indicador de salvamento](#autosave-e-indicador-de-salvamento-fase-3). A
+**Fase 4 — Export** começou: `ffmpeg-static`/`ffprobe-static` instalados (binário real, não mais
+so um wrapper vazio) e o "Timeline Compiler" (EXP-001/002 - traduz a timeline editada num render
+plan estruturado, antes de qualquer comando FFmpeg) já funcionam de ponta a ponta - ver
+[Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4). `export.start`
+continua lançando `NotImplementedError` até um incremento futuro conectar o render plan a um
+comando FFmpeg de verdade.
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -1045,6 +1051,72 @@ real de que essa persistência é ATÔMICA, e (2) tornar essa garantia VISÍVEL 
   automaticamente" (mesmo sem nenhuma mutação ainda), troca o layout, confirma que o indicador
   volta pro mesmo texto (nunca preso em "Salvando..." nem mostrando erro).
 
+### Render plan e wrapper FFmpeg real (Fase 4)
+
+Vigésimo quarto incremento - EXP-001 (render plan) + EXP-002 (wrapper FFmpeg), o PRIMEIRO da
+**Fase 4 — Export**. Pipeline conceitual do doc (`05_MEDIA_EDITOR.md` §12-13): `Edit Model →
+Timeline Compiler → FFmpeg Plan → Render Job → Validation with ffprobe → Output`. Este incremento
+entrega só o "Timeline Compiler" (traduz a timeline editada num `RenderPlan` estruturado) + o
+binário real conectado - NENHUM comando FFmpeg é gerado ainda (isso é o "FFmpeg Plan", um passo
+seguinte). `export.start` continua lançando `NotImplementedError`.
+
+- **`ffmpeg-static`/`ffprobe-static` instalados** (~80MB combinados, binário real da plataforma
+  baixado no `postinstall`) - `pnpm` bloqueia scripts de instalação por padrão pra pacotes novos;
+  aprovado via `pnpm approve-builds ffmpeg-static` (`ffprobe-static` não tem script de instalação,
+  não precisou de aprovação), registrado em `pnpm-workspace.yaml` `allowBuilds` (mesmo padrão já
+  usado pro `better-sqlite3`) - persiste a aprovação pra qualquer `pnpm install` futuro, sem exigir
+  aprovação manual de novo.
+- **`resolveFfmpegBinaries` (`ffmpeg-locator.ts`) agora resolve pro binário real** - prioridade:
+  override explícito (testes) > variável de ambiente (`MEETING_STUDIO_FFMPEG_PATH`/
+  `_FFPROBE_PATH`, criada nesta fase - útil pra apontar um binário diferente em CI/empacotamento
+  futuro sem reconstruir) > o pacote `-static` instalado. `ffprobe-static` não publica tipos
+  próprios nem tem `@types/ffprobe-static` no npm - declaração mínima local
+  (`ffprobe-static.d.ts`).
+- **`pickPreviewTrack`/`pickOverlayCameraTrack`/`computePreviewLayout` movidas de
+  `renderer/features/editor/` para `shared/media/preview-layout.ts`** (decisão arquitetural
+  central deste incremento) - o render plan (`main/`) precisa da EXATA mesma lógica de "qual
+  trilha é fundo/overlay/lado-a-lado" que o preview ao vivo (`renderer/`) já usa, senão o vídeo
+  exportado poderia mostrar um arranjo DIFERENTE do que o usuário viu no editor (um bug de
+  confiança, não só cosmético). `tsconfig.node.json` e `tsconfig.web.json` já incluíam
+  `src/shared/**/*.ts` desde a Fase 0 - a mudança foi só de PASTA, sem nenhum ajuste de build.
+  `dbToLinearVolume` (conversão dB→volume linear, EDIT-008) movida da mesma forma, pelo mesmo
+  motivo - o ganho ouvido no vídeo exportado precisa soar IGUAL ao que o usuário ajustou no editor.
+- **`RenderPlan` (`main/media/render-plan.ts`) é uma estrutura de DADOS, não um comando FFmpeg** -
+  `background`/`sideBySideRight`/`overlay` (vídeo) + `audio[]` (uma entrada por trilha NÃO mutada,
+  com `volume` já resolvido via `dbToLinearVolume` e `fadeInMs`/`fadeOutMs` repassados) + `output`
+  (resolução + faixa de tempo, EXP-006). Decisão registrada: `background`/`overlay`/
+  `sideBySideRight` só recebem uma trilha cujo TIPO é realmente vídeo (`SCREEN`/`CAMERA`) -
+  `computePreviewLayout` pode apontar pra uma trilha de ÁUDIO como "single" quando a gravação não
+  tem vídeo nenhum (comportamento correto pro preview, que só desenha trilhas de vídeo mesmo), mas
+  deixar isso vazar pro render plan confundiria um futuro construtor de comando FFmpeg a tentar
+  codificar vídeo de uma trilha que não tem nenhum stream de vídeo.
+- **`buildRenderPlan` não valida `rangeMs`** - a validação (`endMs` além de `totalDurationMs`,
+  intervalo vazio) fica pro `ExportService` (incremento futuro), mantendo esta função pura e sem
+  lançar exceção nunca.
+- **`runFfmpegProcess` ganhou progresso (EXP-007) e cancelamento (EXP-008) na MESMA passada** -
+  entregues junto com o wrapper porque são a mesma infraestrutura de processo (spawn + stdout/
+  stderr + kill); retrabalhar a assinatura três vezes separadas não agregaria nada. Retorna
+  `{ result: Promise<...>, cancel: () => void }` em vez de só uma Promise - `cancel()` mata o
+  processo (`child.kill()`) de forma segura mesmo chamado depois do processo já ter terminado
+  (no-op do próprio Node). `onProgress` só recebe chamadas se o CHAMADOR incluir `-progress
+  pipe:1` nos próprios `args` - o wrapper nunca injeta flags que o chamador não pediu, mantendo
+  `args` como a única fonte de verdade do comando real executado (auditável).
+- **`parseFfmpegProgressLine` usa `out_time_us` (microssegundos), não `out_time_ms`** - por uma
+  excentricidade histórica do próprio FFmpeg, `out_time_ms` também vem em MICROssegundos apesar do
+  nome; `out_time_us` é a chave inequívoca do formato `-progress pipe:1`.
+- Testado via 13 novos testes de `buildRenderPlan` (todos os 3 modos de layout com as trilhas
+  certas, filtro de trilha não-vídeo, ganho/fade resolvidos, trilha mutada excluída do mix,
+  conversão de clips, resoluções 720p/1080p, faixa de tempo padrão vs. explícita, `cameraTransform.
+  visible: false`), 9 novos testes de `runFfmpegProcess`/`parseFfmpegProgressLine`/
+  `computeExportProgress` (spawns reais via `process.execPath`, sem mockar `child_process` -
+  exitCode/stderr/progresso/cancelamento de verdade) e 1 novo teste confirmando que
+  `resolveFfmpegBinaries()` resolve pro binário real instalado. **336 testes, 32 arquivos.**
+  Nenhum teste E2E novo (nenhuma superfície nova de IPC/UI ainda - `export.start` inalterado);
+  confirmado que a mudança de pasta não quebrou nada em tempo de execução reexecutando os testes
+  E2E existentes que exercitam as funções movidas (`editor (gain/mute)` - `dbToLinearVolume` via
+  playback - e `editor (camera transform)` - `computePreviewLayout` via overlay PiP), ambos
+  passaram limpos.
+
 ## Estrutura de diretórios
 
 ```text
@@ -1602,6 +1674,36 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
      do escopo mínimo de "autosave = nunca perder trabalho" (a garantia de atomicidade já cobre o
      caso real de perda de dados), registrado como refinamento futuro em vez de arriscar um ajuste
      não totalmente testado nos sete handlers existentes.
+110. **`pickPreviewTrack`/`pickOverlayCameraTrack`/`computePreviewLayout`/`dbToLinearVolume`
+     movidas de `renderer/` para `shared/media/`** — o render plan (`main/`) precisa da EXATA
+     mesma lógica de composição de layout e conversão de ganho que o preview ao vivo (`renderer/`)
+     já usa; reusar a MESMA função pura dos dois lados garante por construção que o vídeo
+     exportado nunca diverge do que o usuário viu no editor. `tsconfig.node.json`/`tsconfig.web.
+     json` já incluíam `src/shared/**/*.ts` desde a Fase 0 - mudança só de pasta, zero ajuste de
+     build.
+111. **`RenderPlan` é uma estrutura de DADOS ("Timeline Compiler"), não um comando FFmpeg** — o
+     "FFmpeg Plan" (tradução pra argumentos reais de linha de comando) fica pra um incremento
+     seguinte; a doc é explícita sobre isso ("Não gerar comandos FFmpeg diretamente a partir dos
+     componentes React" - a camada intermediária existe justamente pra essa separação de
+     responsabilidade).
+112. **`buildRenderPlan` filtra trilhas não-vídeo antes de virarem `background`/`overlay`/
+     `sideBySideRight`** — `computePreviewLayout` pode legitimamente apontar pra uma trilha de
+     ÁUDIO como "single" quando a gravação não tem vídeo nenhum (comportamento correto pro
+     preview, que só desenha vídeo mesmo); deixar isso vazar pro render plan confundiria um futuro
+     construtor de comando FFmpeg.
+113. **`ffmpeg-static`/`ffprobe-static` aprovados via `pnpm approve-builds`, registrado em
+     `pnpm-workspace.yaml`** — mesmo padrão já usado pro `better-sqlite3` (dependência nativa que
+     precisa rodar um script de instalação); a aprovação persiste pra qualquer `pnpm install`
+     futuro sem exigir intervenção manual de novo.
+114. **`resolveFfmpegBinaries` prioriza override > variável de ambiente > pacote `-static`
+     instalado** — a variável de ambiente (`MEETING_STUDIO_FFMPEG_PATH`/`_FFPROBE_PATH`) existe
+     desde a Fase 0 mas só ganhou um consumidor real de fato relevante agora - útil pra apontar um
+     binário diferente em CI/empacotamento futuro sem precisar reconstruir o app.
+115. **`runFfmpegProcess` retorna `{ result, cancel }` em vez de só uma Promise** — progresso
+     (EXP-007) e cancelamento (EXP-008) entregues na MESMA passada que a conexão do binário real
+     (EXP-002) porque são a mesma infraestrutura de processo (spawn + stdout/stderr + kill);
+     `onProgress` só dispara se o CHAMADOR incluir `-progress pipe:1` nos próprios `args` - o
+     wrapper nunca injeta flags que o chamador não pediu.
 
 ## Testes
 
@@ -1687,7 +1789,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   **`appendOperation` atomicity (EDIT-012)** (simula um crash no meio da escrita - `create` lança
   depois do `deleteAfterSequence` já ter rodado dentro da mesma transação - confirma que cursor,
   revision e o log ficam EXATAMENTE como antes da tentativa, e que o serviço continua funcional
-  depois). **310 testes, 30 arquivos.**
+  depois), **`buildRenderPlan` (EXP-001)** (os 3 modos de layout com as trilhas certas, filtro de
+  trilha não-vídeo, ganho/fade resolvidos, trilha mutada excluída do mix, conversão de clips,
+  resoluções 720p/1080p, faixa de tempo padrão vs. explícita), **`runFfmpegProcess`/
+  `parseFfmpegProgressLine`/`computeExportProgress` (EXP-002)** (spawns reais via
+  `process.execPath`, sem mockar `child_process` - exitCode/stderr/progresso/cancelamento de
+  verdade), `resolveFfmpegBinaries` resolvendo pro binário real instalado.
+  **336 testes, 32 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -1960,6 +2068,19 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - **Sem histórico/auditoria visível de saves** - o indicador (EDIT-012) só mostra o estado ATUAL
   ("salvando"/"salvo"/"falhou"), não um log de quando cada mutação foi persistida nem uma forma de
   reexibir uma falha antiga depois que o indicador já voltou pro estado "salvo".
+- **`export.start` continua lançando `NotImplementedError` (EXP-001/002)** - o render plan e o
+  wrapper FFmpeg real existem, mas nada ainda os conecta a um comando FFmpeg de verdade nem a um
+  job real via `JobRunner`/`ExportJobStore` (ambos já existiam desde a Fase 0, nunca usados até
+  agora); fica pro próximo incremento (EXP-003, MP4 720p).
+- **`RenderPlan` não sabe se uma trilha realmente TEM um stream de áudio no arquivo de origem** -
+  toda trilha não-mutada vira uma entrada em `audio[]`, mesmo que o segmento gravado seja
+  video-only sem faixa de áudio nenhuma (ex.: uma trilha `CAMERA` sem microfone embutido); caberá
+  ao construtor de comando FFmpeg (ou a uma checagem via `ffprobe`) decidir o que fazer com uma
+  entrada de áudio "vazia" - não valida isso ainda.
+- **Sem suporte a multicamera nem a trilhas de vídeo além de SCREEN/CAMERA no render plan** -
+  `RenderPlan.background`/`overlay`/`sideBySideRight` assumem exatamente essas duas trilhas de
+  vídeo possíveis, o mesmo escopo do EDIT-010/011; qualquer expansão futura (`05_MEDIA_EDITOR.md`
+  §5, "multicamera") exigiria revisitar o modelo.
 
 ## Próximo passo
 
@@ -1979,19 +2100,25 @@ sobre o mesmo log, volume recalculado a cada tick por depender do playhead), EDI
 (layout da composição - PiP/lado-a-lado/só-tela/só-câmera, quarto tipo de operação sobre o mesmo
 log, primeira a mirar a composição inteira em vez de uma trilha) e EDIT-012 (salvamento automático
 - persistência atômica da escrita do log de operações + indicador de dirty-state na UI) funcionam
-de ponta a ponta.
+de ponta a ponta. A **Fase 4 — Export** começou: EXP-001 (render plan - "Timeline Compiler" que
+traduz a timeline editada numa estrutura `background`/`overlay`/`sideBySideRight`/`audio`/`output`,
+reusando a mesma lógica de layout do preview) e EXP-002 (`ffmpeg-static`/`ffprobe-static`
+instalados, `runFfmpegProcess` com progresso/cancelamento reais) já funcionam de ponta a ponta -
+ver [Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4).
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. **Fase 4 — Export** (EXP-001..009, próximo passo imediato): pipeline real de FFmpeg
-   (`ffmpeg-static`/`ffprobe-static` ainda não instalados - `main/media/ffmpeg/` hoje é só um
-   wrapper `spawn()` + `buildFfprobeArgs`, nenhum binário real, `export.start` sempre lança
-   `NotImplementedError`), MP4 720p/1080p, faixa de tempo, progresso, cancelamento, validação via
-   ffprobe - inclui a exportação em múltiplos formatos pedida explicitamente pelo usuário
-   (MP4/MP3/WAV/M4A-AAC/AVI/MPEG/OGG/etc.), e precisará ler `layoutPreset`/`cameraTransform` pra
-   compor os frames de saída de acordo (hoje esses dois só afetam o preview ao vivo). O roadmap
-   marca o fim desta fase como o **Marco MVP**.
+1. Continuar a **Fase 4 — Export** (próximo passo imediato): EXP-003/004 (traduzir o `RenderPlan`
+   num comando FFmpeg real - o "FFmpeg Plan" da doc - e produzir um MP4 720p/1080p de verdade,
+   primeiro incremento que efetivamente ESCREVE um arquivo de saída), EXP-005 (exportação só de
+   áudio - inclui os formatos múltiplos pedidos explicitamente pelo usuário: MP3/WAV/M4A-AAC além
+   do MP4 de vídeo, e possivelmente AVI/MPEG/OGG), EXP-006 (faixa de tempo - `buildRenderPlan` já
+   aceita `rangeMs`, só falta a UI + validação), EXP-007/008 (progresso/cancelamento -
+   `runFfmpegProcess` já suporta ambos, falta conectar ao `JobRunner`/`ExportJobStore` existentes
+   desde a Fase 0 e a UI de exportação, ainda inexistente), EXP-009 (validação via ffprobe do
+   arquivo de saída antes de marcar o job `COMPLETED`) - cada operação provavelmente seu próprio
+   incremento, dado o tamanho desta fase. O roadmap marca o fim desta fase como o **Marco MVP**.
 2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
    depois do MVP, replanejadas quando chegar a vez.

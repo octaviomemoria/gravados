@@ -5,7 +5,7 @@ import { EmptyState } from '../../components/EmptyState'
 import { formatFileSize } from '../library/format-file-size'
 import { formatElapsed } from '../recording/format-elapsed'
 import { Timeline } from './Timeline'
-import { isVideoTrackType, computePreviewLayout } from './pick-preview-track'
+import { isVideoTrackType, computePreviewLayout } from '@shared/media/preview-layout'
 import { useMultiTrackPlayback } from './useMultiTrackPlayback'
 import type {
   EditProjectResponse,
