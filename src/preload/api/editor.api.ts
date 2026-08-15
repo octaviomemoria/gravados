@@ -19,8 +19,11 @@ import {
   SetTrackGainRequestSchema,
   SetTrackGainResponseSchema,
   SetTrackFadeRequestSchema,
-  SetTrackFadeResponseSchema
+  SetTrackFadeResponseSchema,
+  SetTrackCameraTransformRequestSchema,
+  SetTrackCameraTransformResponseSchema
 } from '../../shared/schemas/editor.schema'
+import type { CameraTransform } from '../../shared/schemas/editor.schema'
 import type { EditorApi } from '../../shared/types/preload-api'
 import { invokeChannel } from '../invoke'
 
@@ -85,6 +88,15 @@ export function createEditorApi(): EditorApi {
         IPC_CHANNELS.editor.setTrackFade,
         { request: SetTrackFadeRequestSchema, response: SetTrackFadeResponseSchema },
         { editProjectId, trackId, fadeInMs, fadeOutMs }
+      ),
+    setTrackCameraTransform: (editProjectId: string, trackId: string, transform: CameraTransform) =>
+      invokeChannel(
+        IPC_CHANNELS.editor.setTrackCameraTransform,
+        {
+          request: SetTrackCameraTransformRequestSchema,
+          response: SetTrackCameraTransformResponseSchema
+        },
+        { editProjectId, trackId, ...transform }
       )
   }
 }

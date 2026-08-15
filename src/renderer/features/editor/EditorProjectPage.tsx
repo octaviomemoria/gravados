@@ -1,26 +1,41 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { useParams } from 'react-router-dom'
 import { EmptyState } from '../../components/EmptyState'
 import { formatFileSize } from '../library/format-file-size'
 import { formatElapsed } from '../recording/format-elapsed'
 import { Timeline } from './Timeline'
-import { pickPreviewTrack, isVideoTrackType } from './pick-preview-track'
+import { pickPreviewTrack, isVideoTrackType, pickOverlayCameraTrack } from './pick-preview-track'
 import { useMultiTrackPlayback } from './useMultiTrackPlayback'
 import type {
   EditProjectResponse,
-  GetEditedTimelineResponse
+  GetEditedTimelineResponse,
+  CameraTransform
 } from '@shared/schemas/editor.schema'
 import type { ProjectDetailsResponse } from '@shared/schemas/project.schema'
 
+/** EDIT-010 - posicao/tamanho/forma da trilha CAMERA overlay, convertidos em CSS inline
+ * (porcentagens relativas ao container `.editor-preview-container`, ver global.css). */
+function cameraOverlayStyle(transform: CameraTransform): CSSProperties {
+  return {
+    left: `${transform.xPercent}%`,
+    top: `${transform.yPercent}%`,
+    width: `${transform.widthPercent}%`,
+    height: `${transform.heightPercent}%`,
+    borderRadius: transform.shape === 'circle' ? '50%' : undefined
+  }
+}
+
 /**
- * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007/EDIT-008/EDIT-009 (Fase 3, Editor MVP).
- * Pagina de detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura
- * da gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a timeline EDITADA
- * (`Timeline.tsx`, EDIT-002/EDIT-004-005-006/EDIT-008/EDIT-009) + o player multi-trilha
- * sincronizado (`useMultiTrackPlayback`, EDIT-003 parte 2) + corte/split/remover-intervalo
- * (EDIT-004/005/006 - todos o mesmo primitivo `REMOVE_RANGE`, ver `RemoveRangeRequestSchema`) +
- * desfazer/refazer (EDIT-007) + ganho/mudo (EDIT-008) + fade in/out (EDIT-009) por trilha. Sem
- * transformacao de camera/layout ainda (EDIT-010 em diante).
+ * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007/EDIT-008/EDIT-009/EDIT-010 (Fase 3, Editor
+ * MVP). Pagina de detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo
+ * somente-leitura da gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a
+ * timeline EDITADA (`Timeline.tsx`, EDIT-002/EDIT-004-005-006/EDIT-008/EDIT-009/EDIT-010) + o
+ * player multi-trilha sincronizado (`useMultiTrackPlayback`, EDIT-003 parte 2) + corte/split/
+ * remover-intervalo (EDIT-004/005/006 - todos o mesmo primitivo `REMOVE_RANGE`, ver
+ * `RemoveRangeRequestSchema`) + desfazer/refazer (EDIT-007) + ganho/mudo (EDIT-008) + fade in/out
+ * (EDIT-009) + visibilidade/posicao/tamanho de camera (EDIT-010, overlay PiP sobre a trilha de
+ * fundo) por trilha. Sem layout/autosave ainda (EDIT-011 em diante).
  */
 export function EditorProjectPage() {
   const { id } = useParams<{ id: string }>()
@@ -134,6 +149,13 @@ function EditorProjectView({
     if (!timeline) return null
     return pickPreviewTrack(timeline.tracks)?.id ?? null
   }, [timeline])
+  // EDIT-010 - trilha CAMERA a sobrepor como PiP por cima da trilha de fundo (`null` quando nao
+  // ha uma trilha CAMERA separada da de fundo, ou quando `cameraTransform.visible` foi desligado -
+  // ver `pickOverlayCameraTrack`).
+  const overlayCameraTrack = useMemo(() => {
+    if (!timeline) return null
+    return pickOverlayCameraTrack(timeline.tracks, primaryTrackId)
+  }, [timeline, primaryTrackId])
 
   const hasPlayableMedia = useMemo(
     () => !!timeline && timeline.tracks.some((track) => track.clips.length > 0),
@@ -258,6 +280,32 @@ function EditorProjectView({
     [editProject.id]
   )
 
+  // EDIT-010 - mesmo padrao de `setTrackGain`/`setTrackFade`: nao usa `applyTimelineMutation`/
+  // `busy`, guard de sequencia proprio (`transformRequestSeqRef`) independente dos outros dois -
+  // arrastar um slider de posicao/tamanho nao deveria descartar (nem ser descartado por) um
+  // ajuste de ganho ou fade em andamento.
+  const transformRequestSeqRef = useRef(0)
+  const setTrackTransform = useCallback(
+    async (trackId: string, transform: CameraTransform) => {
+      setActionError(null)
+      const requestSeq = ++transformRequestSeqRef.current
+      try {
+        const updated = await window.meetingStudio.editor.setTrackCameraTransform(
+          editProject.id,
+          trackId,
+          transform
+        )
+        if (requestSeq !== transformRequestSeqRef.current) return
+        setTimeline(updated)
+      } catch {
+        if (requestSeq === transformRequestSeqRef.current) {
+          setActionError('Nao foi possivel ajustar a transformacao da camera.')
+        }
+      }
+    },
+    [editProject.id]
+  )
+
   // `05_MEDIA_EDITOR.md` §15 - Ctrl+Z desfaz, Ctrl+Shift+Z refaz; atalhos nunca disparam com o
   // foco num campo de texto (aqui so o nome do projeto seria editavel num incremento futuro, mas
   // o guard ja fica pronto pra quando existir).
@@ -322,24 +370,38 @@ function EditorProjectView({
       <h2>Preview</h2>
       {timeline && hasPlayableMedia ? (
         <>
-          {timeline.tracks.map((track) => {
-            const isVideo = isVideoTrackType(track.type)
-            const isPrimary = track.id === primaryTrackId
-            if (isVideo) {
+          <div className="editor-preview-container">
+            {timeline.tracks.map((track) => {
+              const isVideo = isVideoTrackType(track.type)
+              const isPrimary = track.id === primaryTrackId
+              const isOverlay = track.id === overlayCameraTrack?.id
+              if (isVideo) {
+                return (
+                  <video
+                    key={track.id}
+                    ref={playback.getTrackRef(track.id)}
+                    className={isOverlay ? 'editor-preview-overlay' : 'editor-preview'}
+                    hidden={!isPrimary && !isOverlay}
+                    style={
+                      isOverlay && overlayCameraTrack?.cameraTransform
+                        ? cameraOverlayStyle(overlayCameraTrack.cameraTransform)
+                        : undefined
+                    }
+                    aria-label={
+                      isPrimary
+                        ? 'editor-preview-video'
+                        : isOverlay
+                          ? 'editor-preview-camera-overlay'
+                          : undefined
+                    }
+                  />
+                )
+              }
               return (
-                <video
-                  key={track.id}
-                  ref={playback.getTrackRef(track.id)}
-                  className="editor-preview"
-                  hidden={!isPrimary}
-                  aria-label={isPrimary ? 'editor-preview-video' : undefined}
-                />
+                <audio key={track.id} ref={playback.getTrackRef(track.id)} hidden data-track-type={track.type} />
               )
-            }
-            return (
-              <audio key={track.id} ref={playback.getTrackRef(track.id)} hidden data-track-type={track.type} />
-            )
-          })}
+            })}
+          </div>
           <div className="editor-player-controls">
             <button type="button" onClick={playback.togglePlay} disabled={playback.totalMs === 0}>
               {playback.isPlaying ? 'Pausar' : 'Reproduzir'}
@@ -414,11 +476,14 @@ function EditorProjectView({
           onSetTrackFade={(trackId, fadeInMs, fadeOutMs) =>
             void setTrackFade(trackId, fadeInMs, fadeOutMs)
           }
+          onSetTrackCameraTransform={(trackId, transform) =>
+            void setTrackTransform(trackId, transform)
+          }
         />
       ) : (
         <p>Carregando timeline...</p>
       )}
-      <EmptyState message="Transformacao de camera e layout chegam nos proximos incrementos da Fase 3." />
+      <EmptyState message="Layout (PiP/lado-a-lado/so-tela/so-camera) e autosave chegam nos proximos incrementos da Fase 3." />
     </div>
   )
 }

@@ -3,7 +3,7 @@ import type { MouseEvent } from 'react'
 import { formatElapsed } from '../recording/format-elapsed'
 import { TRACK_TYPE_LABELS } from '../library/track-type-labels'
 import { msFromPointerOffset } from './timeline-playback'
-import type { GetTimelineResponse } from '@shared/schemas/editor.schema'
+import type { GetTimelineResponse, CameraTransform } from '@shared/schemas/editor.schema'
 
 /**
  * EDIT-002/EDIT-003 parte 2/EDIT-004-005-006 (Fase 3, Editor MVP). Visualizacao da timeline
@@ -25,7 +25,8 @@ export function Timeline({
   onSeek,
   selection,
   onSetTrackGain,
-  onSetTrackFade
+  onSetTrackFade,
+  onSetTrackCameraTransform
 }: {
   timeline: GetTimelineResponse
   currentTimeMs?: number
@@ -39,6 +40,10 @@ export function Timeline({
   /** EDIT-009 - duracao (ms) de fade-in/fade-out por trilha, mesmo padrao de prop opcional de
    * `onSetTrackGain`. */
   onSetTrackFade?: (trackId: string, fadeInMs: number, fadeOutMs: number) => void
+  /** EDIT-010 - visibilidade/posicao/tamanho/forma (PiP) da trilha CAMERA, mesmo padrao opcional
+   * de `onSetTrackGain`/`onSetTrackFade`. So renderizado para trilhas do tipo CAMERA - posicao nao
+   * faz sentido pra audio, e a trilha de tela e sempre o fundo do preview. */
+  onSetTrackCameraTransform?: (trackId: string, transform: CameraTransform) => void
 }) {
   const totalMs = Math.max(timeline.totalDurationMs, 1)
   const rulerMarks = buildRulerMarks(totalMs)
@@ -155,6 +160,14 @@ export function Timeline({
                 </label>
               </div>
             )}
+            {onSetTrackCameraTransform && track.type === 'CAMERA' && track.cameraTransform && (
+              <CameraTransformControls
+                trackId={track.id}
+                trackLabel={TRACK_TYPE_LABELS[track.type]}
+                transform={track.cameraTransform}
+                onChange={onSetTrackCameraTransform}
+              />
+            )}
           </div>
           <div
             className={`timeline__track-lane${onSeek ? ' timeline__track-lane--seekable' : ''}`}
@@ -182,6 +195,97 @@ export function Timeline({
           </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * EDIT-010 - visibilidade (checkbox) + posicao/tamanho (sliders 0-100%) + forma (select) da trilha
+ * CAMERA. Extraido num componente proprio (em vez de inline no `map` acima) so pra manter o corpo
+ * de `Timeline` legivel - cinco controles e mais do que os dois de ganho/mudo.
+ */
+function CameraTransformControls({
+  trackId,
+  trackLabel,
+  transform,
+  onChange
+}: {
+  trackId: string
+  trackLabel: string
+  transform: CameraTransform
+  onChange: (trackId: string, transform: CameraTransform) => void
+}) {
+  const update = (patch: Partial<CameraTransform>) => onChange(trackId, { ...transform, ...patch })
+  return (
+    <div className="timeline__track-transform-controls">
+      <label className="timeline__track-transform-visible">
+        <input
+          type="checkbox"
+          checked={transform.visible}
+          aria-label={`Mostrar camera da trilha ${trackLabel}`}
+          onChange={(event) => update({ visible: event.target.checked })}
+        />
+        Mostrar camera
+      </label>
+      <label className="timeline__track-transform-field">
+        X
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={transform.xPercent}
+          aria-label={`Posicao X da camera da trilha ${trackLabel} (porcentagem)`}
+          onChange={(event) => update({ xPercent: Number(event.target.value) })}
+        />
+      </label>
+      <label className="timeline__track-transform-field">
+        Y
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={transform.yPercent}
+          aria-label={`Posicao Y da camera da trilha ${trackLabel} (porcentagem)`}
+          onChange={(event) => update({ yPercent: Number(event.target.value) })}
+        />
+      </label>
+      <label className="timeline__track-transform-field">
+        Largura
+        <input
+          type="range"
+          min={5}
+          max={100}
+          step={1}
+          value={transform.widthPercent}
+          aria-label={`Largura da camera da trilha ${trackLabel} (porcentagem)`}
+          onChange={(event) => update({ widthPercent: Number(event.target.value) })}
+        />
+      </label>
+      <label className="timeline__track-transform-field">
+        Altura
+        <input
+          type="range"
+          min={5}
+          max={100}
+          step={1}
+          value={transform.heightPercent}
+          aria-label={`Altura da camera da trilha ${trackLabel} (porcentagem)`}
+          onChange={(event) => update({ heightPercent: Number(event.target.value) })}
+        />
+      </label>
+      <label className="timeline__track-transform-field">
+        Forma
+        <select
+          value={transform.shape}
+          aria-label={`Forma da camera da trilha ${trackLabel}`}
+          onChange={(event) => update({ shape: event.target.value as CameraTransform['shape'] })}
+        >
+          <option value="rectangle">Retangulo</option>
+          <option value="circle">Circulo</option>
+        </select>
+      </label>
     </div>
   )
 }

@@ -27,15 +27,17 @@ e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-exclui
 gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002), o preview
 completo com playhead sincronizado e reprodução multi-trilha (EDIT-003, partes 1 e 2), corte/
 split/remover-intervalo (EDIT-004/005/006), desfazer/refazer (EDIT-007), ganho/mudo por trilha
-(EDIT-008) e fade in/out por trilha (EDIT-009) já funcionam de ponta a ponta - ver
+(EDIT-008), fade in/out por trilha (EDIT-009) e visibilidade/posição/tamanho de câmera (EDIT-010,
+overlay picture-in-picture sobre a trilha de fundo) já funcionam de ponta a ponta - ver
 [Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3),
 [Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3),
 [Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3),
 [Playhead sincronizado e reprodução multi-trilha](#playhead-sincronizado-e-reprodução-multi-trilha-fase-3),
 [Corte, split e remover intervalo](#corte-split-e-remover-intervalo-fase-3),
 [Desfazer e refazer](#desfazer-e-refazer-fase-3),
-[Ganho e mudo por trilha](#ganho-e-mudo-por-trilha-fase-3) e
-[Fade in/out por trilha](#fade-inout-por-trilha-fase-3).
+[Ganho e mudo por trilha](#ganho-e-mudo-por-trilha-fase-3),
+[Fade in/out por trilha](#fade-inout-por-trilha-fase-3) e
+[Transformação de câmera (PiP)](#transformação-de-câmera-pip-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -878,6 +880,70 @@ operações ativas simultaneamente, uma para cada campo).
   foram persistidos corretamente, e que Ctrl+Z desfaz só a ÚLTIMA operação do log (o fade-out),
   preservando o fade-in (uma operação anterior) - mesmo formato de asserção do teste de gain/mute.
 
+### Transformação de câmera (PiP) (Fase 3)
+
+Vigésimo primeiro incremento - EDIT-010. Terceiro tipo de operação (`SET_CAMERA_TRANSFORM`) sobre o
+MESMO log de `edit_operations` do EDIT-007/008/009 - de novo sem NENHUMA mudança de schema/
+migration, só mais uma passagem de fold em `getEditedTimeline`, independente das de `SET_GAIN`/
+`SET_FADE`. Ao contrário delas, essa operação só é válida para uma trilha `CAMERA`.
+
+- **`cameraTransform` (`visible`/`xPercent`/`yPercent`/`widthPercent`/`heightPercent`/`shape`) é
+  `null` em qualquer trilha que não seja `CAMERA`** - posição/tamanho não tem significado pra
+  áudio, e a trilha de tela é sempre o FUNDO do preview (preenche o canvas inteiro), nunca um
+  overlay posicionável. `EditorService.setTrackTransform` rejeita explicitamente um `trackId` de
+  outro tipo (`ValidationError`, "so e valida para uma trilha CAMERA") - a primeira operação deste
+  incremento com uma restrição de TIPO de trilha, não só de existência.
+- **Toda trilha `CAMERA` nasce com uma posição PiP padrão** (`DEFAULT_CAMERA_TRANSFORM`: canto
+  inferior-direito, ~25% de largura/altura, visível, retangular) na timeline BRUTA - o "estado
+  neutro" equivalente ao `gainDb: 0`/`fadeInMs: 0`, nunca `null` só porque nenhum ajuste foi feito
+  ainda.
+- **A trilha de OVERLAY (a câmera sobreposta) é distinta da trilha de FUNDO (a que preenche o
+  preview inteiro)** - nova função pura `pickOverlayCameraTrack(tracks, backgroundTrackId)`
+  (`pick-preview-track.ts`, ao lado do já existente `pickPreviewTrack`): retorna a trilha `CAMERA`
+  SE ela for diferente da trilha de fundo escolhida por `pickPreviewTrack` (tela > câmera > primeira
+  disponível) E `cameraTransform.visible` não tiver sido desligado. Numa gravação SÓ de câmera (sem
+  tela), a câmera JÁ É a trilha de fundo - não faz sentido desenhá-la sobreposta a si mesma, então
+  não há overlay (comportamento idêntico ao já existente antes deste incremento).
+- **UI do preview**: `EditorProjectPage` ganhou um container `.editor-preview-container` com
+  `position: relative` - o `<video>` de fundo continua exatamente como antes, e o `<video>` do
+  overlay (quando existir) é renderizado SEM `hidden`, `position: absolute` com `left`/`top`/
+  `width`/`height` calculados de `cameraTransform` (`cameraOverlayStyle`, função pura local) e
+  `border-radius: 50%` quando `shape: 'circle'`. Ambos os elementos já eram montados e mantidos em
+  sincronia desde o EDIT-003 parte 2 (`useMultiTrackPlayback` toca TODAS as trilhas em lockstep,
+  só a exibição visual mudava) - nenhuma mudança no motor de reprodução foi necessária, só em QUAL
+  elemento fica visível e COMO ele é posicionado.
+- **UI da timeline**: checkbox "Mostrar câmera" + quatro sliders (X/Y/Largura/Altura, 0-100%,
+  largura/altura mínimas de 5%) + select de forma (Retângulo/Círculo), só na linha da trilha
+  `CAMERA` (`Timeline.tsx`, novo componente `CameraTransformControls`, prop opcional
+  `onSetTrackCameraTransform` - mesmo padrão opt-in de `onSetTrackGain`/`onSetTrackFade`). Handler
+  no componente pai com seu PRÓPRIO guard de sequência (`transformRequestSeqRef`, independente dos
+  outros dois).
+- **Bug real encontrado e corrigido durante a validação**: o teste E2E PRÉ-EXISTENTE de gain/mute
+  usava um seletor genérico `cameraTrackRow.locator('input[type="range"]')` pra achar o slider de
+  ganho, assumindo implicitamente que era o ÚNICO range input daquela linha - premissa que este
+  incremento quebrou (a linha da trilha `CAMERA` agora tem MAIS QUATRO sliders, de posição/tamanho).
+  O teste passou a falhar com "strict mode violation: resolved to 5 elements". Corrigido trocando
+  pelo seletor por rótulo específico (`getByLabel('Ganho da trilha Câmera')`) - rótulo único
+  mesmo com controles adicionais na mesma linha. **Lição reutilizável**: seletores de teste E2E
+  baseados em atributo genérico (`input[type=...]`) dentro de um container que pode ganhar mais
+  elementos do MESMO tipo em incrementos futuros são frágeis por natureza; preferir sempre um
+  rótulo/`aria-label` específico, mesmo quando o container só tem um elemento daquele tipo hoje.
+- Testado via 10 novos testes de integração do `EditorService.setTrackTransform`
+  (`tests/unit/main/editor.service.test.ts`: timeline bruta dá o padrão PiP pra toda trilha CAMERA
+  e `null` pra qualquer outra, aplica só na trilha alvo, um segundo `SET_CAMERA_TRANSFORM`
+  SUBSTITUI em vez de acumular, rejeita trackId inexistente, **rejeita trackId que não é CAMERA**,
+  revision incrementa, undo/redo funcionam, poda de ramo abandonado, trilha removida por
+  `REMOVE_RANGE` não quebra nada, e **`SET_GAIN`/`SET_FADE`/`SET_CAMERA_TRANSFORM` coexistem de
+  forma independente na mesma trilha**) + 5 testes de `pickOverlayCameraTrack` (trilha de fundo
+  diferente da câmera, câmera-é-o-próprio-fundo, sem trilha câmera, `visible: false`,
+  `cameraTransform` nulo defensivo) e um novo teste E2E (`test.describe('editor (camera
+  transform)')`): grava microfone+câmera, confirma que os controles de transformação SÓ aparecem
+  na linha da trilha CAMERA (nunca na de microfone), desliga a visibilidade pelo checkbox, ajusta a
+  posição X pelo slider, confirma via `editor.getEditedTimeline` que os dois valores foram
+  persistidos (visibilidade preservada ao ajustar X, mesma semântica de substituição do
+  EDIT-008/009), e que Ctrl+Z desfaz só a ÚLTIMA operação (o ajuste de X), preservando a
+  visibilidade desligada (uma operação anterior).
+
 ## Estrutura de diretórios
 
 ```text
@@ -1383,6 +1449,23 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 97. **Volume final = `dbToLinearVolume(gainDb) × fadeVolumeMultiplier(...)`** — os efeitos do
     EDIT-008 e do EDIT-009 compõem multiplicativamente no ponto de aplicação (`applyTimeToTrack`),
     sem nenhuma coordenação especial entre os dois fold passes que os calculam.
+98. **`cameraTransform` é `null` pra qualquer trilha que não seja `CAMERA`** — posição/tamanho não
+    tem significado pra áudio, e a trilha de tela é sempre o fundo do preview (preenche o canvas
+    inteiro), nunca um overlay posicionável; `setTrackTransform` rejeita explicitamente qualquer
+    `trackId` de outro tipo, a primeira restrição de TIPO de trilha (não só de existência) entre as
+    operações do log.
+99. **Toda trilha `CAMERA` nasce com uma posição PiP padrão** (`DEFAULT_CAMERA_TRANSFORM`) em vez
+    de `null`/zero — mesmo raciocínio de `gainDb: 0`/`fadeInMs: 0`: um "estado neutro" sempre
+    presente, nunca ausente só porque nenhum ajuste foi feito ainda.
+100. **A trilha de overlay (câmera sobreposta) é sempre distinta da trilha de fundo** —
+     `pickOverlayCameraTrack` retorna `null` quando a câmera É a própria trilha de fundo escolhida
+     por `pickPreviewTrack` (gravação só de câmera, sem tela) — não faz sentido desenhar uma trilha
+     sobreposta a si mesma; o comportamento pré-EDIT-010 (câmera em tela cheia sem overlay) é
+     preservado intacto nesse caso.
+101. **O preview reaproveita os elementos `<video>` já montados desde o EDIT-003 parte 2**
+     (`useMultiTrackPlayback` já tocava TODAS as trilhas em lockstep) — só a exibição visual (qual
+     fica `hidden`, `position: absolute` vs. fluxo normal) mudou; nenhuma mudança no motor de
+     reprodução foi necessária para adicionar o overlay PiP.
 
 ## Testes
 
@@ -1452,7 +1535,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   mínimo, trilha degenerada sem NaN/divisão por zero)**,
   wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de
   domínio, migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço
-  de configurações, store de tema, smoke test de componente (jsdom). **273 testes, 30 arquivos.**
+  de configurações, store de tema, smoke test de componente (jsdom), **`EditorService.setTrackTransform`
+  de ponta a ponta (timeline bruta dá o padrão PiP a toda trilha CAMERA e `null` a qualquer outra,
+  aplica só na trilha alvo, um segundo `SET_CAMERA_TRANSFORM` SUBSTITUI em vez de acumular, rejeita
+  trackId inexistente, rejeita trackId que não é CAMERA, revision incrementa, undo/redo funcionam,
+  poda de ramo abandonado, trilha removida por REMOVE_RANGE não quebra nada, SET_GAIN/SET_FADE/
+  SET_CAMERA_TRANSFORM coexistem de forma independente)**, **`pickOverlayCameraTrack` puro** (fundo
+  diferente da câmera, câmera-é-o-próprio-fundo, sem trilha câmera, `visible: false`,
+  `cameraTransform` nulo defensivo). **289 testes, 30 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -1521,23 +1611,31 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   nono teste (`test.describe('editor (fade)')`, EDIT-009) grava microfone+câmera, ajusta fade-in e
   fade-out da trilha de microfone pelos dois campos numéricos, confirma via
   `editor.getEditedTimeline` que os dois valores foram persistidos corretamente, e que Ctrl+Z
-  desfaz só a ÚLTIMA operação do log (o fade-out), preservando o fade-in.
-  **9 testes**, isolado `editor (fade)` passou de forma limpa (sem retry, 21,4s). Validação deste
-  incremento caiu num episódio de contenção de recursos ainda mais severo que o do EDIT-008 -
-  RAM livre chegou a **0,2 GB de 15,8 GB** em vários pontos (>98,7% em uso), incluindo um estol de
-  ~22 horas reais no meio de uma execução completa da suíte (a máquina aparentemente hibernou/
-  suspendeu por um longo período; confirmado via `Get-Date`/`CreationDate` de processo, não apenas
-  pela duração de teste reportada pelo Playwright, que por si só já mostrou uma discrepância
-  gigante). Sob essa pressão extrema, a execução completa da suíte passou a falhar de forma
-  disseminada (não só o já conhecido bootstrap de câmera/status, mas praticamente todo teste que
-  depende do setup de gravação) - **toda falha, sem exceção, confirmada via `error-context.md`,
-  ocorreu na mesma etapa de setup compartilhada** (`getByRole('status')` nunca contendo "REC" a
-  tempo), nunca dentro do código de fade em si. Correção de lógica confirmada pelos 10 testes de
-  integração dedicados do `EditorService.setTrackFade` + 11 de `fadeVolumeMultiplier` (todos
-  verdes) e pela execução isolada do próprio teste E2E, que passou sem nenhum retry antes do pico
-  de pressão de memória - mesma linha de evidência já usada nos incrementos anteriores (EDIT-007/
-  008) para aceitar a exaustão real de RAM da máquina como causa raiz, não uma regressão deste
-  incremento.
+  desfaz só a ÚLTIMA operação do log (o fade-out), preservando o fade-in; décimo teste
+  (`test.describe('editor (camera transform)')`, EDIT-010) grava microfone+câmera, confirma que os
+  controles de transformação (checkbox + sliders) SÓ aparecem na linha da trilha CAMERA, desliga a
+  visibilidade pelo checkbox, ajusta a posição X pelo slider, confirma via `editor.getEditedTimeline`
+  que os dois ajustes foram persistidos (visibilidade preservada ao ajustar X), e que Ctrl+Z desfaz
+  só a ÚLTIMA operação (o X), preservando a visibilidade desligada.
+  **10 testes**, isolado `editor (camera transform)` passou de forma limpa em três execuções
+  isoladas seguidas (~9-10s cada, sem retry) e também na PRIMEIRA execução completa da suíte
+  (8,3s, sem retry) - só falhou (esgotando os 3 retries) na SEGUNDA execução completa, um episódio
+  de contenção mais severo que afetou simultaneamente 5 testes PRÉ-EXISTENTES não relacionados
+  (gain/mute, undo/redo, trim/remove-range, screen+microfone, biblioteca) e 3 outros ficaram flaky -
+  **toda falha do novo teste, confirmada via `error-context.md` de cada tentativa, ocorreu na
+  mesma etapa de setup compartilhada** (`getByLabel('Camera')`/botão "Iniciar gravacao"/
+  `getByRole('status')` conter "REC"), nunca dentro do código de transformação de câmera em si -
+  nunca chegou a exercitar a lógica nova. **Bug real encontrado e corrigido durante esta
+  validação** (não no código de produção, no teste E2E PRÉ-EXISTENTE de gain/mute): seu seletor
+  `input[type="range"]` deixou de ser único dentro da linha da trilha CAMERA assim que os quatro
+  novos sliders de posição/tamanho foram adicionados (`strict mode violation: resolved to 5
+  elements`) - corrigido trocando por um rótulo específico (`getByLabel('Ganho da trilha
+  Câmera')`), confirmado com uma execução isolada limpa depois do ajuste. Correção de lógica
+  confirmada pelos 10 testes de integração dedicados do `EditorService.setTrackTransform` + 5 de
+  `pickOverlayCameraTrack` (todos verdes) e pelas execuções isoladas/primeira-execução-completa
+  limpas do próprio teste E2E - mesma linha de evidência já usada nos incrementos anteriores
+  (EDIT-007/008/009) para aceitar a contenção de recursos da máquina como causa raiz das falhas
+  restantes, não uma regressão deste incremento.
 
 ## Pendências conhecidas
 
@@ -1613,8 +1711,9 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   edição, que precisará dos segmentos um a um.
 - Projeto de edição ainda não tem renomear nem excluir (só a Biblioteca tem essas ações, para
   gravações - não para projetos de edição). Corte/split/remover-intervalo (EDIT-004/005/006),
-  desfazer/refazer (EDIT-007), ganho/mudo (EDIT-008) e fade in/out (EDIT-009) por trilha já
-  funcionam; transformação de câmera e layout ainda não (EDIT-010 em diante).
+  desfazer/refazer (EDIT-007), ganho/mudo (EDIT-008), fade in/out (EDIT-009) e visibilidade/
+  posição/tamanho de câmera (EDIT-010) por trilha já funcionam; layout/presets ainda não
+  (EDIT-011 em diante).
 - `EditorProjectPage` não trata um `id` de projeto de edição inexistente/inválido na URL de forma
   amigável (`editor.get` lança `NotFoundError`, capturado só como um estado de erro genérico) -
   refinamento futuro, não bloqueante.
@@ -1624,10 +1723,12 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - Sem indicação visual de gaps entre clips na mesma trilha (ex.: um pause/resume real deixaria
   dois segmentos consecutivos sem intervalo, mas uma trilha que só rotacionou por tamanho/tempo
   também não tem gap perceptível hoje) - refinamento futuro, não bloqueante para esta etapa.
-- Sem controle de qual trilha usar como preview visual principal - `pickPreviewTrack` decide
-  sozinho (tela > câmera > primeira disponível), sem nenhuma forma de o usuário escolher outra
-  trilha manualmente ou ver duas trilhas de vídeo ao mesmo tempo (isso é o layout PiP/lado-a-lado
-  planejado pra EDIT-011).
+- Sem controle de qual trilha usar como FUNDO do preview - `pickPreviewTrack` decide sozinho
+  (tela > câmera > primeira disponível), sem nenhuma forma de o usuário trocar manualmente qual
+  trilha é fundo e qual é overlay. Desde o EDIT-010 a câmera JÁ aparece automaticamente como
+  overlay PiP por cima da tela (quando ambas existem), mas só nesse arranjo fixo - lado-a-lado,
+  duas câmeras simultâneas (multicamera), ou trocar manualmente qual trilha fica em cada papel
+  ainda não existem (layout/presets planejados pra EDIT-011).
 - Sincronização entre trilhas tem tolerância de 250ms (`DRIFT_THRESHOLD_SECONDS`) - suficiente
   para revisar uma gravação, mas não é sample-accurate como um editor profissional de verdade;
   refinamento futuro, não bloqueante para o MVP.
@@ -1644,6 +1745,15 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   tem como aplicar um fade só num clip específico no meio. Também não há campo numérico validando
   que `fadeInMs + fadeOutMs` não ultrapasse a duração da trilha (o `Math.min` em
   `fadeVolumeMultiplier` já lida com a sobreposição sem quebrar, mas a UI não avisa o usuário).
+- **Transformação de câmera (EDIT-010) é ajustada só por sliders numéricos (0-100%), sem
+  arrastar/redimensionar diretamente no preview** - não há alças visuais (drag handles) no canvas;
+  o usuário vê o resultado em tempo real (o overlay se move/redimensiona conforme os sliders
+  mudam), mas não interage diretamente com o retângulo do preview. Também não há "crop" real da
+  fonte (só posição/tamanho do CONTAINER do overlay - `object-fit: cover` recorta visualmente, mas
+  não existe um campo para escolher QUAL parte do vídeo original fica visível). Um `shape: 'circle'`
+  usa `border-radius: 50%` sobre uma caixa possivelmente não-quadrada - um retângulo largo vira uma
+  elipse, não um círculo perfeito, a menos que `widthPercent`/`heightPercent` já sejam
+  proporcionais ao aspecto real do elemento renderizado.
 - O relógio do player não pausa sozinho ao final de cada clip em caso de gap real entre segmentos
   de uma mesma trilha (ex.: um pause/resume real) - a trilha simplesmente fica pausada durante o
   gap e retoma quando o próximo clip começa; comportamento correto, mas sem nenhuma indicação
@@ -1670,17 +1780,19 @@ EDIT-001 (criar/abrir projeto de edição), EDIT-002 (timeline compilada somente
 completo (partes 1 e 2 - preview com playhead sincronizado e reprodução multi-trilha via protocolo
 de mídia local seguro), EDIT-004/005/006 (corte/split/remover-intervalo, a primeira operação de
 edição real), EDIT-007 (desfazer/refazer, cursor sobre o log de operações), EDIT-008 (ganho/mudo
-por trilha, reusando o mesmo log) e EDIT-009 (fade in/out por trilha, terceiro tipo de operação
-sobre o mesmo log, volume recalculado a cada tick por depender do playhead) já funcionam de ponta
-a ponta.
+por trilha, reusando o mesmo log), EDIT-009 (fade in/out por trilha, terceiro tipo de operação
+sobre o mesmo log, volume recalculado a cada tick por depender do playhead) e EDIT-010
+(visibilidade/posição/tamanho de câmera, overlay PiP automático sobre a trilha de fundo) já
+funcionam de ponta a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 3 — Editor MVP**: visibilidade/transformação de câmera (EDIT-010), layout
-   (PiP/lado-a-lado/só-tela/só-câmera, EDIT-011), autosave (EDIT-012) - cada operação provavelmente
-   seu próprio incremento, dado o tamanho desta fase (05_MEDIA_EDITOR.md).
+1. Continuar a **Fase 3 — Editor MVP**: layout (PiP/lado-a-lado/só-tela/só-câmera, EDIT-011 -
+   controle manual de qual trilha é fundo/overlay, além do arranjo automático já entregue pelo
+   EDIT-010), autosave (EDIT-012) - cada operação provavelmente seu próprio incremento, dado o
+   tamanho desta fase (05_MEDIA_EDITOR.md).
 2. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
    ainda não instalados - `main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`,
    nenhum binário real, `export.start` sempre lança `NotImplementedError`), MP4 720p/1080p, faixa

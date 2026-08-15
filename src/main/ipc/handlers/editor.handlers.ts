@@ -19,7 +19,9 @@ import {
   SetTrackGainRequestSchema,
   SetTrackGainResponseSchema,
   SetTrackFadeRequestSchema,
-  SetTrackFadeResponseSchema
+  SetTrackFadeResponseSchema,
+  SetTrackCameraTransformRequestSchema,
+  SetTrackCameraTransformResponseSchema
 } from '../../../shared/schemas/editor.schema'
 import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
@@ -98,5 +100,22 @@ export function registerEditorHandlers(context: AppContext): void {
         request.fadeInMs,
         request.fadeOutMs
       )
+  )
+
+  registerHandler(
+    IPC_CHANNELS.editor.setTrackCameraTransform,
+    {
+      request: SetTrackCameraTransformRequestSchema,
+      response: SetTrackCameraTransformResponseSchema
+    },
+    async (request) =>
+      context.editorService.setTrackTransform(request.editProjectId, request.trackId, {
+        visible: request.visible,
+        xPercent: request.xPercent,
+        yPercent: request.yPercent,
+        widthPercent: request.widthPercent,
+        heightPercent: request.heightPercent,
+        shape: request.shape
+      })
   )
 }

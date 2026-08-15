@@ -43,7 +43,8 @@ export const IPC_CHANNELS = {
     undo: 'editor.undo',
     redo: 'editor.redo',
     setTrackGain: 'editor.setTrackGain',
-    setTrackFade: 'editor.setTrackFade'
+    setTrackFade: 'editor.setTrackFade',
+    setTrackCameraTransform: 'editor.setTrackCameraTransform'
   },
   export: {
     start: 'export.start',

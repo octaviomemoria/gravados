@@ -802,4 +802,178 @@ describe('EditorService', () => {
       )
     })
   })
+
+  describe('setTrackTransform', () => {
+    function createTrackWithSegment(
+      projectId: string,
+      type: 'MICROPHONE' | 'CAMERA',
+      startMs: number,
+      endMs: number
+    ): string {
+      const trackId = randomUUID()
+      trackRepository.create({
+        id: trackId,
+        projectId,
+        type,
+        enabled: true,
+        position: 0,
+        startOffsetMs: 0
+      })
+      segmentRepository.create({
+        id: randomUUID(),
+        trackId,
+        seqIndex: 1,
+        relativePath: `source/${type.toLowerCase()}/${type.toLowerCase()}_000001.webm`,
+        startedAtMs: startMs,
+        endedAtMs: endMs,
+        durationMs: endMs - startMs,
+        byteSize: 1000,
+        mimeType: type === 'CAMERA' ? 'video/webm' : 'audio/webm',
+        finalized: true
+      })
+      return trackId
+    }
+
+    const CUSTOM_TRANSFORM = {
+      visible: false,
+      xPercent: 10,
+      yPercent: 20,
+      widthPercent: 30,
+      heightPercent: 40,
+      shape: 'circle' as const
+    }
+    const ANOTHER_TRANSFORM = {
+      visible: true,
+      xPercent: 50,
+      yPercent: 60,
+      widthPercent: 15,
+      heightPercent: 15,
+      shape: 'rectangle' as const
+    }
+
+    it('raw getTimeline gives every CAMERA track the default PiP transform, and null for every other type', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      const raw = service.getTimeline(editProject.id)
+      const cameraTrack = raw.tracks.find((track) => track.type === 'CAMERA')!
+      const micTrack = raw.tracks.find((track) => track.type === 'MICROPHONE')!
+      expect(cameraTrack.cameraTransform).toMatchObject({ visible: true, shape: 'rectangle' })
+      expect(micTrack.cameraTransform).toBeNull()
+    })
+
+    it('applies the transform to the target CAMERA track and leaves other tracks untouched', () => {
+      const project = createProject('COMPLETED')
+      const cameraTrackId = createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      const updated = service.setTrackTransform(editProject.id, cameraTrackId, CUSTOM_TRANSFORM)
+      const cameraTrack = updated.tracks.find((track) => track.id === cameraTrackId)!
+      const micTrack = updated.tracks.find((track) => track.type === 'MICROPHONE')!
+      expect(cameraTrack.cameraTransform).toEqual(CUSTOM_TRANSFORM)
+      expect(micTrack.cameraTransform).toBeNull()
+    })
+
+    it('a second SET_CAMERA_TRANSFORM on the same track REPLACES the previous state, does not accumulate', () => {
+      const project = createProject('COMPLETED')
+      const cameraTrackId = createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackTransform(editProject.id, cameraTrackId, CUSTOM_TRANSFORM)
+      const updated = service.setTrackTransform(editProject.id, cameraTrackId, ANOTHER_TRANSFORM)
+      expect(updated.tracks[0]!.cameraTransform).toEqual(ANOTHER_TRANSFORM)
+    })
+
+    it('rejects a trackId that does not exist in the current edited timeline', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(() =>
+        service.setTrackTransform(editProject.id, randomUUID(), CUSTOM_TRANSFORM)
+      ).toThrow('nao encontrada')
+    })
+
+    it('rejects a trackId that is not of type CAMERA (position has no meaning for audio, or the screen track is always the background)', () => {
+      const project = createProject('COMPLETED')
+      const micTrackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(() =>
+        service.setTrackTransform(editProject.id, micTrackId, CUSTOM_TRANSFORM)
+      ).toThrow('CAMERA')
+    })
+
+    it('bumps the edit project revision, same as removeRange/setTrackGain/setTrackFade', () => {
+      const project = createProject('COMPLETED')
+      const cameraTrackId = createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      const before = service.getEditProject(editProject.id).revision
+      service.setTrackTransform(editProject.id, cameraTrackId, CUSTOM_TRANSFORM)
+      expect(service.getEditProject(editProject.id).revision).toBe(before + 1)
+    })
+
+    it('is undoable/redoable, same as any other operation on the log', () => {
+      const project = createProject('COMPLETED')
+      const cameraTrackId = createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackTransform(editProject.id, cameraTrackId, CUSTOM_TRANSFORM)
+      const afterUndo = service.undo(editProject.id)
+      expect(afterUndo.tracks[0]!.cameraTransform).toMatchObject({ visible: true, xPercent: 70 })
+
+      const afterRedo = service.redo(editProject.id)
+      expect(afterRedo.tracks[0]!.cameraTransform).toEqual(CUSTOM_TRANSFORM)
+    })
+
+    it('a SET_CAMERA_TRANSFORM created after an undo prunes the abandoned redo branch, same as removeRange', () => {
+      const project = createProject('COMPLETED')
+      const cameraTrackId = createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackTransform(editProject.id, cameraTrackId, CUSTOM_TRANSFORM)
+      service.undo(editProject.id)
+
+      const afterNewTransform = service.setTrackTransform(
+        editProject.id,
+        cameraTrackId,
+        ANOTHER_TRANSFORM
+      )
+      expect(afterNewTransform.tracks[0]!.cameraTransform).toEqual(ANOTHER_TRANSFORM)
+      expect(afterNewTransform.canRedo).toBe(false)
+    })
+
+    it('a SET_CAMERA_TRANSFORM targeting a track later fully removed by REMOVE_RANGE has no visible effect (no crash)', () => {
+      const project = createProject('COMPLETED')
+      const cameraTrackId = createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackTransform(editProject.id, cameraTrackId, CUSTOM_TRANSFORM)
+      const afterCut = service.removeRange(editProject.id, 0, 5000)
+      expect(afterCut.tracks).toHaveLength(0)
+    })
+
+    it('SET_GAIN, SET_FADE and SET_CAMERA_TRANSFORM on the same track coexist independently', () => {
+      const project = createProject('COMPLETED')
+      const cameraTrackId = createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackGain(editProject.id, cameraTrackId, -12, true)
+      service.setTrackFade(editProject.id, cameraTrackId, 1000, 1000)
+      const updated = service.setTrackTransform(editProject.id, cameraTrackId, CUSTOM_TRANSFORM)
+      expect(updated.tracks[0]).toMatchObject({
+        gainDb: -12,
+        muted: true,
+        fadeInMs: 1000,
+        fadeOutMs: 1000,
+        cameraTransform: CUSTOM_TRANSFORM
+      })
+    })
+
+    it('throws NotFoundError for an unknown edit project', () => {
+      expect(() =>
+        service.setTrackTransform(randomUUID(), randomUUID(), CUSTOM_TRANSFORM)
+      ).toThrow('nao encontrado')
+    })
+  })
 })

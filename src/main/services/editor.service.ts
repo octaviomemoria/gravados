@@ -8,8 +8,10 @@ import type { EditProjectEntity, EditOperationEntity } from '../../shared/types/
 import type {
   GetTimelineResponse,
   GetEditedTimelineResponse,
-  TimelineTrack
+  TimelineTrack,
+  CameraTransform
 } from '../../shared/schemas/editor.schema'
+import { DEFAULT_CAMERA_TRANSFORM } from '../../shared/schemas/editor.schema'
 import { NotFoundError, ValidationError } from '../../shared/types/domain-errors'
 import { applyRemoveRange } from './apply-remove-range'
 
@@ -114,8 +116,20 @@ export class EditorService {
               byteSize: segment.byteSize
             }
           })
-        // Timeline BRUTA - nenhum SET_GAIN/SET_FADE (EDIT-008/009) ainda foi aplicado.
-        return { id: track.id, type: track.type, clips, gainDb: 0, muted: false, fadeInMs: 0, fadeOutMs: 0 }
+        // Timeline BRUTA - nenhum SET_GAIN/SET_FADE/SET_CAMERA_TRANSFORM (EDIT-008/009/010) ainda
+        // foi aplicado. Toda trilha CAMERA nasce com a posicao PiP padrao (DEFAULT_CAMERA_TRANSFORM,
+        // "estado neutro" equivalente ao gainDb: 0) - qualquer outro tipo de trilha nao tem posicao
+        // (e audio, ou e a propria trilha de fundo).
+        return {
+          id: track.id,
+          type: track.type,
+          clips,
+          gainDb: 0,
+          muted: false,
+          fadeInMs: 0,
+          fadeOutMs: 0,
+          cameraTransform: track.type === 'CAMERA' ? DEFAULT_CAMERA_TRANSFORM : null
+        }
       })
       // Trilha sem nenhum clip sobrevivente (ex.: audio do sistema sem suporte na plataforma,
       // RF-005) nao aparece na timeline - nada para desenhar, so ruido visual.
@@ -192,6 +206,22 @@ export class EditorService {
     tracks = tracks.map((track) => {
       const fade = fadeByTrackId.get(track.id)
       return fade ? { ...track, fadeInMs: fade.fadeInMs, fadeOutMs: fade.fadeOutMs } : track
+    })
+
+    // EDIT-010 - mesmo padrao de fold do SET_GAIN/SET_FADE acima: um SET_CAMERA_TRANSFORM novo
+    // SUBSTITUI o estado inteiro da trilha, nao acumula. So `setTrackTransform` grava esta
+    // operacao, e so pra uma trilha `CAMERA` (validado la) - nenhuma outra trilha jamais tem uma
+    // dessas no log, entao o `.get()` abaixo nunca colide com uma trilha de audio/tela.
+    const cameraTransformByTrackId = new Map<string, CameraTransform>()
+    for (const operation of activeOperations) {
+      if (operation.type !== 'SET_CAMERA_TRANSFORM') continue
+      if (operation.trackId === null) continue
+      const payload = JSON.parse(operation.payloadJson) as CameraTransform
+      cameraTransformByTrackId.set(operation.trackId, payload)
+    }
+    tracks = tracks.map((track) => {
+      const transform = cameraTransformByTrackId.get(track.id)
+      return transform ? { ...track, cameraTransform: transform } : track
     })
 
     return {
@@ -296,11 +326,44 @@ export class EditorService {
   }
 
   /**
-   * EDIT-007/EDIT-008/EDIT-009 - ponto UNICO onde uma operacao NOVA e gravada no log, reusado por
-   * `removeRange`, `setTrackGain` e `setTrackFade` (e por qualquer operacao futura - camera
-   * transform/layout, EDIT-010 em diante). Sempre poda (`DELETE`) qualquer coisa alem do cursor
-   * ANTES de inserir - uma acao nova invalida o "refazer" pendente, o mesmo comportamento padrao
-   * de qualquer editor, independente do TIPO da operacao.
+   * EDIT-010 (vigesimo primeiro incremento - Fase 3, visibilidade/transformacao de camera,
+   * `05_MEDIA_EDITOR.md` §4). Mesmo padrao de `setTrackGain`/`setTrackFade`: substitui o estado
+   * inteiro da trilha, valida `trackId` contra a timeline editada atual. Ao contrario de
+   * ganho/fade, so faz sentido pra uma trilha `CAMERA` - posicao/tamanho nao tem significado pra
+   * audio, e a trilha de tela e sempre o FUNDO do preview, nunca um overlay posicionavel.
+   */
+  setTrackTransform(
+    editProjectId: string,
+    trackId: string,
+    transform: CameraTransform
+  ): GetEditedTimelineResponse {
+    const editProject = this.getEditProject(editProjectId)
+    const current = this.getEditedTimeline(editProjectId)
+    const track = current.tracks.find((candidate) => candidate.id === trackId)
+    if (!track) {
+      throw new NotFoundError(`Trilha nao encontrada na timeline atual: ${trackId}`)
+    }
+    if (track.type !== 'CAMERA') {
+      throw new ValidationError('Transformacao de camera so e valida para uma trilha CAMERA')
+    }
+
+    this.appendOperation(editProjectId, editProject, {
+      type: 'SET_CAMERA_TRANSFORM',
+      startMs: null,
+      endMs: null,
+      trackId,
+      payloadJson: JSON.stringify(transform)
+    })
+
+    return this.getEditedTimeline(editProjectId)
+  }
+
+  /**
+   * EDIT-007/EDIT-008/EDIT-009/EDIT-010 - ponto UNICO onde uma operacao NOVA e gravada no log,
+   * reusado por `removeRange`, `setTrackGain`, `setTrackFade` e `setTrackTransform` (e por
+   * qualquer operacao futura - layout, EDIT-011 em diante). Sempre poda (`DELETE`) qualquer coisa
+   * alem do cursor ANTES de inserir - uma acao nova invalida o "refazer" pendente, o mesmo
+   * comportamento padrao de qualquer editor, independente do TIPO da operacao.
    */
   private appendOperation(
     editProjectId: string,

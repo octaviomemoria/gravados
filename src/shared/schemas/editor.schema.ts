@@ -72,6 +72,38 @@ export const TimelineClipSchema = z.object({
 })
 export type TimelineClip = z.infer<typeof TimelineClipSchema>
 
+/**
+ * EDIT-010 (vigesimo primeiro incremento - Fase 3, `05_MEDIA_EDITOR.md` §4 "Camera visibility"/
+ * "Camera transform"). Posicao/tamanho/forma da webcam sobreposta (PiP) por cima da trilha de
+ * fundo (tela, quando existir) no preview e num export futuro. So faz sentido pra uma trilha
+ * `CAMERA` - `EditorService.setTrackTransform` rejeita explicitamente qualquer outro tipo. Valores
+ * percentuais (0-100) relativos ao canvas do preview, nao pixels - independente de resolucao.
+ */
+export const CameraShapeSchema = z.enum(['rectangle', 'circle'])
+export type CameraShape = z.infer<typeof CameraShapeSchema>
+
+export const CameraTransformSchema = z.object({
+  visible: z.boolean(),
+  xPercent: z.number().min(0).max(100),
+  yPercent: z.number().min(0).max(100),
+  widthPercent: z.number().min(5).max(100),
+  heightPercent: z.number().min(5).max(100),
+  shape: CameraShapeSchema
+})
+export type CameraTransform = z.infer<typeof CameraTransformSchema>
+
+/** Posicao padrao (PiP inferior-direito, ~25% de largura) usada por `EditorService.getTimeline`
+ * pra toda trilha `CAMERA` sem nenhum `SET_CAMERA_TRANSFORM` ativo no log - o "estado neutro",
+ * equivalente ao `gainDb: 0`/`muted: false` do EDIT-008. */
+export const DEFAULT_CAMERA_TRANSFORM: CameraTransform = {
+  visible: true,
+  xPercent: 70,
+  yPercent: 70,
+  widthPercent: 25,
+  heightPercent: 25,
+  shape: 'rectangle'
+}
+
 export const TimelineTrackSchema = z.object({
   id: IdSchema,
   type: z.enum(TRACK_TYPES),
@@ -99,7 +131,16 @@ export const TimelineTrackSchema = z.object({
    * `SetTrackFadeRequestSchema`.
    */
   fadeInMs: z.number().int().nonnegative(),
-  fadeOutMs: z.number().int().nonnegative()
+  fadeOutMs: z.number().int().nonnegative(),
+  /**
+   * EDIT-010 (vigesimo primeiro incremento - Fase 3, transformacao de camera). `null` pra qualquer
+   * trilha que nao seja `CAMERA` (posicao/tamanho nao fazem sentido pra audio, e a trilha de tela
+   * sempre preenche o canvas inteiro - e o FUNDO, nao um overlay). Uma trilha `CAMERA` SEMPRE tem
+   * um valor no lugar de `null` - `DEFAULT_CAMERA_TRANSFORM` na timeline BRUTA, ou o payload do
+   * `SET_CAMERA_TRANSFORM` mais recente ativo na timeline EDITADA (substitui, nao acumula - mesma
+   * semantica de `SET_GAIN`/`SET_FADE`).
+   */
+  cameraTransform: CameraTransformSchema.nullable()
 })
 export type TimelineTrack = z.infer<typeof TimelineTrackSchema>
 
@@ -209,3 +250,25 @@ export const SetTrackFadeRequestSchema = z.object({
 export type SetTrackFadeRequest = z.infer<typeof SetTrackFadeRequestSchema>
 export const SetTrackFadeResponseSchema = GetEditedTimelineResponseSchema
 export type SetTrackFadeResponse = GetEditedTimelineResponse
+
+/**
+ * EDIT-010 (vigesimo primeiro incremento - Fase 3, visibilidade/transformacao de camera,
+ * `05_MEDIA_EDITOR.md` §4). Mesmo padrao de `SET_GAIN`/`SET_FADE`: reusa o log de
+ * `edit_operations` + cursor de EDIT-007, um `SET_CAMERA_TRANSFORM` novo SUBSTITUI o estado
+ * inteiro da trilha (nao acumula). Ao contrario de ganho/fade, so e valido para uma trilha
+ * `CAMERA` - `EditorService.setTrackTransform` rejeita qualquer outro tipo (nao ha "posicao" pra
+ * uma trilha de audio, e a trilha de tela e sempre o fundo).
+ */
+export const SetTrackCameraTransformRequestSchema = z.object({
+  editProjectId: IdSchema,
+  trackId: IdSchema,
+  visible: z.boolean(),
+  xPercent: z.number().min(0).max(100),
+  yPercent: z.number().min(0).max(100),
+  widthPercent: z.number().min(5).max(100),
+  heightPercent: z.number().min(5).max(100),
+  shape: CameraShapeSchema
+})
+export type SetTrackCameraTransformRequest = z.infer<typeof SetTrackCameraTransformRequestSchema>
+export const SetTrackCameraTransformResponseSchema = GetEditedTimelineResponseSchema
+export type SetTrackCameraTransformResponse = GetEditedTimelineResponse

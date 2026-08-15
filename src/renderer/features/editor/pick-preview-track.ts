@@ -21,3 +21,22 @@ export function pickPreviewTrack(tracks: TimelineTrack[]): TimelineTrack | null 
 export function isVideoTrackType(type: TimelineTrack['type']): boolean {
   return (VIDEO_TRACK_TYPES as readonly string[]).includes(type)
 }
+
+/**
+ * EDIT-010 (vigesimo primeiro incremento - Fase 3, transformacao de camera). Alem da trilha de
+ * FUNDO (`pickPreviewTrack` acima - tela > camera > primeira disponivel), decide se existe uma
+ * trilha CAMERA separada pra sobrepor como picture-in-picture. So faz sentido se: (1) existe uma
+ * trilha CAMERA na timeline, (2) ela NAO E a propria trilha de fundo (uma gravacao so-camera nao
+ * tem overlay - a camera JA E o fundo, mostrada em tela cheia, sem sentido desenhar ela por cima
+ * dela mesma), e (3) `cameraTransform.visible` nao foi explicitamente desligado pelo usuario.
+ */
+export function pickOverlayCameraTrack(
+  tracks: TimelineTrack[],
+  backgroundTrackId: string | null
+): TimelineTrack | null {
+  const camera = tracks.find((candidate) => candidate.type === 'CAMERA')
+  if (!camera) return null
+  if (camera.id === backgroundTrackId) return null
+  if (camera.cameraTransform && !camera.cameraTransform.visible) return null
+  return camera
+}

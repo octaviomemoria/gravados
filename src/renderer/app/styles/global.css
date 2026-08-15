@@ -575,6 +575,41 @@ body {
   color: var(--ms-color-text);
 }
 
+/* EDIT-010 - visibilidade/posicao/tamanho/forma (PiP) da trilha CAMERA. */
+.timeline__track-transform-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ms-space-2);
+  font-size: 0.68rem;
+  color: var(--ms-color-text-muted);
+}
+
+.timeline__track-transform-visible {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.timeline__track-transform-field {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.timeline__track-transform-field input[type='range'] {
+  width: 4em;
+  height: 12px;
+}
+
+.timeline__track-transform-field select {
+  font-size: 0.68rem;
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-color-border);
+  background: var(--ms-color-bg);
+  color: var(--ms-color-text);
+}
+
 .timeline__track-lane {
   position: relative;
   flex: 1 1 auto;
@@ -612,6 +647,25 @@ body {
   margin: var(--ms-space-2) 0;
   border-radius: var(--ms-radius-md);
   background: #000;
+}
+
+/* EDIT-010 - a trilha de FUNDO (tela, ou camera se nao houver tela) preenche o container; a
+   trilha CAMERA overlay (quando existir e `cameraTransform.visible`) fica ABSOLUTAMENTE
+   posicionada por cima, via `left`/`top`/`width`/`height` inline calculados de `cameraTransform`
+   (ver `EditorProjectPage.tsx`). `position: relative` no container e o que ancora o overlay -
+   sem ele, `position: absolute` do overlay se ancoraria no ancestral posicionado mais proximo
+   (nao necessariamente este bloco). */
+.editor-preview-container {
+  position: relative;
+  max-width: 100%;
+  width: fit-content;
+  margin: var(--ms-space-2) 0;
+}
+
+.editor-preview-overlay {
+  position: absolute;
+  object-fit: cover;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4);
 }
 
 /* EDIT-003 parte 2 - controles do player multi-trilha (play/pausar + relogio). */

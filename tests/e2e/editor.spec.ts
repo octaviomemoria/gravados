@@ -797,7 +797,10 @@ test.describe('editor (gain/mute)', () => {
     // usando o setter nativo, mesma tecnica padrao para simular um `<input>` controlado mudando de
     // valor por script em vez de arrasto real de mouse).
     const cameraTrackRow = appWindow.locator('.timeline__track').filter({ hasText: 'Câmera' })
-    const cameraSlider = cameraTrackRow.locator('input[type="range"]')
+    // Rotulo especifico (nao um seletor generico `input[type="range"]`) - desde EDIT-010 a linha
+    // da trilha CAMERA tambem tem os sliders de posicao/tamanho, entao um seletor generico
+    // resolveria a MULTIPLOS elementos (violacao do strict mode do Playwright).
+    const cameraSlider = cameraTrackRow.getByLabel('Ganho da trilha Câmera')
     await cameraSlider.evaluate((el: HTMLInputElement) => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!
       setter.call(el, '-24')
@@ -952,5 +955,145 @@ test.describe('editor (fade)', () => {
     const micTrackAfterUndo = afterUndo.tracks.find((track) => track.type === 'MICROPHONE')!
     expect(micTrackAfterUndo.fadeInMs).toBe(2000)
     expect(micTrackAfterUndo.fadeOutMs).toBe(0)
+  })
+})
+
+/**
+ * EDIT-010 (vigesimo primeiro incremento - Fase 3, visibilidade/transformacao de camera). Mesmo
+ * padrao dos testes de gain/fade: grava microfone + camera, confirma que os controles de
+ * transformacao SO aparecem na trilha CAMERA (nunca na de microfone), ajusta visibilidade e
+ * posicao X via a UI, confirma via `editor.getEditedTimeline` e que Ctrl+Z desfaz so a ULTIMA
+ * operacao (mesma semantica de "substitui, nao acumula" do EDIT-008/009).
+ */
+test.describe('editor (camera transform)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await electronApp.close()
+  })
+
+  test('adjusts camera visibility and position, and confirms the controls only appear on the CAMERA track', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - transform ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+    const cameraSelect = appWindow.getByLabel('Camera', { exact: true })
+    await expect(cameraSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cameraSelect.selectOption({ index: 1 })
+    await expect(appWindow.locator('video.camera-preview')).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    const cameraPath = join(rootPath, 'source', 'camera', 'camera_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath) && fileHasBytes(cameraPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando os primeiros chunks de audio e video serem persistidos em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(appWindow.locator('.timeline__track')).toHaveCount(2, { timeout: POLL_TIMEOUT_MS })
+
+    const editProjectId = await appWindow.evaluate(async () => {
+      const list = await window.meetingStudio.editor.list()
+      return list[0]!.id
+    })
+    const original = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    const cameraTrackOriginal = original.tracks.find((track) => track.type === 'CAMERA')!
+    const micTrackOriginal = original.tracks.find((track) => track.type === 'MICROPHONE')!
+    // Trilha CAMERA nasce com a posicao PiP padrao; qualquer outro tipo de trilha nao tem posicao.
+    expect(cameraTrackOriginal.cameraTransform).toMatchObject({ visible: true, xPercent: 70 })
+    expect(micTrackOriginal.cameraTransform).toBeNull()
+
+    // --- Os controles de transformacao (checkbox "Mostrar camera" + sliders) so existem na linha
+    // da trilha CAMERA, nunca na de MICROFONE - posicao/tamanho nao fazem sentido pra audio.
+    const cameraTrackRow = appWindow.locator('.timeline__track').filter({ hasText: 'Câmera' })
+    const micTrackRow = appWindow.locator('.timeline__track').filter({ hasText: 'Microfone' })
+    const visibleCheckbox = cameraTrackRow.getByLabel('Mostrar camera da trilha Câmera')
+    await expect(visibleCheckbox).toBeVisible()
+    await expect(micTrackRow.getByLabel(/Mostrar camera/)).toHaveCount(0)
+
+    // --- Desliga a visibilidade da camera (desmarca o checkbox) - primeira operacao.
+    await visibleCheckbox.uncheck()
+    await expect
+      .poll(
+        async () => {
+          const current = await appWindow.evaluate(
+            (id) => window.meetingStudio.editor.getEditedTimeline(id),
+            editProjectId
+          )
+          return current.tracks.find((track) => track.type === 'CAMERA')?.cameraTransform?.visible
+        },
+        { timeout: POLL_TIMEOUT_MS }
+      )
+      .toBe(false)
+
+    // --- Ajusta a posicao X via o slider (setter nativo bypassando o rastreador de valor do
+    // React, mesma tecnica ja usada pelo slider de ganho do EDIT-008) - segunda operacao,
+    // SUBSTITUI o estado inteiro (preserva `visible: false` da operacao anterior, ja que o
+    // handler mescla com o `transform` atual antes de enviar).
+    const xSlider = cameraTrackRow.getByLabel('Posicao X da camera da trilha Câmera (porcentagem)')
+    await xSlider.evaluate((el: HTMLInputElement) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!
+      setter.call(el, '40')
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    const afterTransform = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    const cameraTrackAfterTransform = afterTransform.tracks.find((track) => track.type === 'CAMERA')!
+    const micTrackAfterTransform = afterTransform.tracks.find((track) => track.type === 'MICROPHONE')!
+    expect(cameraTrackAfterTransform.cameraTransform).toMatchObject({ visible: false, xPercent: 40 })
+    // Microfone nunca teve (nem pode ter) uma transformacao de camera.
+    expect(micTrackAfterTransform.cameraTransform).toBeNull()
+
+    // --- Desfazer (Ctrl+Z) reverte so a ULTIMA operacao do log (o ajuste de X) - a visibilidade
+    // desligada, uma operacao anterior, continua ativa. O checkbox ganha foco real ao ser clicado
+    // (ao contrario do slider ajustado via `.evaluate()` acima) - tira o foco antes do atalho,
+    // mesmo raciocinio ja documentado no teste de fade (EDIT-009).
+    await visibleCheckbox.blur()
+    await appWindow.keyboard.down('Control')
+    await appWindow.keyboard.press('z')
+    await appWindow.keyboard.up('Control')
+    const afterUndo = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    const cameraTrackAfterUndo = afterUndo.tracks.find((track) => track.type === 'CAMERA')!
+    expect(cameraTrackAfterUndo.cameraTransform).toMatchObject({ visible: false, xPercent: 70 })
   })
 })

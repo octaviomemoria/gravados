@@ -29,7 +29,8 @@ import type { RepairProjectResponse } from '../schemas/recovery.schema'
 import type {
   EditProjectResponse,
   GetTimelineResponse,
-  GetEditedTimelineResponse
+  GetEditedTimelineResponse,
+  CameraTransform
 } from '../schemas/editor.schema'
 import type { StartExportRequest, ExportJobResponse } from '../schemas/export.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
@@ -136,6 +137,15 @@ export interface EditorApi {
     trackId: string,
     fadeInMs: number,
     fadeOutMs: number
+  ) => Promise<GetEditedTimelineResponse>
+  /** EDIT-010 - ajusta visibilidade/posicao/tamanho/forma (PiP) de uma trilha CAMERA. Substitui o
+   * estado inteiro da trilha (nao acumula) - poda qualquer "refazer" pendente, igual
+   * `removeRange`/`setTrackGain`/`setTrackFade`. Rejeita se `trackId` nao existir na timeline
+   * editada atual OU nao for do tipo CAMERA. */
+  setTrackCameraTransform: (
+    editProjectId: string,
+    trackId: string,
+    transform: CameraTransform
   ) => Promise<GetEditedTimelineResponse>
 }
 
