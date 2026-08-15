@@ -79,3 +79,11 @@ export const ListExportJobsResponseSchema = z.array(ExportJobResponseSchema)
 export const GetExportStatusRequestSchema = z.object({ id: IdSchema })
 export type GetExportStatusRequest = z.infer<typeof GetExportStatusRequestSchema>
 export const GetExportStatusResponseSchema = ExportJobResponseSchema
+
+/** EXP-008 (vigesimo oitavo incremento - Fase 4, RF-035 "possibilidade de cancelar"). Devolve o
+ * job RECEM-ATUALIZADO (mesmo padrao de `RemoveRangeResponseSchema` - poupa o chamador de um
+ * segundo round-trip). Idempotente: cancelar um job que ja terminou (COMPLETED/FAILED/CANCELED)
+ * e um no-op silencioso, nao um erro - ver comentario em `ExportService.cancelExport`. */
+export const CancelExportRequestSchema = z.object({ id: IdSchema })
+export type CancelExportRequest = z.infer<typeof CancelExportRequestSchema>
+export const CancelExportResponseSchema = ExportJobResponseSchema

@@ -50,7 +50,8 @@ export const IPC_CHANNELS = {
   export: {
     start: 'export.start',
     list: 'export.list',
-    getStatus: 'export.getStatus'
+    getStatus: 'export.getStatus',
+    cancel: 'export.cancel'
   },
   system: {
     getAppInfo: 'system.getAppInfo',

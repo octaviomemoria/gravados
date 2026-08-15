@@ -5,15 +5,18 @@ import {
   ListExportJobsRequestSchema,
   ListExportJobsResponseSchema,
   GetExportStatusRequestSchema,
-  GetExportStatusResponseSchema
+  GetExportStatusResponseSchema,
+  CancelExportRequestSchema,
+  CancelExportResponseSchema
 } from '../../../shared/schemas/export.schema'
 import { NotFoundError } from '../../../shared/types/domain-errors'
 import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
 
 /**
- * EXP-003/004 (vigesimo quinto incremento - Fase 4). `start` agora delega ao `ExportService` real
- * (Timeline Compiler -> FFmpeg Plan -> Render Job, ver comentario la). `list`/`getStatus` inalterados
+ * EXP-003/004/008 (vigesimo quinto/oitavo incrementos - Fase 4). `start` delega ao `ExportService`
+ * real (Timeline Compiler -> FFmpeg Plan -> Render Job, ver comentario la). `cancel` (EXP-008)
+ * idem - mata o processo FFmpeg real e move o job pra `CANCELED`. `list`/`getStatus` inalterados
  * desde EXP-001 (leem a tabela `export_jobs` diretamente).
  */
 export function registerExportHandlers(context: AppContext): void {
@@ -38,5 +41,11 @@ export function registerExportHandlers(context: AppContext): void {
       if (!job) throw new NotFoundError(`Job de exportacao nao encontrado: ${request.id}`)
       return job
     }
+  )
+
+  registerHandler(
+    IPC_CHANNELS.export.cancel,
+    { request: CancelExportRequestSchema, response: CancelExportResponseSchema },
+    async (request) => context.exportService.cancelExport(request.id)
   )
 }

@@ -46,13 +46,15 @@ ponta - ver
 **Fase 4 — Export** avançou bastante: `ffmpeg-static`/`ffprobe-static` instalados, o "Timeline
 Compiler" (EXP-001/002 - traduz a timeline editada num render plan estruturado), o "FFmpeg Plan" +
 "Render Job" de vídeo (EXP-003/004 - `export.start` produz um MP4 720p/1080p REAL em disco),
-áudio-only (EXP-005 - M4A/MP3/WAV, RF-033) e exportação de intervalo selecionado (EXP-006, RF-034,
-reusa a seleção já existente do editor), tudo com botões de exportação na tela do editor, funcionam
-de ponta a ponta - ver
+áudio-only (EXP-005 - M4A/MP3/WAV, RF-033), exportação de intervalo selecionado (EXP-006, RF-034,
+reusa a seleção já existente do editor) e cancelamento real de exportação (EXP-007/008, RF-035 -
+mata o processo FFmpeg de verdade, não só muda um status), tudo com botões de exportação na tela do
+editor, funcionam de ponta a ponta - ver
 [Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
 [Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4),
-[Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4) e
-[Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4).
+[Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4),
+[Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4) e
+[Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4).
 Escopo de vídeo ainda limitado a uma única trilha de fundo (sem PiP/lado-a-lado real no arquivo
 exportado) - próximo incremento da fase.
 
@@ -1276,6 +1278,57 @@ incremento entrega só a validação + o fio até a UI, sem tocar em `render-pla
   `editor (export)` (EXP-003/004); a cobertura real do caminho de faixa de tempo vem do teste de
   integração `ExportService` (spawn real do FFmpeg).
 
+### Progresso e cancelamento de exportação (Fase 4)
+
+Vigésimo oitavo incremento - EXP-007/008, RF-035 ("Exibir progresso da exportação e permitir
+cancelar"). Progresso (EXP-007) já estava pronto desde EXP-003/004 - a infraestrutura
+`onProgress`/`JobRunner` (conectada em EXP-001/002, ver decisão acima) já fluía até a UI
+(`` (${exportJob.progress}%) `` no parágrafo de status), só nunca tinha sido observada de ponta a
+ponta porque nenhum teste anterior olhava especificamente pra essa contagem. Este incremento
+entrega a metade que realmente faltava: **cancelamento de verdade**, matando o processo FFmpeg
+real, não só mudando um status no banco.
+
+- **`ExportService.cancelExport(jobId)` faz DUAS coisas, não uma só**: mata o processo FFmpeg real
+  (via um `Map<string, () => void>` privado, `activeCancelFns`, que guarda o `handle.cancel` de
+  `runFfmpegProcess` enquanto o processo está em voo) E move o job pra `CANCELED` diretamente
+  (`exportJobRunner.cancel`). Fazer só uma das duas deixaria ou um processo órfão rodando em
+  segundo plano gravando um arquivo que ninguém mais vai usar, ou um job preso em `RUNNING` pra
+  sempre (o handler que ia marcar `COMPLETED`/`FAILED` nunca roda de novo depois de matado).
+  Idempotente por design: cancelar um job já terminal (`COMPLETED`/`FAILED`/`CANCELED`) é um no-op
+  silencioso, não um erro - a UI pode legitimamente clicar "cancelar" bem no instante em que o job
+  termina por conta própria (corrida natural, não um bug).
+- **Bug de corrida real encontrado e corrigido em `JobRunner.run()` ANTES de escrever o
+  cancelamento** (raciocínio de design, não um teste falhando): `JobStore.get(id)`
+  (`ExportJobStore.get`) sempre devolve um objeto NOVO a cada chamada (re-consulta o banco), então
+  a variável `record` capturada no início de `run()` nunca vê uma mutação feita por um `cancel()`
+  CONCORRENTE em cima de um objeto `get()` diferente. Sem correção, o handler vendo
+  `result.canceled` lançaria um erro (fluxo esperado), `run()` capturaria no `catch` e tentaria
+  `transition(record, 'FAILED')` num job que o `cancel()` concorrente JÁ tinha movido pra
+  `CANCELED` no banco - `CANCELED -> FAILED` é uma transição inválida (`JOB_TRANSITIONS.CANCELED:
+  []`, estado terminal), lançando `InvalidJobTransitionError` pra um cenário que na verdade é
+  correto. Corrigido re-buscando `this.store.get(id)` imediatamente antes de CADA uma das duas
+  transições finais (sucesso e falha) e pulando a transição se o status real já for `CANCELED`.
+- **Canal IPC `export.cancel` novo, não uma flag em `export.start`** - cancelar é uma operação
+  logicamente distinta de iniciar (opera sobre um job JÁ enfileirado, identificado por `id`), mesmo
+  raciocínio já usado pra outros pares início/interrupção deste app (`recording.start`/
+  `recording.stop`, `recording.pause`/`recording.resume`).
+- **Botão "Cancelar exportação" só aparece com um job `QUEUED`/`RUNNING`** (mesma função
+  `isExportJobInProgress` que já controla o polling de status desde EXP-003/004) - reaproveitada,
+  não duplicada. Ao clicar, atualiza `exportJob` direto com a resposta da chamada (já `CANCELED`),
+  sem esperar o próximo tick do polling de 1s - feedback imediato.
+- Testado via 2 novos testes de regressão em `job-runner.test.ts` (cancelamento concorrente
+  vencendo tanto o caminho de sucesso quanto o de falha do handler - a corrida corrigida acima,
+  reproduzida em isolamento com o `JobStore` fake em memória já existente no arquivo), 1 novo teste
+  de integração REAL em `export.service.test.ts` (gera um clipe sintético deliberadamente maior/
+  mais pesado que os demais deste arquivo - 6s, 1280x720, exportado em 1080p com `libx264 medium` -
+  cancela ~300ms depois de iniciar, confirma que o job termina `CANCELED` com `outputPath: null`, e
+  prova que o PROCESSO real morreu observando que o arquivo de saída parcial PARA de crescer logo
+  após o cancelamento; termina confirmando que cancelar de novo o mesmo job já terminal é um no-op
+  seguro) e 1 novo teste E2E (`editor (export)` - grava um pouco mais que o teste de sucesso pra
+  garantir uma janela real de encode, clica "Exportar em 1080p", clica "Cancelar exportação" assim
+  que aparece, confirma o status "Cancelada" e que o botão de cancelar some). **376 testes, 35
+  arquivos** (mesma contagem de arquivos - tudo adicionado aos arquivos já existentes).
+
 ## Estrutura de diretórios
 
 ```text
@@ -1918,6 +1971,29 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
      endMs`** — mesma separação de responsabilidade já usada em `removeRange`/`RemoveRangeRequestSchema`:
      o schema nunca conhece a duração real de uma timeline específica, então validação que depende
      de estado (não só da forma dos dados) sempre vive no serviço, nunca no schema.
+128. **`ExportService.cancelExport` mata o processo real E move o job pra `CANCELED`, nunca só
+     uma das duas** — matar só o processo deixaria o job preso em `RUNNING` pra sempre (o handler
+     que marcaria `COMPLETED`/`FAILED` nunca roda de novo); mudar só o status deixaria um FFmpeg
+     real rodando em segundo plano gravando um arquivo que ninguém mais vai usar. Rastreado via um
+     `Map<string, () => void>` privado (`activeCancelFns`) populado com `handle.cancel` (de
+     `runFfmpegProcess`) assim que o processo é spawnado, removido num `finally` logo após
+     `handle.result` resolver — nunca fica uma referência "órfã" apontando pra um processo já
+     morto.
+129. **`JobRunner.run()` re-busca o status real do job antes de CADA transição final, não confia na
+     variável `record` local capturada no início** — bug de corrida encontrado por raciocínio de
+     design (não por um teste falhando): `JobStore.get(id)` sempre devolve um objeto NOVO a cada
+     chamada, então uma mutação feita por um `cancel()` concorrente nunca é visível pela variável
+     `record` original. Sem a re-busca, `run()` tentaria `CANCELED -> COMPLETED`/`CANCELED ->
+     FAILED` (transições inválidas, estado terminal) pra um cenário que na verdade já estava
+     correto — só o handler terminando DEPOIS do cancelamento tentava sobrescrevê-lo.
+130. **`cancelExport` é idempotente por design — cancelar um job já terminal é um no-op silencioso,
+     não um erro** — a UI pode legitimamente clicar "cancelar" bem no instante em que o job termina
+     por conta própria (corrida natural do timing real, não um bug); nunca deveria virar um erro
+     visível pro usuário só por causa disso.
+131. **Canal IPC `export.cancel` novo, não uma flag em `export.start`** — cancelar é uma operação
+     logicamente distinta de iniciar (opera sobre um job já enfileirado, identificado por `id`),
+     mesmo raciocínio já usado pra outros pares início/interrupção deste app (`recording.start`/
+     `.stop`, `recording.pause`/`.resume`).
 
 ## Testes
 
@@ -2020,8 +2096,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   `amix`, trim de faixa de tempo, rejeita path fora do projeto), **exportação de faixa de tempo
   (EXP-006)** (`ValidationError` quando `rangeMs.endMs` excede `totalDurationMs`, integração REAL
   provando via tamanho de arquivo WAV que o recorte é aplicado de verdade, schema aceita/rejeita
-  `rangeMs`/`target` conforme esperado).
-  **373 testes, 35 arquivos.**
+  `rangeMs`/`target` conforme esperado), **progresso e cancelamento de exportação (EXP-007/008)**
+  (regressão dedicada da corrida de `JobRunner.run()` vs. `cancel()` concorrente - cobrindo tanto o
+  caminho de sucesso quanto o de falha do handler - via o `JobStore` fake em memória já existente
+  em `job-runner.test.ts`; integração REAL em `export.service.test.ts` que cancela um clipe
+  sintético deliberadamente maior/mais pesado ~300ms após iniciar, confirma `CANCELED` com
+  `outputPath: null`, prova que o processo real morreu observando o arquivo de saída parar de
+  crescer, e confirma que cancelar de novo um job já terminal é um no-op seguro).
+  **376 testes, 35 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2159,6 +2241,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   mesma classe de contenção severa de recursos da máquina já documentada em incrementos
   anteriores) e passou limpo na terceira (44,9s, tempo real de encode incluído) - nunca uma falha
   de asserção dentro do teste em si.
+  Décimo quarto teste (`editor (export)`, EXP-007/008) grava um pouco mais que o teste de sucesso
+  (mais frames reais capturados, janela real de encode maior), clica em "Exportar em 1080p", clica
+  em "Cancelar exportação" assim que o botão aparece (sem esperar o job terminar), confirma que o
+  status vira "Cancelada" e que o botão de cancelar some (só aparece com um job `QUEUED`/`RUNNING`)
+  — exercita a superfície de UI/IPC nova (`export.cancel`) de ponta a ponta, complementando a
+  cobertura de matar o processo real de verdade já feita em `export.service.test.ts`. Isolado,
+  passou limpo em duas execuções consecutivas (12,0s e 11,0s, sem retry em nenhuma).
 
 ## Pendências conhecidas
 
@@ -2313,9 +2402,6 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   régua de QUAL trecho será exportado além de um texto** - não há destaque colorido/sombreado do
   intervalo selecionado sobre a régua da timeline (só o texto ".editor-export-range-hint"),
   diferente de um editor profissional que tipicamente destaca visualmente a seleção ativa.
-- **Ainda sem cancelamento pela UI** - `runFfmpegProcess`/`JobRunner.cancel` já suportam
-  progresso/cancelamento desde EXP-002, mas nenhum botão/wiring de UI existe ainda; fica pro
-  incremento EXP-007/008.
 - **Nenhuma validação via `ffprobe` do arquivo de saída antes de marcar o job `COMPLETED`
   (EXP-009, ainda não implementado)** - um arquivo corrompido ou vazio (ex.: FFmpeg saiu com
   código 0 mas produziu um arquivo inválido, caso raro mas possível) seria marcado `COMPLETED`
@@ -2355,23 +2441,26 @@ Compiler" que traduz a timeline editada numa estrutura `background`/`overlay`/`s
 `ffprobe-static` instalados, `runFfmpegProcess` com progresso/cancelamento reais), EXP-003/004
 (`buildFfmpegArgs` traduz o `RenderPlan` num comando FFmpeg real - o "FFmpeg Plan" da doc - e
 `ExportService` orquestra o pipeline inteiro até um MP4 720p/1080p de verdade em disco), EXP-005
-(exportação só de áudio - M4A/MP3/WAV via `buildAudioFfmpegArgs`, RF-033) e agora EXP-006
-(exportação de faixa de tempo - RF-034, reusando a seleção já existente do editor) já funcionam de
-ponta a ponta, com botões de exportação (vídeo E áudio, com/sem seleção) na `EditorProjectPage` -
-ver [Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
+(exportação só de áudio - M4A/MP3/WAV via `buildAudioFfmpegArgs`, RF-033), EXP-006 (exportação de
+faixa de tempo - RF-034, reusando a seleção já existente do editor) e agora EXP-007/008 (progresso -
+já funcionava desde EXP-003/004 - e cancelamento de verdade pela UI, matando o processo FFmpeg
+real, RF-035) já funcionam de ponta a ponta, com botões de exportação (vídeo E áudio, com/sem
+seleção, com cancelar) na `EditorProjectPage` - ver
+[Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
 [Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4),
-[Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4) e
-[Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4).
+[Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4),
+[Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4) e
+[Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4).
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 4 — Export** (próximo passo imediato): EXP-007/008 (progresso/cancelamento
-   pela UI - `runFfmpegProcess`/`JobRunner.cancel` já suportam ambos no nível de infraestrutura,
-   falta o botão/wiring), EXP-009 (validação via ffprobe do arquivo de saída antes de marcar o job
-   `COMPLETED`), EXP-004b (PiP/lado-a-lado real no arquivo exportado, hoje `buildFfmpegArgs`
-   rejeita esse caso) - cada operação provavelmente seu próprio incremento, dado o tamanho desta
-   fase. O roadmap marca o fim desta fase como o **Marco MVP**.
+1. Continuar a **Fase 4 — Export** (próximo passo imediato): EXP-009 (validação via ffprobe do
+   arquivo de saída antes de marcar o job `COMPLETED` - o `ExportService` hoje só confia no
+   `exitCode` do processo FFmpeg), EXP-004b (PiP/lado-a-lado real no arquivo exportado, hoje
+   `buildFfmpegArgs` rejeita esse caso) - cada operação provavelmente seu próprio incremento, dado
+   o tamanho desta fase. EXP-009 fecha o roadmap desta fase; o roadmap marca o fim dela como o
+   **Marco MVP**.
 2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
    depois do MVP, replanejadas quando chegar a vez.

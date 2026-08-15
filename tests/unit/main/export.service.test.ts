@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdtemp, rm, stat, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -364,6 +364,120 @@ describe('ExportService', () => {
         expect(rangeSize).toBeLessThan(fullSize * 0.6)
       },
       60_000
+    )
+
+    /**
+     * EXP-008 (RF-035 "possibilidade de cancelar") - o UNICO teste desta suite que gera um clipe
+     * DELIBERADAMENTE mais longo/pesado (6s, libx264 "medium" em 1080p) - os outros clipes de 2s
+     * terminam rapido demais pra dar uma janela real entre `startExport` e `cancelExport` chegar
+     * NO MEIO do encode real. Prova tres coisas de uma vez: (1) o job termina CANCELED, nao
+     * COMPLETED nem FAILED (a re-checagem de status em `JobRunner.run` funcionando de ponta a
+     * ponta, nao so em isolamento como em `job-runner.test.ts`); (2) o PROCESSO real e morto de
+     * verdade, nao so o status do banco mudado - verificado observando que o arquivo de saida para
+     * de crescer logo apos o cancelamento (um FFmpeg ainda vivo continuaria escrevendo nele);
+     * (3) `activeCancelFns` nao vaza - uma segunda chamada a `cancelExport` no mesmo job (agora
+     * terminal) e um no-op seguro, nao lanca.
+     */
+    it(
+      'EXP-008: cancelExport kills the real FFmpeg process mid-flight and leaves the job CANCELED',
+      async () => {
+        const { ffmpegPath } = resolveFfmpegBinaries()
+        expect(ffmpegPath).toBeTruthy()
+
+        const projectId = randomUUID()
+        const { paths } = await initializeProjectOnDisk(libraryRoot, projectId)
+        const screenClipPath = join(paths.sourceScreenPath, 'screen_000001.webm')
+        const generateScreen = runFfmpegProcess({
+          binaryPath: ffmpegPath!,
+          args: [
+            '-y',
+            '-f',
+            'lavfi',
+            '-i',
+            'testsrc=size=1280x720:duration=6:rate=30',
+            '-an',
+            '-c:v',
+            'libvpx',
+            '-b:v',
+            '1500k',
+            screenClipPath
+          ]
+        })
+        expect((await generateScreen.result).exitCode).toBe(0)
+
+        projectRepository.create({
+          id: projectId,
+          title: 'Reuniao sintetica longa',
+          createdAt: new Date().toISOString(),
+          status: 'COMPLETED',
+          rootPath: paths.rootPath
+        })
+        const screenTrackId = randomUUID()
+        trackRepository.create({
+          id: screenTrackId,
+          projectId,
+          type: 'SCREEN',
+          enabled: true,
+          position: 0,
+          startOffsetMs: 0
+        })
+        segmentRepository.create({
+          id: randomUUID(),
+          trackId: screenTrackId,
+          seqIndex: 1,
+          relativePath: 'source/screen/screen_000001.webm',
+          startedAtMs: 0,
+          endedAtMs: 6000,
+          durationMs: 6000,
+          byteSize: (await stat(screenClipPath)).size,
+          mimeType: 'video/webm',
+          finalized: true
+        })
+        const editProject = editorService.createEditProject(projectId)
+
+        const job = exportService.startExport(editProject.id, {
+          kind: 'VIDEO',
+          resolution: 'FULL_HD_1080P'
+        })
+        expect(['QUEUED', 'RUNNING']).toContain(job.status)
+
+        // Da um instante pro processo FFmpeg REAL ja ter sido spawnado e comecado a escrever no
+        // arquivo de saida (libx264 "medium" em 1080p nao termina 6s de video em poucos ms) -
+        // cancela DE VERDADE no meio do encode, nao antes dele comecar.
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 300))
+
+        const cancelResult = exportService.cancelExport(job.id)
+        expect(cancelResult.status).toBe('CANCELED')
+
+        const finalJob = await waitForTerminalJob(job.id)
+        expect(finalJob.status).toBe('CANCELED')
+        expect(finalJob.outputPath).toBeNull()
+        expect(finalJob.completedAt).toBeTruthy()
+
+        // Prova que o PROCESSO real morreu (nao so o status do banco): o arquivo de saida
+        // parcial (se algum byte chegou a ser escrito) para de crescer pouco depois do kill -
+        // um FFmpeg ainda vivo continuaria produzindo bytes por vários segundos (6s de 1080p).
+        // O nome do arquivo inclui `Date.now()` (nao reconstruivel a partir de `job.createdAt`,
+        // um ISO string) - descobre o arquivo de verdade listando a pasta em vez de recalcular o
+        // nome.
+        const exportedFiles = await readdir(paths.exportsPath).catch(() => [])
+        const sizeAfterCancel =
+          exportedFiles.length > 0
+            ? (await stat(join(paths.exportsPath, exportedFiles[0]!))).size
+            : 0
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 500))
+        const sizeAfterWait =
+          exportedFiles.length > 0
+            ? (await stat(join(paths.exportsPath, exportedFiles[0]!))).size
+            : 0
+        expect(sizeAfterWait).toBe(sizeAfterCancel)
+
+        // Idempotencia (`activeCancelFns` ja foi limpo no `finally` do handler) - cancelar de novo
+        // um job ja terminal e um no-op seguro, nao lanca nem regride o status.
+        const secondCancel = exportService.cancelExport(job.id)
+        expect(secondCancel.status).toBe('CANCELED')
+      },
+      40_000
     )
   })
 })

@@ -761,6 +761,13 @@ body {
   margin: 0 0 var(--ms-space-2);
 }
 
+/* EXP-008 - botão de cancelar exportação, só visível com um job QUEUED/RUNNING; cor de perigo
+   como qualquer outra ação destrutiva/interruptiva do app (ex.: excluir projeto na Biblioteca). */
+.editor-export-cancel {
+  color: var(--ms-color-danger);
+  margin: 0 0 var(--ms-space-3);
+}
+
 /* EDIT-003 parte 2 - regua/lanes clicaveis buscam (seek) o player; cursor indica isso. */
 .timeline__ruler--seekable,
 .timeline__track-lane--seekable {

@@ -6,6 +6,8 @@ import {
   ListExportJobsResponseSchema,
   GetExportStatusRequestSchema,
   GetExportStatusResponseSchema,
+  CancelExportRequestSchema,
+  CancelExportResponseSchema,
   type StartExportRequest
 } from '../../shared/schemas/export.schema'
 import type { ExportApi } from '../../shared/types/preload-api'
@@ -29,6 +31,12 @@ export function createExportApi(): ExportApi {
       invokeChannel(
         IPC_CHANNELS.export.getStatus,
         { request: GetExportStatusRequestSchema, response: GetExportStatusResponseSchema },
+        { id }
+      ),
+    cancel: (id: string) =>
+      invokeChannel(
+        IPC_CHANNELS.export.cancel,
+        { request: CancelExportRequestSchema, response: CancelExportResponseSchema },
         { id }
       )
   }

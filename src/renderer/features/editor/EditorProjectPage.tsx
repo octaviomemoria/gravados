@@ -210,6 +210,11 @@ function EditorProjectView({
   const [exportJob, setExportJob] = useState<ExportJobResponse | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
   const [exportBusy, setExportBusy] = useState(false)
+  // EXP-008 - estado de "cancelamento em voo" SEPARADO de `exportBusy` (que cobre so o `start`):
+  // o botao "Cancelar exportacao" precisa desabilitar a SI MESMO enquanto a chamada IPC esta em
+  // curso, sem mexer no estado dos botoes de iniciar exportacao (ja desabilitados por causa do
+  // `isExportJobInProgress(exportJob)` abaixo, motivo diferente).
+  const [cancelBusy, setCancelBusy] = useState(false)
 
   // EXP-006 (RF-034 "permitir exportar somente intervalo selecionado") - reusa a MESMA `selection`
   // ja usada por "Remover trecho selecionado" (marcada via "Marcar início/fim da seleção"), em vez
@@ -255,6 +260,22 @@ function EditorProjectView({
     return () => {
       cancelled = true
       window.clearInterval(intervalId)
+    }
+  }, [exportJob])
+
+  // EXP-008 (RF-035 "possibilidade de cancelar") - so chamado com um `exportJob` QUEUED/RUNNING
+  // (botao so aparece nesse caso, ver JSX abaixo). Atualiza `exportJob` com a resposta (ja
+  // CANCELED) direto, sem esperar o proximo tick do polling acima - feedback imediato pro usuario.
+  const cancelExport = useCallback(async () => {
+    if (!exportJob) return
+    setCancelBusy(true)
+    try {
+      const updated = await window.meetingStudio.export.cancel(exportJob.id)
+      setExportJob(updated)
+    } catch {
+      setExportError('Nao foi possivel cancelar a exportacao.')
+    } finally {
+      setCancelBusy(false)
     }
   }, [exportJob])
 
@@ -753,6 +774,16 @@ function EditorProjectView({
           {exportJob.status === 'FAILED' && exportJob.error && ` - ${exportJob.error}`}
           {exportJob.status === 'COMPLETED' && exportJob.outputPath && ` - ${exportJob.outputPath}`}
         </p>
+      )}
+      {exportJob && isExportJobInProgress(exportJob) && (
+        <button
+          type="button"
+          className="editor-export-cancel"
+          onClick={() => void cancelExport()}
+          disabled={cancelBusy}
+        >
+          Cancelar exportação
+        </button>
       )}
     </div>
   )

@@ -159,6 +159,9 @@ export interface ExportApi {
   start: (request: StartExportRequest) => Promise<ExportJobResponse>
   list: () => Promise<ExportJobResponse[]>
   getStatus: (id: string) => Promise<ExportJobResponse>
+  /** EXP-008 - cancela um job em QUEUED/RUNNING (mata o processo FFmpeg real + move o job pra
+   * CANCELED); no-op idempotente num job ja terminado. */
+  cancel: (id: string) => Promise<ExportJobResponse>
 }
 
 export interface SystemApi {

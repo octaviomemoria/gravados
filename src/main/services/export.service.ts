@@ -29,12 +29,15 @@ const AUDIO_FILE_EXTENSION: Record<AudioExportFormat, string> = {
 }
 
 /**
- * EXP-003/004/005 (vigesimo quinto/sexto incrementos - Fase 4, "Render Job" da doc -
+ * EXP-003/004/005/008 (vigesimo quinto/sexto/oitavo incrementos - Fase 4, "Render Job" da doc -
  * `05_MEDIA_EDITOR.md` §12: `Edit Model → Timeline Compiler → FFmpeg Plan → Render Job →
  * Validation → Output`). Orquestra o pipeline inteiro: timeline editada -> `RenderPlan` (EXP-001)
  * -> args FFmpeg (EXP-003 video / EXP-005 audio) -> job assincrono via `JobRunner`/
  * `ExportJobRepository` (ja instanciados desde a Fase 0/EXP-001, so agora exercitados de verdade)
- * -> processo FFmpeg real (EXP-002) -> arquivo em `<rootPath>/exports/`.
+ * -> processo FFmpeg real (EXP-002, cancelavel de verdade desde EXP-008) -> arquivo em
+ * `<rootPath>/exports/`. Progresso (EXP-007) ja fluia pra UI desde EXP-003/004 (a mesma
+ * infraestrutura `onProgress`/`JobRunner` ja existia, so nunca tinha sido exercitada de ponta a
+ * ponta) - este incremento entrega so o cancelamento (`cancelExport`), a metade que faltava.
  *
  * `target.kind` decide entre VIDEO (MP4 720p/1080p, `buildFfmpegArgs`) e AUDIO (M4A/MP3/WAV,
  * `buildAudioFfmpegArgs`) - ver `ExportTargetSchema`. `rangeMs` opcional (EXP-006, RF-034) recorta
@@ -48,6 +51,15 @@ const AUDIO_FILE_EXTENSION: Record<AudioExportFormat, string> = {
  * render inteiro (o mesmo raciocinio ja usado pelo `JobRunner` desde que foi desenhado).
  */
 export class ExportService {
+  /** EXP-008 - rastreia o `cancel()` do PROCESSO FFmpeg real em voo, por job id - o unico jeito
+   * de `cancelExport` conseguir matar um processo em andamento, ja que `JobRunner`/`ExportJobStore`
+   * so conhecem estado (status/progresso), nunca o processo do SO em si. Entrada removida no
+   * `finally` do handler de `startExport`, logo apos `handle.result` resolver (sucesso, falha ou
+   * cancelamento) - nunca fica um cancel "orfao" apontando pra um processo ja morto (`cancel()` em
+   * cima de um processo ja morto e um no-op seguro do proprio `runFfmpegProcess`, mas nao ha razao
+   * pra manter a referencia depois que o job termina). */
+  private readonly activeCancelFns = new Map<string, () => void>()
+
   constructor(
     private readonly editProjectRepository: EditProjectRepository,
     private readonly projectRepository: ProjectRepository,
@@ -140,14 +152,26 @@ export class ExportService {
           onProgress: reportProgress,
           totalDurationMs
         })
-        const result = await handle.result
-        if (result.canceled) {
-          throw new Error('Exportacao cancelada')
+        // EXP-008 - registra o `cancel()` DESTE processo especifico ANTES de aguardar o
+        // resultado, pra `cancelExport` conseguir encontra-lo enquanto o FFmpeg ainda esta rodando.
+        this.activeCancelFns.set(job.id, handle.cancel)
+        try {
+          const result = await handle.result
+          if (result.canceled) {
+            // `cancelExport` ja moveu o job pra CANCELED diretamente (ver comentario la) - o
+            // `JobRunner.run` que chamou este handler ja re-checa o status antes de tentar
+            // qualquer transicao, entao lancar aqui NAO sobrescreve CANCELED com FAILED (fix
+            // registrado em `job-runner.ts`). So precisa parar de executar, sem produzir um
+            // resultado que seria interpretado como sucesso.
+            throw new Error('Exportacao cancelada pelo usuario')
+          }
+          if (result.exitCode !== 0) {
+            throw new Error(`FFmpeg falhou (codigo ${result.exitCode}): ${result.stderr.slice(-2000)}`)
+          }
+          return { outputPath }
+        } finally {
+          this.activeCancelFns.delete(job.id)
         }
-        if (result.exitCode !== 0) {
-          throw new Error(`FFmpeg falhou (codigo ${result.exitCode}): ${result.stderr.slice(-2000)}`)
-        }
-        return { outputPath }
       })
       .catch((error) => {
         logger.error('Falha inesperada ao executar job de exportacao', {
@@ -163,5 +187,34 @@ export class ExportService {
       throw new NotFoundError(`Job de exportacao nao encontrado apos criacao: ${job.id}`)
     }
     return created
+  }
+
+  /**
+   * EXP-008 (vigesimo oitavo incremento - Fase 4, RF-035 "possibilidade de cancelar"). Mata o
+   * processo FFmpeg real (`activeCancelFns`) E move o job pra `CANCELED` diretamente via
+   * `exportJobRunner.cancel` - as DUAS coisas, nao uma so: matar so o processo sem atualizar o
+   * job deixaria o status preso em `RUNNING` pra sempre (o handler que ia marcar `COMPLETED`/
+   * `FAILED` nunca roda de novo); atualizar so o status sem matar o processo deixaria o FFmpeg
+   * real rodando em segundo plano, gravando um arquivo que ninguem mais vai usar.
+   *
+   * Idempotente por design: chamar num job que ja terminou (COMPLETED/FAILED/CANCELED) e um
+   * no-op silencioso - `activeCancelFns.get()` retorna `undefined` (a entrada ja foi removida no
+   * `finally` de `startExport`) e o `if` abaixo pula a chamada a `exportJobRunner.cancel` (que
+   * lancaria `InvalidJobTransitionError` se chamada num estado terminal). Isso importa porque a
+   * UI pode legitimamente disparar um clique de cancelar bem no instante em que o job ja
+   * terminou por conta propria (corrida natural, nao um bug) - nunca deveria virar um erro visivel
+   * pro usuario so por causa do timing.
+   */
+  cancelExport(jobId: string): ExportJobResponse {
+    const job = this.exportJobRepository.findById(jobId)
+    if (!job) {
+      throw new NotFoundError(`Job de exportacao nao encontrado: ${jobId}`)
+    }
+    if (job.status === 'QUEUED' || job.status === 'RUNNING') {
+      this.activeCancelFns.get(jobId)?.()
+      this.exportJobRunner.cancel(jobId)
+    }
+    // Re-busca - `exportJobRunner.cancel` (quando chamado) ja persistiu CANCELED sincronamente.
+    return this.exportJobRepository.findById(jobId)!
   }
 }

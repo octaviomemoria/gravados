@@ -1364,4 +1364,73 @@ test.describe('editor (export)', () => {
     expect(outputPath).toBeTruthy()
     expect(fileHasBytes(outputPath!)).toBe(true)
   })
+
+  // EXP-008 (RF-035 "possibilidade de cancelar") - mesmo pipeline REAL de ponta a ponta do teste
+  // acima, mas clicando "Cancelar exportação" LOGO apos iniciar em vez de esperar terminar.
+  // Grava por mais tempo que o teste de sucesso (mais frames reais capturados) e exporta em
+  // 1080p (mais pesado que 720p) especificamente pra dar uma janela real de FFmpeg ainda
+  // trabalhando quando o clique de cancelar chega - sem essa folga, um clipe minusculo poderia
+  // terminar de codificar antes do clique, tornando o teste nao-deterministico.
+  test('cancels an in-progress export via the UI and shows the canceled status', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - cancelar exportacao ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const firstScreenSource = appWindow.locator('.screen-source-card').first()
+    await expect(firstScreenSource).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await firstScreenSource.click()
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const screenPath = join(rootPath, 'source', 'screen', 'screen_000001.webm')
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(screenPath) && fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando os primeiros chunks de tela e audio serem persistidos em disco'
+      })
+      .toBe(true)
+    // Espera um pouco mais que o teste de sucesso antes de parar - mais frames reais capturados,
+    // clipe maior, encode real mais longo (a folga que este teste precisa pra cancelar de verdade
+    // no meio do processo, nao so antes dele comecar).
+    await appWindow.waitForTimeout(1500)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(appWindow.locator('.timeline__track')).toHaveCount(2, { timeout: POLL_TIMEOUT_MS })
+
+    await appWindow.getByRole('button', { name: 'Exportar em 1080p' }).click()
+    const cancelButton = appWindow.getByRole('button', { name: 'Cancelar exportação' })
+    await expect(cancelButton).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cancelButton.click()
+
+    const exportStatus = appWindow.locator('.editor-export-status')
+    await expect(exportStatus).toContainText('Cancelada', { timeout: SELECT_TIMEOUT_MS })
+    // O botao de cancelar some assim que o job entra num estado terminal - so QUEUED/RUNNING o
+    // mostram (`isExportJobInProgress`, ver EditorProjectPage.tsx).
+    await expect(cancelButton).toBeHidden({ timeout: SELECT_TIMEOUT_MS })
+
+    const job = await appWindow.evaluate(async () => {
+      const jobs = await window.meetingStudio.export.list()
+      return jobs[0]!
+    })
+    expect(job.status).toBe('CANCELED')
+    expect(job.outputPath).toBeNull()
+  })
 })

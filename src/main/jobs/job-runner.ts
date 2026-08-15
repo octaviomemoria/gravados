@@ -52,6 +52,15 @@ export class JobRunner<TPayload = unknown, TResult = unknown> {
       const result = await handler(record.payload, (progress) => {
         this.store.update(id, { progress, updatedAt: new Date().toISOString() })
       })
+      // EXP-008 (vigesimo oitavo incremento - Fase 4, cancelamento real) - entre o `await handler`
+      // acima e este ponto, um `cancel(id)` CONCORRENTE pode ja ter movido o job pra CANCELED (via
+      // uma chamada separada, nao esta mesma `record` em memoria - `this.store.get(id)` sempre
+      // devolve um objeto NOVO a cada chamada, entao a mutacao de `cancel()` nunca e visivel na
+      // variavel local `record` deste metodo). Sem essa checagem, `transition(record, 'COMPLETED')`
+      // tentaria uma transicao invalida (`CANCELED -> COMPLETED`, `JOB_TRANSITIONS.CANCELED: []`)
+      // e lancaria `InvalidJobTransitionError` - o job JA estava correto (CANCELED), so o handler
+      // terminando depois tentava sobrescreve-lo. Re-busca o estado REAL antes de decidir.
+      if (this.store.get(id)?.status === 'CANCELED') return
       this.transition(record, 'COMPLETED', {
         progress: 100,
         result,
@@ -59,6 +68,7 @@ export class JobRunner<TPayload = unknown, TResult = unknown> {
         completedAt: new Date().toISOString()
       })
     } catch (error) {
+      if (this.store.get(id)?.status === 'CANCELED') return
       this.transition(record, 'FAILED', {
         error: error instanceof Error ? error.message : String(error),
         updatedAt: new Date().toISOString(),
