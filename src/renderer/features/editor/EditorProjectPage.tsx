@@ -5,12 +5,13 @@ import { EmptyState } from '../../components/EmptyState'
 import { formatFileSize } from '../library/format-file-size'
 import { formatElapsed } from '../recording/format-elapsed'
 import { Timeline } from './Timeline'
-import { pickPreviewTrack, isVideoTrackType, pickOverlayCameraTrack } from './pick-preview-track'
+import { isVideoTrackType, computePreviewLayout } from './pick-preview-track'
 import { useMultiTrackPlayback } from './useMultiTrackPlayback'
 import type {
   EditProjectResponse,
   GetEditedTimelineResponse,
-  CameraTransform
+  CameraTransform,
+  LayoutPreset
 } from '@shared/schemas/editor.schema'
 import type { ProjectDetailsResponse } from '@shared/schemas/project.schema'
 
@@ -26,16 +27,24 @@ function cameraOverlayStyle(transform: CameraTransform): CSSProperties {
   }
 }
 
+/** EDIT-011 - rotulos em portugues pro select de layout, mesmo padrao de `TRACK_TYPE_LABELS`. */
+const LAYOUT_PRESET_LABELS: Record<LayoutPreset, string> = {
+  PIP: 'Picture-in-picture (câmera sobre a tela)',
+  SIDE_BY_SIDE: 'Lado a lado',
+  SCREEN_ONLY: 'Só tela',
+  CAMERA_ONLY: 'Só câmera'
+}
+
 /**
- * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007/EDIT-008/EDIT-009/EDIT-010 (Fase 3, Editor
- * MVP). Pagina de detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo
+ * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007/EDIT-008/EDIT-009/EDIT-010/EDIT-011 (Fase
+ * 3, Editor MVP). Pagina de detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo
  * somente-leitura da gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a
  * timeline EDITADA (`Timeline.tsx`, EDIT-002/EDIT-004-005-006/EDIT-008/EDIT-009/EDIT-010) + o
  * player multi-trilha sincronizado (`useMultiTrackPlayback`, EDIT-003 parte 2) + corte/split/
  * remover-intervalo (EDIT-004/005/006 - todos o mesmo primitivo `REMOVE_RANGE`, ver
  * `RemoveRangeRequestSchema`) + desfazer/refazer (EDIT-007) + ganho/mudo (EDIT-008) + fade in/out
- * (EDIT-009) + visibilidade/posicao/tamanho de camera (EDIT-010, overlay PiP sobre a trilha de
- * fundo) por trilha. Sem layout/autosave ainda (EDIT-011 em diante).
+ * (EDIT-009) + visibilidade/posicao/tamanho de camera (EDIT-010) por trilha + layout da composicao
+ * (EDIT-011, PiP/lado-a-lado/so-tela/so-camera). Sem autosave ainda (EDIT-012 em diante).
  */
 export function EditorProjectPage() {
   const { id } = useParams<{ id: string }>()
@@ -145,17 +154,21 @@ function EditorProjectView({
   const [busy, setBusy] = useState(false)
 
   const playback = useMultiTrackPlayback(timeline)
-  const primaryTrackId = useMemo(() => {
-    if (!timeline) return null
-    return pickPreviewTrack(timeline.tracks)?.id ?? null
+  // EDIT-011 - unica fonte de verdade pra "o que desenhar no preview": qual(is) trilha(s) de
+  // video ficam visiveis e em que arranjo (single/pip/side-by-side), decidido a partir do
+  // `layoutPreset` da timeline editada + quais trilhas a gravacao realmente tem (ver comentario em
+  // `computePreviewLayout`).
+  const previewLayout = useMemo(() => {
+    if (!timeline) return { mode: 'none' as const }
+    return computePreviewLayout(timeline.tracks, timeline.layoutPreset)
   }, [timeline])
-  // EDIT-010 - trilha CAMERA a sobrepor como PiP por cima da trilha de fundo (`null` quando nao
-  // ha uma trilha CAMERA separada da de fundo, ou quando `cameraTransform.visible` foi desligado -
-  // ver `pickOverlayCameraTrack`).
-  const overlayCameraTrack = useMemo(() => {
-    if (!timeline) return null
-    return pickOverlayCameraTrack(timeline.tracks, primaryTrackId)
-  }, [timeline, primaryTrackId])
+  const overlayCameraTransform = useMemo(() => {
+    if (previewLayout.mode !== 'pip' || !timeline) return null
+    return (
+      timeline.tracks.find((track) => track.id === previewLayout.overlayTrackId)?.cameraTransform ??
+      null
+    )
+  }, [previewLayout, timeline])
 
   const hasPlayableMedia = useMemo(
     () => !!timeline && timeline.tracks.some((track) => track.clips.length > 0),
@@ -306,6 +319,28 @@ function EditorProjectView({
     [editProject.id]
   )
 
+  // EDIT-011 - mesmo padrao de `setTrackGain`/`setTrackFade`/`setTrackTransform`: nao usa
+  // `applyTimelineMutation`/`busy`, guard de sequencia proprio (`layoutRequestSeqRef`). Ao
+  // contrario dos outros tres, nao recebe `trackId` - layout e uma propriedade da COMPOSICAO
+  // inteira (ver comentario em `LayoutPresetSchema`).
+  const layoutRequestSeqRef = useRef(0)
+  const setLayoutPreset = useCallback(
+    async (preset: LayoutPreset) => {
+      setActionError(null)
+      const requestSeq = ++layoutRequestSeqRef.current
+      try {
+        const updated = await window.meetingStudio.editor.setLayoutPreset(editProject.id, preset)
+        if (requestSeq !== layoutRequestSeqRef.current) return
+        setTimeline(updated)
+      } catch {
+        if (requestSeq === layoutRequestSeqRef.current) {
+          setActionError('Nao foi possivel ajustar o layout.')
+        }
+      }
+    },
+    [editProject.id]
+  )
+
   // `05_MEDIA_EDITOR.md` §15 - Ctrl+Z desfaz, Ctrl+Shift+Z refaz; atalhos nunca disparam com o
   // foco num campo de texto (aqui so o nome do projeto seria editavel num incremento futuro, mas
   // o guard ja fica pronto pra quando existir).
@@ -370,35 +405,75 @@ function EditorProjectView({
       <h2>Preview</h2>
       {timeline && hasPlayableMedia ? (
         <>
-          <div className="editor-preview-container">
+          <label className="editor-layout-select">
+            Layout
+            <select
+              value={timeline.layoutPreset}
+              onChange={(event) => void setLayoutPreset(event.target.value as LayoutPreset)}
+            >
+              {(Object.keys(LAYOUT_PRESET_LABELS) as LayoutPreset[]).map((preset) => (
+                <option key={preset} value={preset}>
+                  {LAYOUT_PRESET_LABELS[preset]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div
+            className={
+              previewLayout.mode === 'side-by-side'
+                ? 'editor-preview-container editor-preview-container--side-by-side'
+                : 'editor-preview-container'
+            }
+          >
             {timeline.tracks.map((track) => {
-              const isVideo = isVideoTrackType(track.type)
-              const isPrimary = track.id === primaryTrackId
-              const isOverlay = track.id === overlayCameraTrack?.id
-              if (isVideo) {
+              if (!isVideoTrackType(track.type)) {
                 return (
-                  <video
+                  <audio
                     key={track.id}
                     ref={playback.getTrackRef(track.id)}
-                    className={isOverlay ? 'editor-preview-overlay' : 'editor-preview'}
-                    hidden={!isPrimary && !isOverlay}
-                    style={
-                      isOverlay && overlayCameraTrack?.cameraTransform
-                        ? cameraOverlayStyle(overlayCameraTrack.cameraTransform)
-                        : undefined
-                    }
-                    aria-label={
-                      isPrimary
-                        ? 'editor-preview-video'
-                        : isOverlay
-                          ? 'editor-preview-camera-overlay'
-                          : undefined
-                    }
+                    hidden
+                    data-track-type={track.type}
                   />
                 )
               }
+              const role: 'background' | 'overlay' | 'side' | 'hidden' =
+                (previewLayout.mode === 'single' && track.id === previewLayout.trackId) ||
+                (previewLayout.mode === 'pip' && track.id === previewLayout.backgroundTrackId)
+                  ? 'background'
+                  : previewLayout.mode === 'pip' && track.id === previewLayout.overlayTrackId
+                    ? 'overlay'
+                    : previewLayout.mode === 'side-by-side' &&
+                        (track.id === previewLayout.leftTrackId ||
+                          track.id === previewLayout.rightTrackId)
+                      ? 'side'
+                      : 'hidden'
+              const className =
+                role === 'overlay'
+                  ? 'editor-preview-overlay'
+                  : role === 'side'
+                    ? 'editor-preview editor-preview--side'
+                    : 'editor-preview'
+              const ariaLabel =
+                role === 'background'
+                  ? 'editor-preview-video'
+                  : role === 'overlay'
+                    ? 'editor-preview-camera-overlay'
+                    : role === 'side'
+                      ? previewLayout.mode === 'side-by-side' && track.id === previewLayout.leftTrackId
+                        ? 'editor-preview-side-left'
+                        : 'editor-preview-side-right'
+                      : undefined
               return (
-                <audio key={track.id} ref={playback.getTrackRef(track.id)} hidden data-track-type={track.type} />
+                <video
+                  key={track.id}
+                  ref={playback.getTrackRef(track.id)}
+                  className={className}
+                  hidden={role === 'hidden'}
+                  style={role === 'overlay' && overlayCameraTransform
+                    ? cameraOverlayStyle(overlayCameraTransform)
+                    : undefined}
+                  aria-label={ariaLabel}
+                />
               )
             })}
           </div>
@@ -483,7 +558,7 @@ function EditorProjectView({
       ) : (
         <p>Carregando timeline...</p>
       )}
-      <EmptyState message="Layout (PiP/lado-a-lado/so-tela/so-camera) e autosave chegam nos proximos incrementos da Fase 3." />
+      <EmptyState message="Autosave chega nos proximos incrementos da Fase 3." />
     </div>
   )
 }

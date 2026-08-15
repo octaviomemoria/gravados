@@ -1097,3 +1097,116 @@ test.describe('editor (camera transform)', () => {
     expect(cameraTrackAfterUndo.cameraTransform).toMatchObject({ visible: false, xPercent: 70 })
   })
 })
+
+/**
+ * EDIT-011 (vigesimo segundo incremento - Fase 3, layout da composicao). Ao contrario de todos os
+ * testes anteriores desta familia, `SET_LAYOUT` nao mira uma trilha - confirma que o select de
+ * layout troca o preset da composicao INTEIRA (`editor.getEditedTimeline().layoutPreset`), que o
+ * padrao e `PIP`, e que Ctrl+Z desfaz so a ULTIMA troca.
+ */
+test.describe('editor (layout)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await electronApp.close()
+  })
+
+  test('switches the composition layout preset via the select, defaults to PIP, and undoes only the last change', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - layout ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+    const cameraSelect = appWindow.getByLabel('Camera', { exact: true })
+    await expect(cameraSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cameraSelect.selectOption({ index: 1 })
+    await expect(appWindow.locator('video.camera-preview')).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    const cameraPath = join(rootPath, 'source', 'camera', 'camera_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath) && fileHasBytes(cameraPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando os primeiros chunks de audio e video serem persistidos em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(appWindow.locator('.timeline__track')).toHaveCount(2, { timeout: POLL_TIMEOUT_MS })
+
+    const editProjectId = await appWindow.evaluate(async () => {
+      const list = await window.meetingStudio.editor.list()
+      return list[0]!.id
+    })
+    const original = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(original.layoutPreset).toBe('PIP')
+
+    // --- Troca pra "So camera" pelo select - primeira operacao.
+    const layoutSelect = appWindow.getByLabel('Layout')
+    await expect(layoutSelect).toBeVisible()
+    await layoutSelect.selectOption('CAMERA_ONLY')
+    await expect
+      .poll(
+        async () => {
+          const current = await appWindow.evaluate(
+            (id) => window.meetingStudio.editor.getEditedTimeline(id),
+            editProjectId
+          )
+          return current.layoutPreset
+        },
+        { timeout: POLL_TIMEOUT_MS }
+      )
+      .toBe('CAMERA_ONLY')
+
+    // --- Troca pra "Lado a lado" - segunda operacao, SUBSTITUI a anterior (nao acumula).
+    await layoutSelect.selectOption('SIDE_BY_SIDE')
+    const afterSecondChange = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(afterSecondChange.layoutPreset).toBe('SIDE_BY_SIDE')
+
+    // --- Desfazer (Ctrl+Z) reverte so a ULTIMA troca (lado a lado -> so camera, nao ate PIP). Um
+    // `<select>` nao e um `<input>`/`<textarea>` - o guard de foco de texto do listener global nao
+    // se aplica, sem necessidade de `.blur()` (ao contrario dos testes de fade/camera transform).
+    await appWindow.keyboard.down('Control')
+    await appWindow.keyboard.press('z')
+    await appWindow.keyboard.up('Control')
+    const afterUndo = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    expect(afterUndo.layoutPreset).toBe('CAMERA_ONLY')
+  })
+})

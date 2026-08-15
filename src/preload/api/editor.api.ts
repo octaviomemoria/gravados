@@ -21,9 +21,11 @@ import {
   SetTrackFadeRequestSchema,
   SetTrackFadeResponseSchema,
   SetTrackCameraTransformRequestSchema,
-  SetTrackCameraTransformResponseSchema
+  SetTrackCameraTransformResponseSchema,
+  SetLayoutPresetRequestSchema,
+  SetLayoutPresetResponseSchema
 } from '../../shared/schemas/editor.schema'
-import type { CameraTransform } from '../../shared/schemas/editor.schema'
+import type { CameraTransform, LayoutPreset } from '../../shared/schemas/editor.schema'
 import type { EditorApi } from '../../shared/types/preload-api'
 import { invokeChannel } from '../invoke'
 
@@ -97,6 +99,12 @@ export function createEditorApi(): EditorApi {
           response: SetTrackCameraTransformResponseSchema
         },
         { editProjectId, trackId, ...transform }
+      ),
+    setLayoutPreset: (editProjectId: string, preset: LayoutPreset) =>
+      invokeChannel(
+        IPC_CHANNELS.editor.setLayoutPreset,
+        { request: SetLayoutPresetRequestSchema, response: SetLayoutPresetResponseSchema },
+        { editProjectId, preset }
       )
   }
 }

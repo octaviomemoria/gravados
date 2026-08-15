@@ -164,11 +164,28 @@ export type GetTimelineResponse = z.infer<typeof GetTimelineResponseSchema>
  * logica de "existe operacao ativa pra desfazer" / "existe operacao alem do cursor pra refazer"
  * sozinha.
  */
+/**
+ * EDIT-011 (vigesimo segundo incremento - Fase 3, `05_MEDIA_EDITOR.md` §4 "Layout presets"). Ao
+ * contrario de `SET_GAIN`/`SET_FADE`/`SET_CAMERA_TRANSFORM` (por trilha), layout e uma propriedade
+ * da COMPOSICAO INTEIRA (`05_MEDIA_EDITOR.md` §2 "Composition: conjunto de tracks e propriedades
+ * visuais") - uma unica operacao `SET_LAYOUT` com `trackId: null`, mesmo padrao de `REMOVE_RANGE`.
+ * `PIP` (o arranjo automatico ja entregue pelo EDIT-010 - camera sobreposta a tela) e o padrao;
+ * `SIDE_BY_SIDE` mostra tela e camera lado a lado em painéis iguais; `SCREEN_ONLY`/`CAMERA_ONLY`
+ * forcam so uma das duas a aparecer, mesmo que a outra exista na gravacao.
+ */
+export const LayoutPresetSchema = z.enum(['PIP', 'SIDE_BY_SIDE', 'SCREEN_ONLY', 'CAMERA_ONLY'])
+export type LayoutPreset = z.infer<typeof LayoutPresetSchema>
+export const DEFAULT_LAYOUT_PRESET: LayoutPreset = 'PIP'
+
 export const GetEditedTimelineRequestSchema = GetTimelineRequestSchema
 export type GetEditedTimelineRequest = GetTimelineRequest
 export const GetEditedTimelineResponseSchema = GetTimelineResponseSchema.extend({
   canUndo: z.boolean(),
-  canRedo: z.boolean()
+  canRedo: z.boolean(),
+  /** EDIT-011 - `DEFAULT_LAYOUT_PRESET` quando nenhum `SET_LAYOUT` esta ativo no log. So existe na
+   * timeline EDITADA (igual `canUndo`/`canRedo`) - layout e um conceito de edicao, nao da timeline
+   * bruta compilada (`getTimeline`). */
+  layoutPreset: LayoutPresetSchema
 })
 export type GetEditedTimelineResponse = z.infer<typeof GetEditedTimelineResponseSchema>
 
@@ -272,3 +289,18 @@ export const SetTrackCameraTransformRequestSchema = z.object({
 export type SetTrackCameraTransformRequest = z.infer<typeof SetTrackCameraTransformRequestSchema>
 export const SetTrackCameraTransformResponseSchema = GetEditedTimelineResponseSchema
 export type SetTrackCameraTransformResponse = GetEditedTimelineResponse
+
+/**
+ * EDIT-011 (vigesimo segundo incremento - Fase 3, layout, `05_MEDIA_EDITOR.md` §4). Mesmo padrao
+ * de `REMOVE_RANGE`: reusa o log de `edit_operations` + cursor de EDIT-007, mas `trackId: null` -
+ * layout e uma propriedade da composicao inteira, nao de uma trilha especifica (ver comentario em
+ * `LayoutPresetSchema`). Um `SET_LAYOUT` novo SUBSTITUI o preset ativo (nao acumula, mesma
+ * semantica de `SET_GAIN`/`SET_FADE`/`SET_CAMERA_TRANSFORM`, só que sem trackId).
+ */
+export const SetLayoutPresetRequestSchema = z.object({
+  editProjectId: IdSchema,
+  preset: LayoutPresetSchema
+})
+export type SetLayoutPresetRequest = z.infer<typeof SetLayoutPresetRequestSchema>
+export const SetLayoutPresetResponseSchema = GetEditedTimelineResponseSchema
+export type SetLayoutPresetResponse = GetEditedTimelineResponse

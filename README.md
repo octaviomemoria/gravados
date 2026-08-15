@@ -27,8 +27,9 @@ e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-exclui
 gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002), o preview
 completo com playhead sincronizado e reprodução multi-trilha (EDIT-003, partes 1 e 2), corte/
 split/remover-intervalo (EDIT-004/005/006), desfazer/refazer (EDIT-007), ganho/mudo por trilha
-(EDIT-008), fade in/out por trilha (EDIT-009) e visibilidade/posição/tamanho de câmera (EDIT-010,
-overlay picture-in-picture sobre a trilha de fundo) já funcionam de ponta a ponta - ver
+(EDIT-008), fade in/out por trilha (EDIT-009), visibilidade/posição/tamanho de câmera (EDIT-010,
+overlay picture-in-picture sobre a trilha de fundo) e layout da composição (EDIT-011, PiP/
+lado-a-lado/só-tela/só-câmera) já funcionam de ponta a ponta - ver
 [Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3),
 [Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3),
 [Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3),
@@ -36,8 +37,9 @@ overlay picture-in-picture sobre a trilha de fundo) já funcionam de ponta a pon
 [Corte, split e remover intervalo](#corte-split-e-remover-intervalo-fase-3),
 [Desfazer e refazer](#desfazer-e-refazer-fase-3),
 [Ganho e mudo por trilha](#ganho-e-mudo-por-trilha-fase-3),
-[Fade in/out por trilha](#fade-inout-por-trilha-fase-3) e
-[Transformação de câmera (PiP)](#transformação-de-câmera-pip-fase-3).
+[Fade in/out por trilha](#fade-inout-por-trilha-fase-3),
+[Transformação de câmera (PiP)](#transformação-de-câmera-pip-fase-3) e
+[Layout da composição](#layout-da-composição-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -944,6 +946,57 @@ migration, só mais uma passagem de fold em `getEditedTimeline`, independente da
   EDIT-008/009), e que Ctrl+Z desfaz só a ÚLTIMA operação (o ajuste de X), preservando a
   visibilidade desligada (uma operação anterior).
 
+### Layout da composição (Fase 3)
+
+Vigésimo segundo incremento - EDIT-011. QUARTO tipo de operação sobre o mesmo log de
+`edit_operations` do EDIT-007/008/009/010 - de novo sem NENHUMA mudança de schema/migration. Ao
+contrário de TODAS as operações anteriores (ganho, fade, transformação de câmera - todas por
+trilha, `trackId` sempre preenchido), `SET_LAYOUT` mira a COMPOSIÇÃO INTEIRA (`trackId: null`,
+mesmo padrão de `REMOVE_RANGE`) - layout não é uma propriedade de uma trilha especifica
+(`05_MEDIA_EDITOR.md` §2: "Composition: conjunto de tracks e propriedades visuais").
+
+- **Quatro presets** (`PIP`/`SIDE_BY_SIDE`/`SCREEN_ONLY`/`CAMERA_ONLY`), `PIP` como padrão - o
+  mesmo arranjo automático já entregue pelo EDIT-010 (câmera sobreposta à tela quando ambas
+  existem). `SIDE_BY_SIDE` mostra tela e câmera em painéis iguais lado a lado; `SCREEN_ONLY`/
+  `CAMERA_ONLY` forçam só uma das duas a aparecer.
+- **`layoutPreset` só existe na timeline EDITADA** (`GetEditedTimelineResponseSchema`), nunca na
+  bruta (`getTimeline`) - mesmo raciocínio de `canUndo`/`canRedo`: layout é um conceito de edição,
+  não da timeline compilada a partir dos segmentos gravados.
+- **`setLayoutPreset` não valida trackId nem quais trilhas existem** - ao contrário de
+  `setTrackTransform` (rejeita trilha que não é CAMERA), qualquer um dos 4 presets é sempre válido
+  de gravar no log, mesmo que a gravação não tenha as trilhas necessárias (ex.: `CAMERA_ONLY` numa
+  gravação só de tela). A decisão de "o que fazer quando o preset não pode ser satisfeito" fica
+  inteiramente no RENDERER (`computePreviewLayout`), não no backend - evita duplicar essa lógica
+  de fallback nos dois lados.
+- **`computePreviewLayout(tracks, preset)`** (`pick-preview-track.ts`, nova função pura ao lado de
+  `pickPreviewTrack`/`pickOverlayCameraTrack`, que ela reutiliza internamente): traduz preset +
+  trilhas disponíveis num de 4 resultados (`single`/`pip`/`side-by-side`/`none`) que a UI só
+  precisa desenhar. Quando o preset escolhido não tem as trilhas necessárias (`CAMERA_ONLY` sem
+  câmera, `SIDE_BY_SIDE` sem uma das duas), cai de volta pro comportamento automático `PIP` -
+  nunca mostra uma tela em branco só porque o preset pedido não faz sentido para esta gravação
+  específica.
+- **UI do preview**: select "Layout" acima do preview (`EditorProjectPage.tsx`), reaproveitando os
+  MESMOS elementos `<video>`/`<audio>` já montados desde o EDIT-003 parte 2 - só o papel de cada
+  um (fundo/overlay/lado-a-lado/oculto) e o container (`position: relative` de sempre, ou um novo
+  `display: flex` quando o modo é `side-by-side`) mudam conforme `computePreviewLayout`. Nenhuma
+  mudança no motor de reprodução.
+- **Bug real de teste corrigido durante a validação** (ver decisão #98 sobre a mesma classe de
+  problema no EDIT-010): nenhum desta vez, mas o padrão se repetiu como precaução - o `<select>`
+  de layout foi verificado explicitamente contra o guard de foco de texto do atalho Ctrl+Z
+  (`target?.tagName === 'INPUT' || 'TEXTAREA'`) e confirmado que NÃO bloqueia (um `<select>` não é
+  nem `INPUT` nem `TEXTAREA`), evitando repetir o mesmo tipo de surpresa de teste do EDIT-009.
+- Testado via 8 novos testes de integração do `EditorService.setLayoutPreset`
+  (`tests/unit/main/editor.service.test.ts`: timeline editada relata `PIP` antes de qualquer
+  `SET_LAYOUT`, aplica à composição sem depender de nenhuma trilha, um segundo `SET_LAYOUT`
+  SUBSTITUI em vez de acumular, aceita qualquer preset mesmo sem as trilhas correspondentes,
+  revision incrementa, undo/redo funcionam, poda de ramo abandonado, coexiste independente de
+  `SET_GAIN`/`SET_FADE`/`SET_CAMERA_TRANSFORM`) + 10 testes de `computePreviewLayout` (todos os 4
+  presets com/sem as trilhas necessárias, fallback pro comportamento PIP, zero trilhas) e um novo
+  teste E2E (`test.describe('editor (layout)')`): grava microfone+câmera, confirma `layoutPreset`
+  padrão `PIP`, troca pra "Só câmera" e depois "Lado a lado" pelo select, confirma via
+  `editor.getEditedTimeline` cada troca, e que Ctrl+Z desfaz só a ÚLTIMA troca (volta pra "Só
+  câmera", não até `PIP`).
+
 ## Estrutura de diretórios
 
 ```text
@@ -1466,6 +1519,23 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
      (`useMultiTrackPlayback` já tocava TODAS as trilhas em lockstep) — só a exibição visual (qual
      fica `hidden`, `position: absolute` vs. fluxo normal) mudou; nenhuma mudança no motor de
      reprodução foi necessária para adicionar o overlay PiP.
+102. **`SET_LAYOUT` mira a composição inteira (`trackId: null`), não uma trilha** — layout não é
+     uma propriedade de uma trilha específica (`05_MEDIA_EDITOR.md` §2 "Composition"), ao contrário
+     de TODAS as operações anteriores do log (ganho, fade, transformação de câmera). Reusa o mesmo
+     padrão de `REMOVE_RANGE`, que já não mirava trilha nenhuma.
+103. **`layoutPreset` só existe na timeline EDITADA, nunca na bruta** — mesmo raciocínio de
+     `canUndo`/`canRedo`: layout é um conceito de EDIÇÃO, não algo compilado a partir dos
+     segmentos gravados em si.
+104. **`setLayoutPreset` não valida quais trilhas existem na gravação** — ao contrário de
+     `setTrackTransform` (rejeita trilha que não é CAMERA), qualquer um dos 4 presets é sempre
+     válido de gravar no log; a decisão de "o que fazer quando o preset não pode ser satisfeito"
+     fica inteiramente no RENDERER (`computePreviewLayout`), evitando duplicar essa lógica de
+     fallback no backend também.
+105. **`computePreviewLayout` cai de volta pro comportamento `PIP` automático quando o preset
+     escolhido não tem as trilhas necessárias** (`CAMERA_ONLY` sem câmera, `SIDE_BY_SIDE` sem
+     ambas) — nunca mostra uma tela em branco só porque o preset pedido não faz sentido para esta
+     gravação específica; reusa `pickPreviewTrack`/`pickOverlayCameraTrack` internamente em vez de
+     duplicar a lógica de fallback.
 
 ## Testes
 
@@ -1542,7 +1612,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   poda de ramo abandonado, trilha removida por REMOVE_RANGE não quebra nada, SET_GAIN/SET_FADE/
   SET_CAMERA_TRANSFORM coexistem de forma independente)**, **`pickOverlayCameraTrack` puro** (fundo
   diferente da câmera, câmera-é-o-próprio-fundo, sem trilha câmera, `visible: false`,
-  `cameraTransform` nulo defensivo). **289 testes, 30 arquivos.**
+  `cameraTransform` nulo defensivo), **`EditorService.setLayoutPreset` de ponta a ponta** (timeline
+  editada relata `PIP` antes de qualquer `SET_LAYOUT`, aplica à composição inteira sem depender de
+  trilha nenhuma, um segundo `SET_LAYOUT` SUBSTITUI em vez de acumular, aceita qualquer preset
+  mesmo sem as trilhas correspondentes, revision incrementa, undo/redo funcionam, poda de ramo
+  abandonado, coexiste independente de `SET_GAIN`/`SET_FADE`/`SET_CAMERA_TRANSFORM`), **`computePreviewLayout` puro**
+  (os 4 presets com/sem as trilhas necessárias, fallback pro comportamento PIP, zero trilhas).
+  **309 testes, 30 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -1635,7 +1711,27 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   `pickOverlayCameraTrack` (todos verdes) e pelas execuções isoladas/primeira-execução-completa
   limpas do próprio teste E2E - mesma linha de evidência já usada nos incrementos anteriores
   (EDIT-007/008/009) para aceitar a contenção de recursos da máquina como causa raiz das falhas
-  restantes, não uma regressão deste incremento.
+  restantes, não uma regressão deste incremento; décimo primeiro teste
+  (`test.describe('editor (layout)')`, EDIT-011) grava microfone+câmera, confirma `layoutPreset`
+  padrão `PIP` via `editor.getEditedTimeline`, troca pro preset "Só câmera" e depois "Lado a lado"
+  pelo select "Layout", confirma cada troca via API, e que Ctrl+Z desfaz só a ÚLTIMA troca (volta
+  pra "Só câmera", não até `PIP`) - um `<select>` não é `INPUT`/`TEXTAREA`, então o guard de foco
+  de texto do atalho global não bloqueia, sem precisar de `.blur()` (ao contrário dos testes de
+  fade/transformação de câmera que usam `.fill()`/clique em checkbox).
+  **11 testes**, isolado `editor (layout)` passou de forma limpa (10,0s, sem retry) e também na
+  PRIMEIRA execução completa da suíte (10,0s, sem retry) - só falhou (esgotando os 3 retries) na
+  SEGUNDA execução completa, um episódio de contenção mais amplo que afetou simultaneamente 5
+  testes PRÉ-EXISTENTES não relacionados (timeline, preview, transformação de câmera, biblioteca) e
+  5 outros ficaram flaky - **toda falha do novo teste, confirmada via `error-context.md` de cada
+  tentativa, ocorreu na mesma etapa de setup compartilhada** (`getByLabel('Camera')`/
+  `getByRole('status')` conter "REC"), nunca dentro do código de layout em si - nunca chegou a
+  exercitar a lógica nova. Também confirmado que os testes pré-existentes de gain/mute e
+  transformação de câmera continuam passando sem interferência do novo select "Layout" adicionado
+  à mesma tela. Correção de lógica confirmada pelos 8 testes de integração dedicados do
+  `EditorService.setLayoutPreset` + 10 de `computePreviewLayout` (todos verdes) e pelas execuções
+  isoladas/primeira-execução-completa limpas do próprio teste E2E - mesma linha de evidência já
+  usada em todos os incrementos anteriores da Fase 3 para aceitar a contenção de recursos da
+  máquina como causa raiz das falhas restantes, não uma regressão deste incremento.
 
 ## Pendências conhecidas
 
@@ -1711,9 +1807,9 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   edição, que precisará dos segmentos um a um.
 - Projeto de edição ainda não tem renomear nem excluir (só a Biblioteca tem essas ações, para
   gravações - não para projetos de edição). Corte/split/remover-intervalo (EDIT-004/005/006),
-  desfazer/refazer (EDIT-007), ganho/mudo (EDIT-008), fade in/out (EDIT-009) e visibilidade/
-  posição/tamanho de câmera (EDIT-010) por trilha já funcionam; layout/presets ainda não
-  (EDIT-011 em diante).
+  desfazer/refazer (EDIT-007), ganho/mudo (EDIT-008), fade in/out (EDIT-009), visibilidade/
+  posição/tamanho de câmera (EDIT-010) por trilha e layout da composição (EDIT-011) já funcionam;
+  autosave ainda não (EDIT-012 em diante).
 - `EditorProjectPage` não trata um `id` de projeto de edição inexistente/inválido na URL de forma
   amigável (`editor.get` lança `NotFoundError`, capturado só como um estado de erro genérico) -
   refinamento futuro, não bloqueante.
@@ -1723,12 +1819,11 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - Sem indicação visual de gaps entre clips na mesma trilha (ex.: um pause/resume real deixaria
   dois segmentos consecutivos sem intervalo, mas uma trilha que só rotacionou por tamanho/tempo
   também não tem gap perceptível hoje) - refinamento futuro, não bloqueante para esta etapa.
-- Sem controle de qual trilha usar como FUNDO do preview - `pickPreviewTrack` decide sozinho
-  (tela > câmera > primeira disponível), sem nenhuma forma de o usuário trocar manualmente qual
-  trilha é fundo e qual é overlay. Desde o EDIT-010 a câmera JÁ aparece automaticamente como
-  overlay PiP por cima da tela (quando ambas existem), mas só nesse arranjo fixo - lado-a-lado,
-  duas câmeras simultâneas (multicamera), ou trocar manualmente qual trilha fica em cada papel
-  ainda não existem (layout/presets planejados pra EDIT-011).
+- Layout (EDIT-011) escolhe ENTRE presets fixos (PiP/lado-a-lado/só-tela/só-câmera) - não há troca
+  manual de qual trilha especifica fica em cada papel (ex.: uma gravação com DUAS câmeras não tem
+  como escolher qual delas vira o overlay), nem multicamera, nem arrastar/redimensionar o painel
+  overlay do PiP diretamente pelo preview (isso continua exigindo os sliders do EDIT-010). O preset
+  `SIDE_BY_SIDE` sempre divide o espaço 50/50 - sem controle de proporção entre os dois painéis.
 - Sincronização entre trilhas tem tolerância de 250ms (`DRIFT_THRESHOLD_SECONDS`) - suficiente
   para revisar uma gravação, mas não é sample-accurate como um editor profissional de verdade;
   refinamento futuro, não bloqueante para o MVP.
@@ -1754,6 +1849,12 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   usa `border-radius: 50%` sobre uma caixa possivelmente não-quadrada - um retângulo largo vira uma
   elipse, não um círculo perfeito, a menos que `widthPercent`/`heightPercent` já sejam
   proporcionais ao aspecto real do elemento renderizado.
+- **Layout (EDIT-011) é aplicado ao PREVIEW apenas, não ainda a um export real** - a Fase 4
+  (`EXP-001..009`, próximo passo) precisará ler `layoutPreset` e compor os frames de saída de
+  acordo (renderizar o overlay/lado-a-lado de verdade num arquivo final), não só decidir o que
+  mostrar na tela durante a edição. Também não há UI pra ajustar a divisão do `SIDE_BY_SIDE` (fixo
+  em 50/50) nem uma prévia em miniatura de cada preset antes de aplicar - o usuário só vê o
+  resultado depois de escolher no select.
 - O relógio do player não pausa sozinho ao final de cada clip em caso de gap real entre segmentos
   de uma mesma trilha (ex.: um pause/resume real) - a trilha simplesmente fica pausada durante o
   gap e retoma quando o próximo clip começa; comportamento correto, mas sem nenhuma indicação
@@ -1781,18 +1882,17 @@ completo (partes 1 e 2 - preview com playhead sincronizado e reprodução multi-
 de mídia local seguro), EDIT-004/005/006 (corte/split/remover-intervalo, a primeira operação de
 edição real), EDIT-007 (desfazer/refazer, cursor sobre o log de operações), EDIT-008 (ganho/mudo
 por trilha, reusando o mesmo log), EDIT-009 (fade in/out por trilha, terceiro tipo de operação
-sobre o mesmo log, volume recalculado a cada tick por depender do playhead) e EDIT-010
-(visibilidade/posição/tamanho de câmera, overlay PiP automático sobre a trilha de fundo) já
-funcionam de ponta a ponta.
+sobre o mesmo log, volume recalculado a cada tick por depender do playhead), EDIT-010
+(visibilidade/posição/tamanho de câmera, overlay PiP automático sobre a trilha de fundo) e EDIT-011
+(layout da composição - PiP/lado-a-lado/só-tela/só-câmera, quarto tipo de operação sobre o mesmo
+log, primeira a mirar a composição inteira em vez de uma trilha) já funcionam de ponta a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 3 — Editor MVP**: layout (PiP/lado-a-lado/só-tela/só-câmera, EDIT-011 -
-   controle manual de qual trilha é fundo/overlay, além do arranjo automático já entregue pelo
-   EDIT-010), autosave (EDIT-012) - cada operação provavelmente seu próprio incremento, dado o
-   tamanho desta fase (05_MEDIA_EDITOR.md).
+1. Continuar a **Fase 3 — Editor MVP**: autosave (EDIT-012) - último item planejado da fase antes
+   do Marco MVP.
 2. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
    ainda não instalados - `main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`,
    nenhum binário real, `export.start` sempre lança `NotImplementedError`), MP4 720p/1080p, faixa

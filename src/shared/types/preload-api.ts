@@ -30,7 +30,8 @@ import type {
   EditProjectResponse,
   GetTimelineResponse,
   GetEditedTimelineResponse,
-  CameraTransform
+  CameraTransform,
+  LayoutPreset
 } from '../schemas/editor.schema'
 import type { StartExportRequest, ExportJobResponse } from '../schemas/export.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
@@ -147,6 +148,11 @@ export interface EditorApi {
     trackId: string,
     transform: CameraTransform
   ) => Promise<GetEditedTimelineResponse>
+  /** EDIT-011 - troca o preset de layout (`PIP`/`SIDE_BY_SIDE`/`SCREEN_ONLY`/`CAMERA_ONLY`) da
+   * COMPOSICAO inteira (nao de uma trilha especifica). Substitui o preset ativo (nao acumula) -
+   * poda qualquer "refazer" pendente, igual `removeRange`/`setTrackGain`/etc. Sempre aceita
+   * qualquer um dos 4 presets, mesmo que as trilhas correspondentes nao existam na gravacao. */
+  setLayoutPreset: (editProjectId: string, preset: LayoutPreset) => Promise<GetEditedTimelineResponse>
 }
 
 export interface ExportApi {

@@ -311,7 +311,10 @@ describe('EditorService', () => {
       expect(service.getEditedTimeline(editProject.id)).toEqual({
         ...service.getTimeline(editProject.id),
         canUndo: false,
-        canRedo: false
+        canRedo: false,
+        // EDIT-011 - layoutPreset so existe na timeline EDITADA (igual canUndo/canRedo), nao na
+        // bruta - PIP e o padrao sem nenhum SET_LAYOUT ativo.
+        layoutPreset: 'PIP'
       })
     })
 
@@ -974,6 +977,123 @@ describe('EditorService', () => {
       expect(() =>
         service.setTrackTransform(randomUUID(), randomUUID(), CUSTOM_TRANSFORM)
       ).toThrow('nao encontrado')
+    })
+  })
+
+  describe('setLayoutPreset', () => {
+    function createTrackWithSegment(
+      projectId: string,
+      type: 'MICROPHONE' | 'CAMERA',
+      startMs: number,
+      endMs: number
+    ): string {
+      const trackId = randomUUID()
+      trackRepository.create({
+        id: trackId,
+        projectId,
+        type,
+        enabled: true,
+        position: 0,
+        startOffsetMs: 0
+      })
+      segmentRepository.create({
+        id: randomUUID(),
+        trackId,
+        seqIndex: 1,
+        relativePath: `source/${type.toLowerCase()}/${type.toLowerCase()}_000001.webm`,
+        startedAtMs: startMs,
+        endedAtMs: endMs,
+        durationMs: endMs - startMs,
+        byteSize: 1000,
+        mimeType: type === 'CAMERA' ? 'video/webm' : 'audio/webm',
+        finalized: true
+      })
+      return trackId
+    }
+
+    it('raw getEditedTimeline reports layoutPreset PIP before any SET_LAYOUT', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(service.getEditedTimeline(editProject.id).layoutPreset).toBe('PIP')
+    })
+
+    it('applies the chosen preset to the whole composition (no trackId involved)', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      const updated = service.setLayoutPreset(editProject.id, 'SIDE_BY_SIDE')
+      expect(updated.layoutPreset).toBe('SIDE_BY_SIDE')
+    })
+
+    it('a second SET_LAYOUT REPLACES the previous preset, does not accumulate', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      service.setLayoutPreset(editProject.id, 'SCREEN_ONLY')
+      const updated = service.setLayoutPreset(editProject.id, 'CAMERA_ONLY')
+      expect(updated.layoutPreset).toBe('CAMERA_ONLY')
+    })
+
+    it('accepts any preset even when the corresponding tracks do not exist in the recording', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      // Gravacao so tem MICROFONE (sem tela/camera) - SIDE_BY_SIDE nao muda nada visualmente na
+      // UI (ver computePreviewLayout, renderer), mas o preset em si e sempre valido de gravar.
+      const updated = service.setLayoutPreset(editProject.id, 'SIDE_BY_SIDE')
+      expect(updated.layoutPreset).toBe('SIDE_BY_SIDE')
+    })
+
+    it('bumps the edit project revision, same as removeRange/setTrackGain/setTrackFade/setTrackTransform', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      const before = service.getEditProject(editProject.id).revision
+      service.setLayoutPreset(editProject.id, 'SCREEN_ONLY')
+      expect(service.getEditProject(editProject.id).revision).toBe(before + 1)
+    })
+
+    it('is undoable/redoable, same as any other operation on the log', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setLayoutPreset(editProject.id, 'SCREEN_ONLY')
+      const afterUndo = service.undo(editProject.id)
+      expect(afterUndo.layoutPreset).toBe('PIP')
+
+      const afterRedo = service.redo(editProject.id)
+      expect(afterRedo.layoutPreset).toBe('SCREEN_ONLY')
+    })
+
+    it('a SET_LAYOUT created after an undo prunes the abandoned redo branch, same as removeRange', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setLayoutPreset(editProject.id, 'SCREEN_ONLY')
+      service.undo(editProject.id)
+
+      const afterNewLayout = service.setLayoutPreset(editProject.id, 'CAMERA_ONLY')
+      expect(afterNewLayout.layoutPreset).toBe('CAMERA_ONLY')
+      expect(afterNewLayout.canRedo).toBe(false)
+    })
+
+    it('SET_GAIN, SET_FADE, SET_CAMERA_TRANSFORM and SET_LAYOUT coexist independently', () => {
+      const project = createProject('COMPLETED')
+      const cameraTrackId = createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackGain(editProject.id, cameraTrackId, -12, true)
+      service.setLayoutPreset(editProject.id, 'SIDE_BY_SIDE')
+      const updated = service.getEditedTimeline(editProject.id)
+      expect(updated.layoutPreset).toBe('SIDE_BY_SIDE')
+      expect(updated.tracks[0]).toMatchObject({ gainDb: -12, muted: true })
+    })
+
+    it('throws NotFoundError for an unknown edit project', () => {
+      expect(() => service.setLayoutPreset(randomUUID(), 'PIP')).toThrow('nao encontrado')
     })
   })
 })

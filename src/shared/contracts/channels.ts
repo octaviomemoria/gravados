@@ -44,7 +44,8 @@ export const IPC_CHANNELS = {
     redo: 'editor.redo',
     setTrackGain: 'editor.setTrackGain',
     setTrackFade: 'editor.setTrackFade',
-    setTrackCameraTransform: 'editor.setTrackCameraTransform'
+    setTrackCameraTransform: 'editor.setTrackCameraTransform',
+    setLayoutPreset: 'editor.setLayoutPreset'
   },
   export: {
     start: 'export.start',

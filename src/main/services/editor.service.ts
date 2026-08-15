@@ -9,9 +9,10 @@ import type {
   GetTimelineResponse,
   GetEditedTimelineResponse,
   TimelineTrack,
-  CameraTransform
+  CameraTransform,
+  LayoutPreset
 } from '../../shared/schemas/editor.schema'
-import { DEFAULT_CAMERA_TRANSFORM } from '../../shared/schemas/editor.schema'
+import { DEFAULT_CAMERA_TRANSFORM, DEFAULT_LAYOUT_PRESET } from '../../shared/schemas/editor.schema'
 import { NotFoundError, ValidationError } from '../../shared/types/domain-errors'
 import { applyRemoveRange } from './apply-remove-range'
 
@@ -224,12 +225,22 @@ export class EditorService {
       return transform ? { ...track, cameraTransform: transform } : track
     })
 
+    // EDIT-011 - layout e uma propriedade da COMPOSICAO INTEIRA, nao de uma trilha (`trackId` e
+    // sempre `null` num `SET_LAYOUT`, mesmo padrao de `REMOVE_RANGE`) - so precisa do ULTIMO ativo
+    // (nao ha "por trilha" pra iterar). `DEFAULT_LAYOUT_PRESET` quando nenhum esta ativo.
+    let layoutPreset: LayoutPreset = DEFAULT_LAYOUT_PRESET
+    for (const operation of activeOperations) {
+      if (operation.type !== 'SET_LAYOUT') continue
+      layoutPreset = (JSON.parse(operation.payloadJson) as { preset: LayoutPreset }).preset
+    }
+
     return {
       ...raw,
       tracks,
       totalDurationMs: computeTotalDurationMs(tracks),
       canUndo: editProject.activeOperationSequence > 0,
-      canRedo: editProject.activeOperationSequence < allOperations.length
+      canRedo: editProject.activeOperationSequence < allOperations.length,
+      layoutPreset
     }
   }
 
@@ -359,11 +370,33 @@ export class EditorService {
   }
 
   /**
-   * EDIT-007/EDIT-008/EDIT-009/EDIT-010 - ponto UNICO onde uma operacao NOVA e gravada no log,
-   * reusado por `removeRange`, `setTrackGain`, `setTrackFade` e `setTrackTransform` (e por
-   * qualquer operacao futura - layout, EDIT-011 em diante). Sempre poda (`DELETE`) qualquer coisa
-   * alem do cursor ANTES de inserir - uma acao nova invalida o "refazer" pendente, o mesmo
-   * comportamento padrao de qualquer editor, independente do TIPO da operacao.
+   * EDIT-011 (vigesimo segundo incremento - Fase 3, layout, `05_MEDIA_EDITOR.md` §4). Ao
+   * contrario de todas as operacoes anteriores do log, NAO mira uma trilha especifica - layout e
+   * uma propriedade da composicao inteira (ver comentario em `LayoutPresetSchema`), gravada com
+   * `trackId: null` mesmo padrao de `REMOVE_RANGE`. Sem validacao de trilha - qualquer um dos 4
+   * presets e sempre valido, independente de quais trilhas existem na timeline (um `SCREEN_ONLY`
+   * numa gravacao so-de-camera simplesmente nao muda nada visualmente, sem erro).
+   */
+  setLayoutPreset(editProjectId: string, preset: LayoutPreset): GetEditedTimelineResponse {
+    const editProject = this.getEditProject(editProjectId)
+
+    this.appendOperation(editProjectId, editProject, {
+      type: 'SET_LAYOUT',
+      startMs: null,
+      endMs: null,
+      trackId: null,
+      payloadJson: JSON.stringify({ preset })
+    })
+
+    return this.getEditedTimeline(editProjectId)
+  }
+
+  /**
+   * EDIT-007/EDIT-008/EDIT-009/EDIT-010/EDIT-011 - ponto UNICO onde uma operacao NOVA e gravada no
+   * log, reusado por `removeRange`, `setTrackGain`, `setTrackFade`, `setTrackTransform` e
+   * `setLayoutPreset`. Sempre poda (`DELETE`) qualquer coisa alem do cursor ANTES de inserir - uma
+   * acao nova invalida o "refazer" pendente, o mesmo comportamento padrao de qualquer editor,
+   * independente do TIPO da operacao (nem se ela tem `trackId` ou nao).
    */
   private appendOperation(
     editProjectId: string,

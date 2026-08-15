@@ -1,4 +1,4 @@
-import type { TimelineTrack } from '@shared/schemas/editor.schema'
+import type { TimelineTrack, LayoutPreset } from '@shared/schemas/editor.schema'
 
 const VIDEO_TRACK_TYPES: ReadonlyArray<TimelineTrack['type']> = ['SCREEN', 'CAMERA']
 
@@ -39,4 +39,41 @@ export function pickOverlayCameraTrack(
   if (camera.id === backgroundTrackId) return null
   if (camera.cameraTransform && !camera.cameraTransform.visible) return null
   return camera
+}
+
+/**
+ * EDIT-011 (vigesimo segundo incremento - Fase 3, layout, `05_MEDIA_EDITOR.md` §4). Traduz o
+ * `layoutPreset` da timeline editada + as trilhas disponiveis num resultado que a UI so precisa
+ * desenhar, sem reimplementar a logica de "qual trilha em qual papel" - mesmo espirito de
+ * `pickPreviewTrack`/`pickOverlayCameraTrack`, so que decidindo entre os 4 modos possiveis.
+ *
+ * Cada preset tem um "requisito" de trilhas - `CAMERA_ONLY` precisa de uma trilha `CAMERA`,
+ * `SCREEN_ONLY` de uma `SCREEN`, `SIDE_BY_SIDE` de AMBAS. Quando o requisito nao e atendido (ex.:
+ * usuario escolhe `CAMERA_ONLY` numa gravacao so de tela), cai de volta pro comportamento `PIP`
+ * padrao (`pickPreviewTrack`/`pickOverlayCameraTrack`) - nunca mostra uma tela em branco so porque
+ * o preset pedido nao faz sentido pra esta gravacao especifica.
+ */
+export type PreviewLayout =
+  | { mode: 'single'; trackId: string }
+  | { mode: 'pip'; backgroundTrackId: string; overlayTrackId: string }
+  | { mode: 'side-by-side'; leftTrackId: string; rightTrackId: string }
+  | { mode: 'none' }
+
+export function computePreviewLayout(tracks: TimelineTrack[], preset: LayoutPreset): PreviewLayout {
+  const screen = tracks.find((track) => track.type === 'SCREEN') ?? null
+  const camera = tracks.find((track) => track.type === 'CAMERA') ?? null
+
+  if (preset === 'CAMERA_ONLY' && camera) return { mode: 'single', trackId: camera.id }
+  if (preset === 'SCREEN_ONLY' && screen) return { mode: 'single', trackId: screen.id }
+  if (preset === 'SIDE_BY_SIDE' && screen && camera) {
+    return { mode: 'side-by-side', leftTrackId: screen.id, rightTrackId: camera.id }
+  }
+
+  // PIP (padrao) OU um preset cujo requisito nao foi atendido - mesmo comportamento automatico
+  // ja entregue pelo EDIT-010.
+  const background = pickPreviewTrack(tracks)
+  if (!background) return { mode: 'none' }
+  const overlay = pickOverlayCameraTrack(tracks, background.id)
+  if (!overlay) return { mode: 'single', trackId: background.id }
+  return { mode: 'pip', backgroundTrackId: background.id, overlayTrackId: overlay.id }
 }

@@ -668,6 +668,29 @@ body {
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4);
 }
 
+/* EDIT-011 - layout `SIDE_BY_SIDE`: o container vira um flex row (em vez de `width: fit-content`
+   ancorando so no tamanho do fundo) e cada `<video>` divide o espaco igualmente, lado a lado. */
+.editor-preview-container--side-by-side {
+  display: flex;
+  gap: var(--ms-space-2);
+  width: 100%;
+}
+
+.editor-preview--side {
+  flex: 1 1 0;
+  min-width: 0;
+  max-height: 360px;
+}
+
+.editor-layout-select {
+  display: flex;
+  align-items: center;
+  gap: var(--ms-space-2);
+  margin-bottom: var(--ms-space-2);
+  font-size: 0.85rem;
+  color: var(--ms-color-text-muted);
+}
+
 /* EDIT-003 parte 2 - controles do player multi-trilha (play/pausar + relogio). */
 .editor-player-controls {
   display: flex;

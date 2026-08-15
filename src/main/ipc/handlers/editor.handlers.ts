@@ -21,7 +21,9 @@ import {
   SetTrackFadeRequestSchema,
   SetTrackFadeResponseSchema,
   SetTrackCameraTransformRequestSchema,
-  SetTrackCameraTransformResponseSchema
+  SetTrackCameraTransformResponseSchema,
+  SetLayoutPresetRequestSchema,
+  SetLayoutPresetResponseSchema
 } from '../../../shared/schemas/editor.schema'
 import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
@@ -117,5 +119,11 @@ export function registerEditorHandlers(context: AppContext): void {
         heightPercent: request.heightPercent,
         shape: request.shape
       })
+  )
+
+  registerHandler(
+    IPC_CHANNELS.editor.setLayoutPreset,
+    { request: SetLayoutPresetRequestSchema, response: SetLayoutPresetResponseSchema },
+    async (request) => context.editorService.setLayoutPreset(request.editProjectId, request.preset)
   )
 }
