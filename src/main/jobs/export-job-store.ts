@@ -50,6 +50,10 @@ export class ExportJobStore implements JobStore<ExportJobPayload, ExportJobResul
       )
       return
     }
+    if (patch.status === 'CANCELED') {
+      this.repository.cancel(id, patch.completedAt ?? new Date().toISOString())
+      return
+    }
     this.repository.updateProgress(id, patch.progress ?? current.progress, patch.status ?? current.status)
   }
 

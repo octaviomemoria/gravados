@@ -7,22 +7,20 @@ import {
   GetExportStatusRequestSchema,
   GetExportStatusResponseSchema
 } from '../../../shared/schemas/export.schema'
-import { NotFoundError, NotImplementedError } from '../../../shared/types/domain-errors'
+import { NotFoundError } from '../../../shared/types/domain-errors'
 import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
 
 /**
- * Decisao registrada: `start` fica registrado/tipado/validado mas retorna `NotImplementedError` -
- * a implementacao real (Timeline Compiler + FFmpeg) e Fase 4 - Export. `list`/`getStatus` sao
- * reais desde ja (leem a tabela `export_jobs`, hoje sempre vazia).
+ * EXP-003/004 (vigesimo quinto incremento - Fase 4). `start` agora delega ao `ExportService` real
+ * (Timeline Compiler -> FFmpeg Plan -> Render Job, ver comentario la). `list`/`getStatus` inalterados
+ * desde EXP-001 (leem a tabela `export_jobs` diretamente).
  */
 export function registerExportHandlers(context: AppContext): void {
   registerHandler(
     IPC_CHANNELS.export.start,
     { request: StartExportRequestSchema, response: StartExportResponseSchema },
-    async () => {
-      throw new NotImplementedError('Exportacao real ainda nao esta implementada (Fase 4 - Export).')
-    }
+    async (request) => context.exportService.startExport(request.editProjectId, request.resolution)
   )
 
   registerHandler(

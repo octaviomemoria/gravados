@@ -52,16 +52,14 @@ export class JobRunner<TPayload = unknown, TResult = unknown> {
       const result = await handler(record.payload, (progress) => {
         this.store.update(id, { progress, updatedAt: new Date().toISOString() })
       })
-      this.transition(record, 'COMPLETED')
-      this.store.update(id, {
+      this.transition(record, 'COMPLETED', {
         progress: 100,
         result,
         updatedAt: new Date().toISOString(),
         completedAt: new Date().toISOString()
       })
     } catch (error) {
-      this.transition(record, 'FAILED')
-      this.store.update(id, {
+      this.transition(record, 'FAILED', {
         error: error instanceof Error ? error.message : String(error),
         updatedAt: new Date().toISOString(),
         completedAt: new Date().toISOString()
@@ -72,18 +70,35 @@ export class JobRunner<TPayload = unknown, TResult = unknown> {
   cancel(id: string): void {
     const record = this.store.get(id)
     if (!record) return
-    this.transition(record, 'CANCELED')
-    this.store.update(id, {
+    this.transition(record, 'CANCELED', {
       updatedAt: new Date().toISOString(),
       completedAt: new Date().toISOString()
     })
   }
 
-  private transition(record: JobRecord<TPayload, TResult>, to: JobStatus): void {
+  /**
+   * EXP-003/004 (vigesimo quinto incremento - Fase 4) - bug real corrigido: antes, uma transicao
+   * pra COMPLETED/FAILED/CANCELED virava DUAS chamadas separadas a `store.update` (uma so com
+   * `status` daqui, outra logo depois em `run()`/`cancel()` so com `result`/`error`/`completedAt`).
+   * `ExportJobStore.update` (unica implementacao concreta de `JobStore`) so grava `outputPath`
+   * quando ve `status: 'COMPLETED'` na MESMA chamada que carrega `result` - a segunda chamada
+   * (so com `result`, sem `status`) caia no ramo generico de `updateProgress`, que NUNCA grava
+   * `outputPath`. Resultado: todo job de exportacao terminava com `outputPath: ''` no banco, mesmo
+   * com o arquivo real escrito com sucesso no disco - so descoberto agora que `ExportService`
+   * (EXP-003/004) finalmente exercita `run()` de ponta a ponta pela primeira vez desde que este
+   * runner foi desenhado. `extraPatch` funde tudo numa UNICA chamada a `store.update`, entao
+   * qualquer `JobStore` que precise ver `status` e o resto do patch juntos (como este) ve os dois
+   * de uma vez.
+   */
+  private transition(
+    record: JobRecord<TPayload, TResult>,
+    to: JobStatus,
+    extraPatch: Partial<JobRecord<TPayload, TResult>> = {}
+  ): void {
     if (!canTransitionJob(record.status, to)) {
       throw new InvalidJobTransitionError(record.status, to)
     }
     record.status = to
-    this.store.update(record.id, { status: to })
+    this.store.update(record.id, { status: to, ...extraPatch })
   }
 }

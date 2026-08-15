@@ -101,6 +101,26 @@ describe('ExportJobRepository', () => {
     expect(job?.error).toBe('disco cheio')
   })
 
+  it('cancels a job (EXP-003/004 - completedAt precisa ser gravado tambem no cancelamento)', () => {
+    const id = randomUUID()
+    repository.create({
+      id,
+      editProjectId,
+      status: 'RUNNING',
+      progress: 30,
+      outputPath: null,
+      error: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      completedAt: null
+    })
+
+    repository.cancel(id, '2026-01-01T00:02:00.000Z')
+
+    const job = repository.findById(id)
+    expect(job?.status).toBe('CANCELED')
+    expect(job?.completedAt).toBe('2026-01-01T00:02:00.000Z')
+  })
+
   it('cascades delete from the parent edit project (ON DELETE CASCADE)', () => {
     const id = randomUUID()
     repository.create({

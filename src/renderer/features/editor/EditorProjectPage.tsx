@@ -14,6 +14,7 @@ import type {
   LayoutPreset
 } from '@shared/schemas/editor.schema'
 import type { ProjectDetailsResponse } from '@shared/schemas/project.schema'
+import type { ExportJobResponse, ExportResolution } from '@shared/schemas/export.schema'
 
 /** EDIT-010 - posicao/tamanho/forma da trilha CAMERA overlay, convertidos em CSS inline
  * (porcentagens relativas ao container `.editor-preview-container`, ver global.css). */
@@ -33,6 +34,26 @@ const LAYOUT_PRESET_LABELS: Record<LayoutPreset, string> = {
   SIDE_BY_SIDE: 'Lado a lado',
   SCREEN_ONLY: 'Só tela',
   CAMERA_ONLY: 'Só câmera'
+}
+
+/** EXP-003/004 - rotulos em portugues pros botoes de resolucao de exportacao. */
+const EXPORT_RESOLUTION_LABELS: Record<ExportResolution, string> = {
+  HD_720P: 'Exportar em 720p',
+  FULL_HD_1080P: 'Exportar em 1080p'
+}
+
+/** EXP-003/004 - mesmo raciocinio de `JOB_STATUSES` (shared/types/job.ts): so QUEUED/RUNNING
+ * ainda podem mudar de estado - poll so enquanto o job estiver num desses dois. */
+function isExportJobInProgress(job: ExportJobResponse): boolean {
+  return job.status === 'QUEUED' || job.status === 'RUNNING'
+}
+
+const EXPORT_STATUS_LABELS: Record<ExportJobResponse['status'], string> = {
+  QUEUED: 'Na fila',
+  RUNNING: 'Exportando',
+  COMPLETED: 'Concluida',
+  FAILED: 'Falhou',
+  CANCELED: 'Cancelada'
 }
 
 /**
@@ -168,6 +189,56 @@ function EditorProjectView({
     setPendingSaves((count) => count - 1)
     setLastSaveFailed(!succeeded)
   }, [])
+
+  // EXP-003/004 - estado do job de exportacao MAIS RECENTE deste projeto de edicao (so um por
+  // vez na UI, mesmo raciocinio de `pendingSaves`/`gainRequestSeqRef` de nao deixar chamadas
+  // concorrentes desatualizadas se sobrescreverem). `exportError` cobre so a REQUISICAO de start
+  // (validacao/binario ausente) - uma falha DURANTE o render real aparece como `job.status ===
+  // 'FAILED'`/`job.error`, mostrado a partir do proprio `exportJob` no polling abaixo.
+  const [exportJob, setExportJob] = useState<ExportJobResponse | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
+  const [exportBusy, setExportBusy] = useState(false)
+
+  const startExport = useCallback(
+    async (resolution: ExportResolution) => {
+      setExportError(null)
+      setExportBusy(true)
+      try {
+        const job = await window.meetingStudio.export.start({
+          editProjectId: editProject.id,
+          resolution
+        })
+        setExportJob(job)
+      } catch {
+        setExportError('Nao foi possivel iniciar a exportacao.')
+      } finally {
+        setExportBusy(false)
+      }
+    },
+    [editProject.id]
+  )
+
+  // EXP-003/004 - enquanto o job estiver QUEUED/RUNNING, consulta `export.getStatus` a cada 1s
+  // (mesmo espirito de `useRecordingSession` consultando espaco em disco periodicamente) - para
+  // sozinho assim que o job sai desses dois estados, sem exigir nenhuma acao do usuario.
+  useEffect(() => {
+    if (!exportJob || !isExportJobInProgress(exportJob)) return
+    let cancelled = false
+    const intervalId = window.setInterval(() => {
+      window.meetingStudio.export
+        .getStatus(exportJob.id)
+        .then((updated) => {
+          if (!cancelled) setExportJob(updated)
+        })
+        .catch(() => {
+          /* falha transitoria de polling - tenta de novo no proximo tick */
+        })
+    }, 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [exportJob])
 
   const playback = useMultiTrackPlayback(timeline)
   // EDIT-011 - unica fonte de verdade pra "o que desenhar no preview": qual(is) trilha(s) de
@@ -618,7 +689,36 @@ function EditorProjectView({
       ) : (
         <p>Carregando timeline...</p>
       )}
-      <EmptyState message="Autosave chega nos proximos incrementos da Fase 3." />
+      <h2>Exportar</h2>
+      {/* EXP-003/004 - so trilha unica (fundo) suportada nesta fase; PiP/lado-a-lado (`layoutPreset`
+          PIP/SIDE_BY_SIDE) sao rejeitados pelo proprio `ExportService` com uma mensagem clara -
+          nenhuma validacao duplicada aqui, o backend e a unica fonte de verdade sobre o que pode
+          ser exportado. */}
+      <div className="editor-export-controls">
+        {(Object.keys(EXPORT_RESOLUTION_LABELS) as ExportResolution[]).map((resolution) => (
+          <button
+            key={resolution}
+            type="button"
+            onClick={() => void startExport(resolution)}
+            disabled={exportBusy || !hasPlayableMedia || (!!exportJob && isExportJobInProgress(exportJob))}
+          >
+            {EXPORT_RESOLUTION_LABELS[resolution]}
+          </button>
+        ))}
+      </div>
+      {exportError && (
+        <p className="editor-export-controls__error" role="alert">
+          {exportError}
+        </p>
+      )}
+      {exportJob && (
+        <p className="editor-export-status" role="status">
+          {EXPORT_STATUS_LABELS[exportJob.status]}
+          {isExportJobInProgress(exportJob) && ` (${exportJob.progress}%)`}
+          {exportJob.status === 'FAILED' && exportJob.error && ` - ${exportJob.error}`}
+          {exportJob.status === 'COMPLETED' && exportJob.outputPath && ` - ${exportJob.outputPath}`}
+        </p>
+      )}
     </div>
   )
 }

@@ -734,6 +734,26 @@ body {
   color: var(--ms-color-danger);
 }
 
+/* EXP-003/004 - botoes de exportacao + indicador de progresso do job, mesmo padrao visual de
+   `.editor-edit-controls`/`.editor-save-status`. */
+.editor-export-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ms-space-2);
+  margin: 0 0 var(--ms-space-3);
+}
+
+.editor-export-controls__error {
+  color: var(--ms-color-danger);
+  margin: 0 0 var(--ms-space-3);
+}
+
+.editor-export-status {
+  font-size: 0.8rem;
+  color: var(--ms-color-text-muted);
+  margin: 0 0 var(--ms-space-3);
+}
+
 /* EDIT-003 parte 2 - regua/lanes clicaveis buscam (seek) o player; cursor indica isso. */
 .timeline__ruler--seekable,
 .timeline__track-lane--seekable {

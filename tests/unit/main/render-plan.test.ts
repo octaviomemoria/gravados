@@ -129,6 +129,22 @@ describe('buildRenderPlan', () => {
     expect(plan.audio[0]!.trackId).toBe('SYSTEM_AUDIO')
   })
 
+  it(
+    'excludes CAMERA/SCREEN from the audio mix even when not muted (bug fixed EXP-003/004: ' +
+      'this app always captures those two without embedded audio, ver RecordingSetupPage.tsx/' +
+      'useRecordingSession.ts - an unmuted CAMERA/SCREEN in `audio[]` would make buildFfmpegArgs ' +
+      'generate an atrim filter against a stream that does not exist on the real source file)',
+    () => {
+      const screen = track({ type: 'SCREEN' })
+      const camera = track({ type: 'CAMERA' })
+      const mic = track({ type: 'MICROPHONE' })
+      const plan = buildRenderPlan(timeline([screen, camera, mic]), { resolution: 'HD_720P' })
+
+      expect(plan.audio).toHaveLength(1)
+      expect(plan.audio[0]!.trackId).toBe('MICROPHONE')
+    }
+  )
+
   it('converts clips to render clips preserving sourceStartMs/duration/timeline position', () => {
     const mic = track({
       type: 'MICROPHONE',

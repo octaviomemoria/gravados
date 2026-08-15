@@ -43,12 +43,14 @@ ponta - ver
 [Transformação de câmera (PiP)](#transformação-de-câmera-pip-fase-3),
 [Layout da composição](#layout-da-composição-fase-3) e
 [Autosave e indicador de salvamento](#autosave-e-indicador-de-salvamento-fase-3). A
-**Fase 4 — Export** começou: `ffmpeg-static`/`ffprobe-static` instalados (binário real, não mais
-so um wrapper vazio) e o "Timeline Compiler" (EXP-001/002 - traduz a timeline editada num render
-plan estruturado, antes de qualquer comando FFmpeg) já funcionam de ponta a ponta - ver
-[Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4). `export.start`
-continua lançando `NotImplementedError` até um incremento futuro conectar o render plan a um
-comando FFmpeg de verdade.
+**Fase 4 — Export** avançou bastante: `ffmpeg-static`/`ffprobe-static` instalados, o "Timeline
+Compiler" (EXP-001/002 - traduz a timeline editada num render plan estruturado) e agora também o
+"FFmpeg Plan" + "Render Job" (EXP-003/004 - `export.start` produz um MP4 720p/1080p REAL em disco,
+com botões de exportação na tela do editor) funcionam de ponta a ponta - ver
+[Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4) e
+[Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4).
+Escopo ainda limitado a uma única trilha de vídeo de fundo (sem PiP/lado-a-lado real no arquivo
+exportado, nem exportação só de áudio) - próximos incrementos da fase.
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -1117,6 +1119,75 @@ seguinte). `export.start` continua lançando `NotImplementedError`.
   playback - e `editor (camera transform)` - `computePreviewLayout` via overlay PiP), ambos
   passaram limpos.
 
+### Export real: comando FFmpeg + ExportService (Fase 4)
+
+Vigésimo quinto incremento - EXP-003/004, o "FFmpeg Plan" e o "Render Job" do pipeline conceitual
+(`05_MEDIA_EDITOR.md` §12-13). Primeiro incremento que efetivamente ESCREVE um arquivo de saída:
+`export.start` agora dispara um render real via FFmpeg, produzindo um MP4 720p/1080p de verdade em
+`<rootPath>/exports/`. Botões "Exportar em 720p"/"Exportar em 1080p" na `EditorProjectPage`, com
+indicador de progresso/status; `ExportsPage` também reconsulta `export.list` periodicamente.
+
+- **`main/media/ffmpeg-command.ts` (`buildFfmpegArgs`) traduz um `RenderPlan` num array de
+  argumentos FFmpeg reais** - nunca uma string concatenada (`AGENTS.md`). Um `filter_complex` monta:
+  `trim`/`atrim` + `setpts`/`asetpts` por clip (reseta o carimbo de tempo pra 0 - concatenar dois
+  clips do MEIO de arquivos diferentes sem isso produziria timestamps fora de ordem), `concat` pra
+  múltiplos clips na mesma trilha (uma trilha pode ter vários - um `REMOVE_RANGE` no meio de um
+  segmento produz dois clips do MESMO arquivo; segmentação por tempo/tamanho produz vários arquivos
+  diferentes; tratados identicamente), `scale`+`pad` pra resolução de saída, `volume`+`afade` por
+  trilha de áudio, `amix` só quando há MAIS de uma trilha de áudio (evita um estágio de filtro
+  desnecessário pra uma única trilha), e um `trim`/`atrim` final aplicando a faixa de tempo
+  (`output.startMs`/`endMs`). Escopo deste incremento: só `background` (trilha única) - retorna
+  `null` (o chamador decide como reagir) quando o plano tem `overlay`/`sideBySideRight`
+  (PiP/lado-a-lado), deferido pra um incremento futuro (EXP-004b).
+- **`main/services/export.service.ts` (`ExportService`) orquestra o pipeline inteiro**: timeline
+  editada (`EditorService.getEditedTimeline`) → `buildRenderPlan` (EXP-001) → `buildFfmpegArgs` →
+  enfileira via `exportJobRunner`/`ExportJobRepository` (já instanciados desde a Fase 0/EXP-001,
+  só agora exercitados de verdade) → `runFfmpegProcess` (EXP-002) com progresso conectado ao
+  `JobRunner`. `startExport` é SÍNCRONO no enfileiramento (cria o job, dispara o FFmpeg em segundo
+  plano via `void exportJobRunner.run(...)`) - o handler IPC devolve o job `QUEUED`/`RUNNING`
+  imediatamente, sem o renderer bloquear esperando o render inteiro.
+- **Bug real corrigido: `JobRunner.transition()` perdia `result`/`error` numa transição
+  COMPLETED/FAILED/CANCELED** - `run()` fazia DUAS chamadas separadas a `store.update` pra uma
+  única transição (uma só com `status`, via `transition()`, outra logo depois só com
+  `result`/`error`/`completedAt`). `ExportJobStore.update` só grava `outputPath`/`error` quando vê
+  `status` E o resto do patch JUNTOS na MESMA chamada - a segunda chamada (sem `status`) caía no
+  ramo genérico de `updateProgress`, que nunca grava `outputPath`. Resultado: todo job de exportação
+  terminava com `outputPath: ''` no banco, mesmo com o arquivo real escrito com sucesso no disco -
+  só descoberto porque este é o PRIMEIRO incremento que exercita `JobRunner.run()` de ponta a ponta
+  desde que o runner foi desenhado (Fase 0). Corrigido fundindo tudo numa única chamada
+  (`transition(record, to, extraPatch)`); `ExportJobRepository` ganhou um método `cancel()` paralelo
+  a `complete`/`fail` pelo mesmo motivo (`updateProgress` sozinho nunca grava `completedAt`).
+- **Segundo bug real corrigido, mais sério: `buildRenderPlan` incluía CAMERA/SCREEN no mix de
+  áudio mesmo não-mutadas** - este app captura CAMERA e SCREEN SEMPRE sem áudio embutido
+  (`RecordingSetupPage.tsx`/`useRecordingSession.ts` pedem `getUserMedia`/`desktopCapturer`
+  explicitamente com `audio: false` pras duas; áudio só existe via MICROPHONE/SYSTEM_AUDIO, trilhas
+  SEPARADAS por desenho). Uma trilha CAMERA/SCREEN não-mutada (o caso comum) virava uma
+  `RenderAudioLayer` normalmente, e `buildFfmpegArgs` gerava um filtro `atrim` referenciando um
+  stream `:a` que o arquivo de origem simplesmente não tem - o FFmpeg real rejeitaria QUALQUER
+  exportação com uma trilha de vídeo não-mutada (praticamente todo caso real). Só não foi pego pelo
+  primeiro teste de integração porque o clipe sintético gerado ali (lavfi `testsrc`+`sine`) tinha
+  vídeo E áudio no MESMO arquivo, ao contrário de uma trilha SCREEN/CAMERA real - corrigido
+  filtrando `audio[]` por `!isVideoTrackType(track.type)` além de `!muted`, e o teste de integração
+  reescrito pra gerar dois clipes sintéticos SEPARADOS (um vídeo-only via `-an`, um áudio-only via
+  `-vn`), replicando a forma real dos arquivos que o app produz.
+- **Nome do arquivo de saída inclui a resolução e um timestamp** (`export_<resolucao>_<epoch>.mp4`)
+  - simples, sem colisão entre exportações consecutivas do mesmo projeto de edição, sem depender de
+  nenhuma configuração nova.
+- Testado via 12 novos testes estruturais de `buildFfmpegArgs` (null pra PiP/lado-a-lado/sem-vídeo,
+  inputs/filtro bem formados, concat multi-clip com reuso de input, volume+fade+amix, sem amix pra
+  trilha única, trim de faixa de tempo, rejeita path fora do projeto, termina com
+  `-movflags +faststart`/`-progress pipe:1`/caminho de saída), 4 novos testes de `ExportService`
+  (3 de validação sem spawnar FFmpeg + 1 de integração REAL - gera dois clipes sintéticos via o
+  próprio `ffmpeg-static` instalado, roda o pipeline inteiro até um MP4 real em disco, prova que
+  `buildFfmpegArgs` gera sintaxe FFmpeg genuinamente válida, não só estruturalmente plausível), 3
+  novos testes de regressão pro bug do `JobRunner`/`ExportJobStore` (`export-job-store.test.ts`,
+  via `JobRunner` + `ExportJobStore` reais, não um store fake em memória), mais 1 teste novo em
+  `render-plan.test.ts` (CAMERA/SCREEN excluídas do mix mesmo não-mutadas) e 1 em
+  `export-job.repository.test.ts` (`cancel()` grava `completedAt`). **357 testes, 35 arquivos.**
+  1 novo teste E2E (`editor (export)`) grava tela+microfone real, clica no botão de exportar, espera
+  o status "Concluída" e confirma que o arquivo MP4 existe de verdade em disco com bytes - a única
+  forma de confirmar que a nova superfície de UI/IPC funciona de ponta a ponta, não só em isolamento.
+
 ## Estrutura de diretórios
 
 ```text
@@ -1704,6 +1775,27 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
      (EXP-002) porque são a mesma infraestrutura de processo (spawn + stdout/stderr + kill);
      `onProgress` só dispara se o CHAMADOR incluir `-progress pipe:1` nos próprios `args` - o
      wrapper nunca injeta flags que o chamador não pediu.
+116. **`buildFfmpegArgs` retorna `null` (não lança) pra um plano fora do escopo (PiP/lado-a-lado)**
+     — mesmo padrão de função pura sem exceção já usado por `buildRenderPlan`; o CHAMADOR
+     (`ExportService`) decide como reagir (hoje: rejeita a exportação com `ValidationError` e uma
+     mensagem clara), mantendo a função de tradução testável isoladamente sem precisar simular
+     nenhum estado de erro específico do domínio.
+117. **`ExportService.startExport` é fire-and-forget de propósito** — enfileira o job e dispara
+     `void exportJobRunner.run(...)` SEM aguardar; o handler IPC devolve o job `QUEUED`/`RUNNING`
+     imediatamente. Consequência observável (coberta num comentário de teste): como `JobRunner.run`
+     é uma função `async` cujo corpo roda SINCRONAMENTE até o primeiro `await` real (dentro de
+     `runFfmpegProcess`, depois do `spawn` já ter acontecido), o status já pode estar `RUNNING` no
+     instante em que `startExport` retorna - nunca um jeito confiável de observar `QUEUED` de fora.
+118. **`JobRunner.transition` ganhou um `extraPatch` opcional, fundindo `status` + `result`/`error`/
+     `completedAt` numa ÚNICA chamada a `store.update`** — bug real corrigido (ver seção acima);
+     qualquer `JobStore` que precise ver o status final e o resultado JUNTOS (como
+     `ExportJobStore`) agora recebe os dois de uma vez, não em duas chamadas separadas.
+119. **`buildRenderPlan.audio` exclui CAMERA/SCREEN mesmo não-mutadas** — bug real corrigido (ver
+     seção acima); só MICROPHONE/SYSTEM_AUDIO entram no mix de áudio, as duas únicas trilhas que
+     este app efetivamente captura com áudio embutido.
+120. **Nome do arquivo exportado usa resolução + timestamp (`export_<res>_<epoch>.mp4`), não o
+     nome/título da gravação** — simples e sem colisão entre exportações consecutivas; um nome
+     amigável baseado no título fica como refinamento futuro de UX, não bloqueante.
 
 ## Testes
 
@@ -1790,12 +1882,18 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   depois do `deleteAfterSequence` já ter rodado dentro da mesma transação - confirma que cursor,
   revision e o log ficam EXATAMENTE como antes da tentativa, e que o serviço continua funcional
   depois), **`buildRenderPlan` (EXP-001)** (os 3 modos de layout com as trilhas certas, filtro de
-  trilha não-vídeo, ganho/fade resolvidos, trilha mutada excluída do mix, conversão de clips,
-  resoluções 720p/1080p, faixa de tempo padrão vs. explícita), **`runFfmpegProcess`/
-  `parseFfmpegProgressLine`/`computeExportProgress` (EXP-002)** (spawns reais via
-  `process.execPath`, sem mockar `child_process` - exitCode/stderr/progresso/cancelamento de
-  verdade), `resolveFfmpegBinaries` resolvendo pro binário real instalado.
-  **336 testes, 32 arquivos.**
+  trilha não-vídeo, trilha mutada OU não-vídeo excluída do mix de áudio, ganho/fade resolvidos,
+  conversão de clips, resoluções 720p/1080p, faixa de tempo padrão vs. explícita),
+  **`runFfmpegProcess`/`parseFfmpegProgressLine`/`computeExportProgress` (EXP-002)** (spawns reais
+  via `process.execPath`, sem mockar `child_process` - exitCode/stderr/progresso/cancelamento de
+  verdade), `resolveFfmpegBinaries` resolvendo pro binário real instalado, **`buildFfmpegArgs`
+  (EXP-003/004)** (null pra PiP/lado-a-lado/sem-vídeo, inputs/filtro bem formados, concat
+  multi-clip com reuso de input, volume+fade+amix, sem amix pra trilha única, trim de faixa de
+  tempo, rejeita path fora do projeto), **`ExportService` de ponta a ponta** (validação sem
+  spawnar FFmpeg + um teste de INTEGRAÇÃO REAL que gera clipes sintéticos via `ffmpeg-static` e
+  roda o pipeline inteiro até um MP4 real em disco), e a regressão dedicada do bug de
+  `JobRunner`/`ExportJobStore` (`export-job-store.test.ts`, via os dois reais, não um store fake).
+  **357 testes, 35 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -1913,7 +2011,7 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   que o indicador ".editor-save-status" já mostra "Alterações salvas automaticamente" ANTES de
   qualquer mutação, troca o layout pelo select, e confirma que o indicador volta pro mesmo texto
   (nunca preso em "Salvando..." nem com a classe de erro).
-  **12 testes**, isolado `editor (autosave indicator)` passou de forma limpa (10,3s, sem retry)
+  **13 testes**, isolado `editor (autosave indicator)` passou de forma limpa (10,3s, sem retry)
   depois de uma primeira tentativa isolada que bateu na mesma classe de bootstrap já documentada
   (`getByRole('status')` sem "REC" a tempo, confirmado via `error-context.md`, nunca dentro do
   código de dirty-state em si). Rodada dedicada de regressão nos testes pré-existentes de
@@ -1922,6 +2020,17 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   mesma etapa de setup compartilhada de sempre, nunca dentro da lógica nova - sem nenhuma regressão
   visível causada pelo indicador de salvamento. Correção de lógica confirmada pelo teste de
   atomicidade do `EditorService` (100% verde) e pela execução isolada limpa do próprio teste E2E.
+  Décimo terceiro teste (`test.describe('editor (export)')`, EXP-003/004) grava tela+microfone
+  reais, cria o projeto de edição, clica em "Exportar em 720p", espera o indicador
+  `.editor-export-status` mostrar "Concluída" (timeout bem mais generoso que os demais - um encode
+  FFmpeg real precisa de tempo de verdade, não só I/O de disco) e confirma via `export.list` que o
+  arquivo MP4 existe de verdade em disco com bytes - a única forma de confirmar que a nova
+  superfície de UI/IPC funciona de ponta a ponta, não só em isolamento (unit tests). Isolado, o
+  teste falhou nas duas primeiras tentativas por `electron.launch: WebSocket error: read
+  ECONNRESET`/`Target page, context or browser has been closed` (o Electron nem chegou a abrir,
+  mesma classe de contenção severa de recursos da máquina já documentada em incrementos
+  anteriores) e passou limpo na terceira (44,9s, tempo real de encode incluído) - nunca uma falha
+  de asserção dentro do teste em si.
 
 ## Pendências conhecidas
 
@@ -2068,19 +2177,24 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - **Sem histórico/auditoria visível de saves** - o indicador (EDIT-012) só mostra o estado ATUAL
   ("salvando"/"salvo"/"falhou"), não um log de quando cada mutação foi persistida nem uma forma de
   reexibir uma falha antiga depois que o indicador já voltou pro estado "salvo".
-- **`export.start` continua lançando `NotImplementedError` (EXP-001/002)** - o render plan e o
-  wrapper FFmpeg real existem, mas nada ainda os conecta a um comando FFmpeg de verdade nem a um
-  job real via `JobRunner`/`ExportJobStore` (ambos já existiam desde a Fase 0, nunca usados até
-  agora); fica pro próximo incremento (EXP-003, MP4 720p).
-- **`RenderPlan` não sabe se uma trilha realmente TEM um stream de áudio no arquivo de origem** -
-  toda trilha não-mutada vira uma entrada em `audio[]`, mesmo que o segmento gravado seja
-  video-only sem faixa de áudio nenhuma (ex.: uma trilha `CAMERA` sem microfone embutido); caberá
-  ao construtor de comando FFmpeg (ou a uma checagem via `ffprobe`) decidir o que fazer com uma
-  entrada de áudio "vazia" - não valida isso ainda.
+- **`export.start` agora produz um MP4 real, mas só pra uma única trilha de vídeo de fundo
+  (EXP-003/004)** - `buildFfmpegArgs` rejeita (retorna `null`, `ExportService` traduz pra
+  `ValidationError`) qualquer plano com `overlay`/`sideBySideRight` (layout PiP/lado-a-lado) -
+  PiP/lado-a-lado real no arquivo EXPORTADO (não só no preview) fica pro incremento EXP-004b.
+- **Sem exportação de áudio-only (MP3/WAV/M4A-AAC), sem UI de faixa de tempo, sem cancelamento
+  pela UI** - `buildRenderPlan` já aceita `rangeMs` e `runFfmpegProcess`/`JobRunner.cancel` já
+  suportam progresso/cancelamento desde EXP-002, mas nenhum dos três tem UI/wiring ainda; ficam
+  pros incrementos EXP-005/006/007-008 respectivamente.
+- **Nenhuma validação via `ffprobe` do arquivo de saída antes de marcar o job `COMPLETED`
+  (EXP-009, ainda não implementado)** - um MP4 corrompido ou vazio (ex.: FFmpeg saiu com código 0
+  mas produziu um arquivo inválido, caso raro mas possível) seria marcado `COMPLETED` mesmo assim;
+  o `ExportService` só confia no `exitCode` do processo FFmpeg hoje.
 - **Sem suporte a multicamera nem a trilhas de vídeo além de SCREEN/CAMERA no render plan** -
   `RenderPlan.background`/`overlay`/`sideBySideRight` assumem exatamente essas duas trilhas de
   vídeo possíveis, o mesmo escopo do EDIT-010/011; qualquer expansão futura (`05_MEDIA_EDITOR.md`
   §5, "multicamera") exigiria revisitar o modelo.
+- **Nome do arquivo exportado não é configurável nem baseado no título da gravação** - sempre
+  `export_<resolucao>_<epoch>.mp4`; refinamento futuro de UX, não bloqueante.
 
 ## Próximo passo
 
@@ -2100,25 +2214,28 @@ sobre o mesmo log, volume recalculado a cada tick por depender do playhead), EDI
 (layout da composição - PiP/lado-a-lado/só-tela/só-câmera, quarto tipo de operação sobre o mesmo
 log, primeira a mirar a composição inteira em vez de uma trilha) e EDIT-012 (salvamento automático
 - persistência atômica da escrita do log de operações + indicador de dirty-state na UI) funcionam
-de ponta a ponta. A **Fase 4 — Export** começou: EXP-001 (render plan - "Timeline Compiler" que
-traduz a timeline editada numa estrutura `background`/`overlay`/`sideBySideRight`/`audio`/`output`,
-reusando a mesma lógica de layout do preview) e EXP-002 (`ffmpeg-static`/`ffprobe-static`
-instalados, `runFfmpegProcess` com progresso/cancelamento reais) já funcionam de ponta a ponta -
-ver [Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4).
+de ponta a ponta. A **Fase 4 — Export** avançou bastante: EXP-001 (render plan - "Timeline
+Compiler" que traduz a timeline editada numa estrutura `background`/`overlay`/`sideBySideRight`/
+`audio`/`output`, reusando a mesma lógica de layout do preview), EXP-002 (`ffmpeg-static`/
+`ffprobe-static` instalados, `runFfmpegProcess` com progresso/cancelamento reais) e agora EXP-003/
+004 (`buildFfmpegArgs` traduz o `RenderPlan` num comando FFmpeg real - o "FFmpeg Plan" da doc -
+e `ExportService` orquestra o pipeline inteiro até um MP4 720p/1080p de verdade em disco, com
+botões de exportação na `EditorProjectPage`) já funcionam de ponta a ponta - ver
+[Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4) e
+[Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4).
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 4 — Export** (próximo passo imediato): EXP-003/004 (traduzir o `RenderPlan`
-   num comando FFmpeg real - o "FFmpeg Plan" da doc - e produzir um MP4 720p/1080p de verdade,
-   primeiro incremento que efetivamente ESCREVE um arquivo de saída), EXP-005 (exportação só de
-   áudio - inclui os formatos múltiplos pedidos explicitamente pelo usuário: MP3/WAV/M4A-AAC além
-   do MP4 de vídeo, e possivelmente AVI/MPEG/OGG), EXP-006 (faixa de tempo - `buildRenderPlan` já
-   aceita `rangeMs`, só falta a UI + validação), EXP-007/008 (progresso/cancelamento -
-   `runFfmpegProcess` já suporta ambos, falta conectar ao `JobRunner`/`ExportJobStore` existentes
-   desde a Fase 0 e a UI de exportação, ainda inexistente), EXP-009 (validação via ffprobe do
-   arquivo de saída antes de marcar o job `COMPLETED`) - cada operação provavelmente seu próprio
-   incremento, dado o tamanho desta fase. O roadmap marca o fim desta fase como o **Marco MVP**.
+1. Continuar a **Fase 4 — Export** (próximo passo imediato): EXP-005 (exportação só de áudio -
+   inclui os formatos múltiplos pedidos explicitamente pelo usuário: MP3/WAV/M4A-AAC além do MP4
+   de vídeo, e possivelmente AVI/MPEG/OGG), EXP-006 (faixa de tempo - `buildRenderPlan` já aceita
+   `rangeMs`, só falta a UI + validação), EXP-007/008 (progresso/cancelamento pela UI -
+   `runFfmpegProcess`/`JobRunner.cancel` já suportam ambos no nível de infraestrutura, falta o
+   botão/wiring), EXP-009 (validação via ffprobe do arquivo de saída antes de marcar o job
+   `COMPLETED`), EXP-004b (PiP/lado-a-lado real no arquivo exportado, hoje `buildFfmpegArgs`
+   rejeita esse caso) - cada operação provavelmente seu próprio incremento, dado o tamanho desta
+   fase. O roadmap marca o fim desta fase como o **Marco MVP**.
 2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
    depois do MVP, replanejadas quando chegar a vez.

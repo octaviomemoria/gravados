@@ -12,6 +12,7 @@ import {
 import { ProjectService } from './services/project.service'
 import { RecoveryService } from './services/recovery.service'
 import { EditorService } from './services/editor.service'
+import { ExportService } from './services/export.service'
 import { SettingsService, buildDefaultSettings } from './services/settings.service'
 import { JobRunner } from './jobs/job-runner'
 import { ExportJobStore, type ExportJobPayload, type ExportJobResult } from './jobs/export-job-store'
@@ -34,6 +35,7 @@ export interface AppContext {
   projectService: ProjectService
   recoveryService: RecoveryService
   editorService: EditorService
+  exportService: ExportService
   settingsService: SettingsService
   exportJobRunner: JobRunner<ExportJobPayload, ExportJobResult>
   recordingStateMachine: RecordingStateMachine
@@ -84,6 +86,13 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
   const exportJobRunner = new JobRunner<ExportJobPayload, ExportJobResult>(
     new ExportJobStore(exportJobRepository)
   )
+  const exportService = new ExportService(
+    editProjectRepository,
+    projectRepository,
+    editorService,
+    exportJobRunner,
+    exportJobRepository
+  )
   const recordingStateMachine = new RecordingStateMachine()
   const recordingSessionManager = new RecordingSessionManager(
     projectRepository,
@@ -105,6 +114,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     projectService,
     recoveryService,
     editorService,
+    exportService,
     settingsService,
     exportJobRunner,
     recordingStateMachine,

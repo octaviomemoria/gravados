@@ -39,4 +39,16 @@ export class ExportJobRepository {
       .where(eq(exportJobs.id, id))
       .run()
   }
+
+  /** EXP-003/004 - paralelo a `complete`/`fail`: `updateProgress` sozinho nunca grava
+   * `completedAt` (so `progress`/`status`), entao um job CANCELED precisa do proprio metodo pra
+   * nao ficar com `completedAt: null` pra sempre (mesmo bug de fundo corrigido em `job-runner.ts`,
+   * ver comentario la sobre `transition`/`extraPatch`). */
+  cancel(id: string, completedAt: string): void {
+    this.db
+      .update(exportJobs)
+      .set({ status: 'CANCELED', completedAt })
+      .where(eq(exportJobs.id, id))
+      .run()
+  }
 }

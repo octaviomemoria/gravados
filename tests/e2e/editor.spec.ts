@@ -1284,3 +1284,84 @@ test.describe('editor (autosave indicator)', () => {
     await expect(saveStatus).not.toHaveClass(/editor-save-status--error/)
   })
 })
+
+/**
+ * EXP-003/004 (vigesimo quinto incremento - Fase 4, Export). Grava tela+microfone (mesmo padrao
+ * de `recording.spec.ts` "recording (screen + microphone)") - com so essas duas trilhas, o layout
+ * padrao PIP resolve pra `single` com a tela de fundo (sem camera, nada pra sobrepor -
+ * `computePreviewLayout`), dentro do escopo deste incremento (so trilha unica, sem PiP/lado-a-
+ * lado). Exercita o pipeline REAL de ponta a ponta pela UI: clique no botao -> `export.start` real
+ * -> FFmpeg real -> arquivo MP4 real em disco - a unica forma de confirmar que a nova superficie
+ * de UI/IPC deste incremento funciona de verdade, nao so em isolamento (unit tests).
+ */
+test.describe('editor (export)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await electronApp.close()
+  })
+
+  test('exports a real 720p MP4 file via the UI and shows the completed status with its path', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - export ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const firstScreenSource = appWindow.locator('.screen-source-card').first()
+    await expect(firstScreenSource).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await firstScreenSource.click()
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const screenPath = join(rootPath, 'source', 'screen', 'screen_000001.webm')
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(screenPath) && fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando os primeiros chunks de tela e audio serem persistidos em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(appWindow.locator('.timeline__track')).toHaveCount(2, { timeout: POLL_TIMEOUT_MS })
+
+    await appWindow.getByRole('button', { name: 'Exportar em 720p' }).click()
+    const exportStatus = appWindow.locator('.editor-export-status')
+    await expect(exportStatus).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    // FFmpeg real precisa de tempo real pra codificar - timeout bem mais generoso que os demais
+    // polls deste arquivo (que so esperam por I/O de disco, nao um encode de video de verdade).
+    await expect(exportStatus).toContainText('Concluida', { timeout: 90_000 })
+    await expect(exportStatus).toContainText(rootPath)
+
+    const outputPath = await appWindow.evaluate(async () => {
+      const jobs = await window.meetingStudio.export.list()
+      return jobs[0]!.outputPath
+    })
+    expect(outputPath).toBeTruthy()
+    expect(fileHasBytes(outputPath!)).toBe(true)
+  })
+})

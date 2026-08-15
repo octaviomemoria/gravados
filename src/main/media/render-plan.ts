@@ -5,6 +5,7 @@ import type {
   TimelineTrack,
   CameraShape
 } from '../../shared/schemas/editor.schema'
+import type { ExportResolution } from '../../shared/schemas/export.schema'
 
 /**
  * EXP-001 (vigesimo quarto incremento - Fase 4, `05_MEDIA_EDITOR.md` §12-13, "Timeline
@@ -20,7 +21,10 @@ import type {
  * que o usuário viu no editor - nunca duas implementacoes que podem divergir silenciosamente.
  */
 
-export type ExportResolution = 'HD_720P' | 'FULL_HD_1080P'
+// `ExportResolution` vem de `shared/schemas/export.schema.ts` (EXP-003/004) - um unico tipo
+// canonico consumido tanto aqui (main) quanto pela UI de exportacao (renderer), evitando duas
+// definicoes divergentes do mesmo conceito.
+export type { ExportResolution }
 
 const RESOLUTION_DIMENSIONS: Record<ExportResolution, { width: number; height: number }> = {
   HD_720P: { width: 1280, height: 720 },
@@ -79,8 +83,10 @@ export interface RenderPlan {
   /** So preenchido quando `layoutPreset` resolve pra `pip` - a camera sobreposta, com a posicao/
    * tamanho/forma vindos de `cameraTransform` (EDIT-010). */
   overlay: RenderOverlayLayer | null
-  /** Uma entrada por trilha NAO MUTADA (uma trilha `muted` simplesmente nao contribui audio
-   * nenhum ao mix - equivalente a `volume: 0`, mas sem gastar um input do FFmpeg a toa). */
+  /** Uma entrada por trilha NAO MUTADA e capaz de audio (MICROPHONE/SYSTEM_AUDIO - CAMERA/SCREEN
+   * nunca entram aqui, mesmo nao-mutadas, porque este app as captura SEMPRE sem audio embutido,
+   * ver comentario no filtro em `buildRenderPlan`). Uma trilha `muted` simplesmente nao contribui
+   * audio nenhum ao mix - equivalente a `volume: 0`, mas sem gastar um input do FFmpeg a toa. */
   audio: RenderAudioLayer[]
   output: RenderOutputSettings
 }
@@ -166,7 +172,20 @@ export function buildRenderPlan(
   // ficam `null`, o `ExportService` decide o que fazer (audio-only ou rejeitar) num incremento
   // futuro (EXP-005).
 
-  const audio = timeline.tracks.filter((track) => !track.muted).map(toAudioLayer)
+  // EXP-003/004 - bug real corrigido: CAMERA e SCREEN sao capturados SEMPRE sem audio embutido
+  // neste app (`RecordingSetupPage.tsx`/`useRecordingSession.ts` pedem `getUserMedia`/
+  // `desktopCapturer` explicitamente com `audio: false` para essas duas fontes - audio so existe
+  // via MICROPHONE/SYSTEM_AUDIO, trilhas SEPARADAS por design). Antes desta correcao, uma trilha
+  // CAMERA/SCREEN nao-mutada (o caso comum) virava uma `RenderAudioLayer` normalmente, e
+  // `buildFfmpegArgs` gerava um filtro `atrim` referenciando um stream `:a` que o arquivo de
+  // origem SIMPLESMENTE NAO TEM - o FFmpeg real rejeitaria o comando gerado. So nao foi pego pelo
+  // teste de integracao original (`export.service.test.ts`) porque o clipe sintetico gerado la
+  // (lavfi `testsrc`+`sine`) tinha VIDEO E AUDIO no mesmo arquivo, ao contrario de uma trilha
+  // SCREEN/CAMERA real - corrigido nos dois lugares (aqui e no teste, que agora gera um clipe de
+  // tela genuinamente video-only pra provar o cenario real).
+  const audio = timeline.tracks
+    .filter((track) => !track.muted && !isVideoTrackType(track.type))
+    .map(toAudioLayer)
 
   const dimensions = RESOLUTION_DIMENSIONS[options.resolution]
   const range = options.rangeMs ?? { startMs: 0, endMs: timeline.totalDurationMs }
