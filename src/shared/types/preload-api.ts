@@ -34,6 +34,10 @@ import type {
   LayoutPreset
 } from '../schemas/editor.schema'
 import type { StartExportRequest, ExportJobResponse } from '../schemas/export.schema'
+import type {
+  TranscriptionJobResponse,
+  TranscriptResponse
+} from '../schemas/transcription.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
 import type { RecordingState } from './recording-state'
 
@@ -164,6 +168,20 @@ export interface ExportApi {
   cancel: (id: string) => Promise<ExportJobResponse>
 }
 
+/**
+ * AI-001 (Fase 5 — Transcrição). `start` sempre enfileira com sucesso (mesmas validacoes de
+ * projeto/trilha de audio que uma integracao real teria), mas o job SEMPRE termina `FAILED` nesta
+ * fase (nenhum provedor real conectado ainda, ver `TranscriptionService`) - a UI precisa tratar
+ * isso como um estado normal/esperado, nao um bug. `getTranscript` devolve `null` quando o
+ * projeto nunca teve um transcript `COMPLETED` (nunca lanca so por isso).
+ */
+export interface TranscriptionApi {
+  start: (projectId: string, language?: string) => Promise<TranscriptionJobResponse>
+  list: (projectId: string) => Promise<TranscriptionJobResponse[]>
+  getStatus: (id: string) => Promise<TranscriptionJobResponse>
+  getTranscript: (projectId: string) => Promise<TranscriptResponse | null>
+}
+
 export interface SystemApi {
   getAppInfo: () => Promise<{ name: string; version: string; platform: string }>
   getDiskSpace: (path?: string) => Promise<{ freeBytes: number; totalBytes: number; path: string }>
@@ -183,6 +201,7 @@ export interface MeetingStudioApi {
   recovery: RecoveryApi
   editor: EditorApi
   export: ExportApi
+  transcription: TranscriptionApi
   system: SystemApi
   devices: DevicesApi
 }

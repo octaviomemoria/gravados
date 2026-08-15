@@ -6,11 +6,14 @@ import { markers } from './markers.schema'
 import { editProjects } from './edit-projects.schema'
 import { editOperations } from './edit-operations.schema'
 import { exportJobs } from './export-jobs.schema'
+import { transcriptionJobs, transcripts, transcriptSegments } from './transcription.schema'
 
 export const projectsRelations = relations(projects, ({ many }) => ({
   tracks: many(tracks),
   markers: many(markers),
-  editProjects: many(editProjects)
+  editProjects: many(editProjects),
+  transcriptionJobs: many(transcriptionJobs),
+  transcripts: many(transcripts)
 }))
 
 export const tracksRelations = relations(tracks, ({ one, many }) => ({
@@ -44,5 +47,21 @@ export const exportJobsRelations = relations(exportJobs, ({ one }) => ({
   editProject: one(editProjects, {
     fields: [exportJobs.editProjectId],
     references: [editProjects.id]
+  })
+}))
+
+export const transcriptionJobsRelations = relations(transcriptionJobs, ({ one }) => ({
+  project: one(projects, { fields: [transcriptionJobs.projectId], references: [projects.id] })
+}))
+
+export const transcriptsRelations = relations(transcripts, ({ one, many }) => ({
+  project: one(projects, { fields: [transcripts.projectId], references: [projects.id] }),
+  segments: many(transcriptSegments)
+}))
+
+export const transcriptSegmentsRelations = relations(transcriptSegments, ({ one }) => ({
+  transcript: one(transcripts, {
+    fields: [transcriptSegments.transcriptId],
+    references: [transcripts.id]
   })
 }))

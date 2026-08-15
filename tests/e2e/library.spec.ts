@@ -152,4 +152,52 @@ test.describe('library (details, rename, delete)', () => {
       })
       .toBe(false)
   })
+
+  /**
+   * AI-001 (trigesimo segundo incremento - Fase 5 "Transcrição", primeiro incremento pos-Marco
+   * MVP). `transcription.start` sempre enfileira com sucesso pela UI de ponta a ponta (mesmo
+   * pipeline real de IPC/job que EXP-003/004 provou pra exportação), mas o job SEMPRE termina
+   * `FAILED` nesta fase - nenhum `TranscriptionProvider` real esta conectado ainda (ver README
+   * "Próximo passo"). Confirma que esse estado "esperado" chega corretamente ate a UI, nao trava
+   * nem mostra um erro de rede/parsing genuino.
+   */
+  test('starts a transcription via the UI and shows the expected "no provider yet" failure', async () => {
+    test.info().setTimeout(LIBRARY_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - transcricao ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const { rootPath } = await getActiveProjectPaths(appWindow)
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de audio ser persistido em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Detalhes' }).click()
+    await expect(listItem.getByText('Microfone:', { exact: false })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+
+    await listItem.getByRole('button', { name: 'Transcrever' }).click()
+    const status = listItem.locator('.library-list__transcription-status')
+    await expect(status).toContainText('Falhou', { timeout: POLL_TIMEOUT_MS })
+    await expect(status).toContainText('Nenhum provedor de transcricao configurado')
+  })
 })

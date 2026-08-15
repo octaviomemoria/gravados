@@ -11,7 +11,7 @@ describe('migrations', () => {
     client = undefined
   })
 
-  it('creates all 8 tables documented in 06_DATA_MODEL.md', () => {
+  it('creates all 11 tables documented in 06_DATA_MODEL.md (8 originais + 3 de AI-001, Fase 5)', () => {
     client = createTestDatabase()
     const rows = client.sqlite
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
@@ -27,7 +27,10 @@ describe('migrations', () => {
         'projects',
         'segments',
         'settings',
-        'tracks'
+        'tracks',
+        'transcript_segments',
+        'transcription_jobs',
+        'transcripts'
       ].sort()
     )
   })
@@ -53,7 +56,10 @@ describe('migrations', () => {
         'idx_markers_project_timestamp',
         'idx_edit_projects_project_id',
         'idx_edit_operations_project_sequence',
-        'idx_export_jobs_status'
+        'idx_export_jobs_status',
+        'idx_transcription_jobs_project',
+        'idx_transcripts_project',
+        'idx_transcript_segments_transcript_start'
       ].sort()
     )
   })

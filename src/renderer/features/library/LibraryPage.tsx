@@ -7,6 +7,7 @@ import { formatElapsed } from '../recording/format-elapsed'
 import { TRACK_TYPE_LABELS } from './track-type-labels'
 import type { ProjectResponse, ProjectDetailsResponse } from '@shared/schemas/project.schema'
 import type { MarkerResponse } from '@shared/schemas/markers.schema'
+import type { TranscriptionJobResponse } from '@shared/schemas/transcription.schema'
 
 /**
  * RECOV-002/RECOV-003 (decimo incremento - Fase 2, recuperacao). Um projeto chega com
@@ -23,6 +24,15 @@ function isRecoverable(status: ProjectResponse['status']): boolean {
  * editar uma gravacao ainda em andamento ou incompleta corromperia arquivos ainda em uso. */
 function isCompleted(status: ProjectResponse['status']): boolean {
   return status === 'COMPLETED'
+}
+
+/** AI-001 - mesmo raciocinio de `EXPORT_STATUS_LABELS` (`EditorProjectPage.tsx`). */
+const TRANSCRIPTION_STATUS_LABELS: Record<TranscriptionJobResponse['status'], string> = {
+  QUEUED: 'Na fila',
+  RUNNING: 'Transcrevendo',
+  COMPLETED: 'Concluida',
+  FAILED: 'Falhou',
+  CANCELED: 'Cancelada'
 }
 
 /** RF-017: lista de reunioes. Consulta real via IPC (`library.list`, alias de `project.list`). */
@@ -51,6 +61,13 @@ export function LibraryPage() {
   // consumindo (so era exercitado por teste). Falha ao buscar marcadores NAO impede o resto dos
   // detalhes de aparecer (ver `handleToggleDetails`) - sao dados independentes.
   const [markers, setMarkers] = useState<MarkerResponse[] | null>(null)
+
+  // AI-001 (Fase 5 - Transcrição) - mesmo padrao "sob demanda ao expandir" de `markers`/`details`.
+  // `transcriptionJob` e sempre o mais RECENTE (a lista ja vem ordenada por `createdAt` desc,
+  // `TranscriptionJobRepository.listByProject`) - nunca mais de um "em voo" por vez nesta UI.
+  const [transcriptionJob, setTranscriptionJob] = useState<TranscriptionJobResponse | null>(null)
+  const [transcriptionBusy, setTranscriptionBusy] = useState(false)
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
 
   // LIB-004: edicao inline do titulo.
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -92,6 +109,31 @@ export function LibraryPage() {
     }
   }, [])
 
+  // AI-001 - enquanto o job de transcricao estiver QUEUED/RUNNING, consulta
+  // `transcription.getStatus` a cada 1s, mesmo padrao ja usado pra progresso de exportacao em
+  // `EditorProjectPage.tsx` - para sozinho assim que o job sai desses dois estados (nesta fase,
+  // sempre `FAILED`).
+  useEffect(() => {
+    if (!transcriptionJob || (transcriptionJob.status !== 'QUEUED' && transcriptionJob.status !== 'RUNNING')) {
+      return
+    }
+    let cancelled = false
+    const intervalId = window.setInterval(() => {
+      window.meetingStudio.transcription
+        .getStatus(transcriptionJob.id)
+        .then((updated) => {
+          if (!cancelled) setTranscriptionJob(updated)
+        })
+        .catch(() => {
+          /* falha transitoria de polling - tenta de novo no proximo tick */
+        })
+    }, 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [transcriptionJob])
+
   async function handleOpenFolder(projectId: string): Promise<void> {
     setOpenFolderErrorId(null)
     const { opened } = await window.meetingStudio.project.openFolder(projectId)
@@ -122,6 +164,8 @@ export function LibraryPage() {
     setExpandedId(projectId)
     setDetails(null)
     setMarkers(null)
+    setTranscriptionJob(null)
+    setTranscriptionError(null)
     setDetailsLoadingId(projectId)
     try {
       const result = await window.meetingStudio.library.getDetails(projectId)
@@ -139,6 +183,31 @@ export function LibraryPage() {
       setMarkers(result)
     } catch {
       setMarkers([])
+    }
+    // AI-001 - mesmo raciocinio de independencia de `markers` acima; `transcriptionJob` fica
+    // `null` (renderiza so o botao "Transcrever", sem status nenhum) se a busca falhar.
+    try {
+      const jobs = await window.meetingStudio.transcription.list(projectId)
+      setTranscriptionJob(jobs[0] ?? null)
+    } catch {
+      setTranscriptionJob(null)
+    }
+  }
+
+  /** AI-001 - `transcription.start` SEMPRE enfileira com sucesso (mesmas validacoes que uma
+   * integracao real teria), mas o job criado ainda pode estar `QUEUED`/`RUNNING` no instante em
+   * que a chamada retorna - o polling abaixo (`useEffect`) segue ate um estado terminal, que
+   * nesta fase e sempre `FAILED` com uma mensagem clara (nenhum provedor conectado ainda). */
+  async function handleStartTranscription(projectId: string): Promise<void> {
+    setTranscriptionError(null)
+    setTranscriptionBusy(true)
+    try {
+      const job = await window.meetingStudio.transcription.start(projectId)
+      setTranscriptionJob(job)
+    } catch {
+      setTranscriptionError('Nao foi possivel iniciar a transcricao.')
+    } finally {
+      setTranscriptionBusy(false)
     }
   }
 
@@ -365,6 +434,32 @@ export function LibraryPage() {
                             </ul>
                           )}
                         </>
+                      )}
+                      {/* AI-001 (Fase 5) - `transcription.start` sempre enfileira, mas o job
+                          sempre termina `FAILED` nesta fase (nenhum provedor real conectado
+                          ainda, ver README "Próximo passo") - a mensagem de erro exibida aqui e
+                          esperada, nao um bug. */}
+                      <h4>Transcrição</h4>
+                      <Button
+                        variant="secondary"
+                        onClick={() => void handleStartTranscription(project.id)}
+                        disabled={
+                          transcriptionBusy ||
+                          (transcriptionJob?.status === 'QUEUED' || transcriptionJob?.status === 'RUNNING')
+                        }
+                      >
+                        Transcrever
+                      </Button>
+                      {transcriptionError && (
+                        <p className="library-list__error">{transcriptionError}</p>
+                      )}
+                      {transcriptionJob && (
+                        <p className="library-list__transcription-status" role="status">
+                          {TRANSCRIPTION_STATUS_LABELS[transcriptionJob.status]}
+                          {transcriptionJob.status === 'FAILED' &&
+                            transcriptionJob.error &&
+                            ` - ${transcriptionJob.error}`}
+                        </p>
                       )}
                     </>
                   )}

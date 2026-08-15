@@ -60,7 +60,13 @@ funcionam de ponta a ponta - ver
 [Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4),
 [Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4),
 [Validação do arquivo exportado via ffprobe](#validação-do-arquivo-exportado-via-ffprobe-fase-4) e
-[PiP e lado-a-lado reais na exportação](#pip-e-lado-a-lado-reais-na-exportação-fase-4).
+[PiP e lado-a-lado reais na exportação](#pip-e-lado-a-lado-reais-na-exportação-fase-4). A
+**Fase 5 — Transcrição** começou: AI-001 (abstração de provedor - schema/repositórios/job
+assíncrono/canais IPC completos, `transcription.start` sempre enfileira com sucesso, mas o job
+sempre termina `FAILED` nesta etapa porque nenhum provedor real está conectado ainda - envolve
+custo/consentimento do usuário, ver
+[Transcrição: abstração de provedor](#transcrição-abstração-de-provedor-fase-5)) é o primeiro
+incremento pós-Marco MVP.
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -1440,6 +1446,65 @@ arquivo exportado mostra exatamente o mesmo arranjo que o editor mostrou.
   que um teste deste projeto grava as duas fontes de vídeo simultaneamente especificamente pra um
   cenário de exportação.
 
+### Transcrição: abstração de provedor (Fase 5)
+
+Trigésimo segundo incremento - AI-001, primeiro incremento da **Fase 5 — Transcrição**
+(`11_ROADMAP_BACKLOG.md`), a primeira fase genuinamente pós-Marco MVP. Entrega o CONTRATO inteiro
+(schema de banco, repositórios, job assíncrono, canais IPC, UI mínima) sem nenhuma chamada de rede
+real ainda - `transcription.start` sempre enfileira com sucesso (mesmas validações de projeto/
+trilha de áudio que uma integração real teria), mas o job sempre termina `FAILED` com uma mensagem
+clara assim que roda, porque nenhum `TranscriptionProvider` real está conectado em lugar nenhum.
+Mesmo padrão já usado por `export.start` em EXP-001/002 (infraestrutura pronta, último passo
+arriscado/custoso adiado explicitamente).
+
+- **Por que não já conectar um provedor real (ex.: OpenAI, AI-002 no roadmap) agora** —
+  `09_SECURITY_PRIVACY_COMPLIANCE.md` §11 exige um aviso explícito ANTES do primeiro envio de
+  áudio a um provedor externo ("O áudio selecionado será enviado ao provedor de IA configurado
+  para processamento") e §5 exige que a chave de API (sempre DO PRÓPRIO usuário, nunca uma padrão
+  deste app) seja armazenada com segurança (`safeStorage`) - as duas coisas envolvem custo real e
+  uma decisão de privacidade do usuário sobre um app que se descreve como "local-first" logo na
+  primeira linha deste README, não uma escolha técnica livre para delegar (diferente da maioria
+  das decisões de arquitetura registradas neste documento). AI-002 entrega a integração real, esse
+  consentimento, o armazenamento seguro da chave, e o pipeline de mixagem de áudio (reusando
+  `buildAudioFfmpegArgs`, EXP-005) que alimenta `TranscriptionProvider.transcribe`.
+- **Três tabelas, não uma só** (`transcription_jobs`, `transcripts`, `transcript_segments`,
+  `06_DATA_MODEL.md` "Transcript"/"TranscriptSegment") — mesma separação já usada em `export_jobs`
+  (rastreio do PROCESSO) vs. o arquivo final (nunca modelado como linha de banco), mas diferente
+  num ponto: o RESULTADO de uma transcrição precisa ser consultável linha a linha (as fases
+  futuras de busca/semântica, Fase 7, vão consultar `transcript_segments` diretamente), então
+  `transcripts`/`transcript_segments` são linhas de banco de verdade, escritas SÓ quando um job
+  termina `COMPLETED` - nunca uma linha "parcial" visível enquanto o job ainda está em voo.
+- **`TranscriptionProvider` é uma interface pura (`transcription/transcription-provider.ts`),
+  ainda sem nenhuma implementação concreta** — o contrato que AI-002 vai implementar
+  (`transcribe(request, onProgress): Promise<TranscriptionResult>`), documentado e pronto, mas
+  `TranscriptionService` não recebe nenhuma instância dele em lugar nenhum nesta fase - nenhum
+  parâmetro "meio conectado" fingindo o contrário do que está implementado de verdade.
+- **`buildTranscriptEntities` (função pura) já existe e já é testada, mesmo sem nenhum chamador em
+  produção ainda** — gera os ids e monta `TranscriptEntity`/`TranscriptSegmentEntity[]` a partir
+  de um resultado de provedor hipotético; mesmo princípio de "scaffolding de função pura testável
+  isoladamente antes do pipeline inteiro existir" já usado por `computeExportProgress` (EXP-002,
+  testado antes de `ExportService` sequer existir).
+- **UI mínima nos detalhes expandidos da Biblioteca** (não no editor) — transcrição é uma
+  propriedade da GRAVAÇÃO crua (`Transcript.projectId`, não `editProjectId`), então vive ao lado
+  de "Detalhes"/"Marcadores" na tela onde o usuário já vê a gravação como um todo, reusando
+  exatamente o mesmo padrão de "buscar sob demanda ao expandir" + polling de status já usado por
+  marcadores/exportação.
+- Testado via 13 testes reais em `transcription.service.test.ts` (repositórios/`JobRunner` reais,
+  sem nenhum mock - validação de projeto ausente/não-`COMPLETED`/sem trilha de áudio, enfileiramento
+  real confirmando que o job SEMPRE termina `FAILED` com a mensagem exata, `listJobs`/`getStatus`,
+  e `getTranscript` lendo o transcript mais recente com segmentos ordenados por `startMs` via dados
+  semeados diretamente pelo repositório), 3 testes de `buildTranscriptEntities` isolado, 5 novos
+  testes de schema (`StartTranscriptionRequestSchema`/`TranscriptResponseSchema`), e a atualização
+  de `migrate.test.ts` (agora 11 tabelas/11 índices, não mais 8/8). **415 testes, 37 arquivos**
+  (2 arquivos novos: `transcription.service.test.ts` e a própria migração gerada). 1 novo teste E2E
+  em `library.spec.ts` (grava uma sessão real curta, clica "Transcrever" nos detalhes expandidos,
+  confirma que o status chega em "Falhou" com a mensagem exata "Nenhum provedor de transcrição
+  configurado" - a única forma de confirmar que o pipeline de IPC/job chega até a UI de ponta a
+  ponta) - passou limpo isolado numa execução (49,2s); execuções subsequentes bateram na mesma
+  classe de flakiness de bootstrap já documentada extensivamente neste README, sob uma queda de
+  RAM livre real confirmada (~800MB → ~415MB de 16GB durante a validação), nunca dentro do código
+  deste incremento.
+
 ## Estrutura de diretórios
 
 ```text
@@ -2174,6 +2239,27 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
      pra `[]` nesse caso (renderiza "Nenhum marcador nesta gravação" em vez de propagar o erro pra
      a seção inteira) - os dois conjuntos de dados são logicamente independentes, então uma falha
      num não devia contaminar o outro.
+144. **`TranscriptionService` não recebe (nem finge receber) nenhum `TranscriptionProvider` real
+     nesta fase — sem parâmetro construtor opcional "meio conectado"** — o handler do job sempre
+     lança um único erro claro, incondicional; considerado e descartado um design alternativo com
+     um parâmetro `provider?: TranscriptionProvider` no construtor (permitiria testar o caminho de
+     sucesso injetando um fake) por introduzir codepath morto em produção (nunca preenchido em
+     `app-context.ts`) sem ganho real - os testes de sucesso da leitura (`getTranscript`) já
+     semeiam dados diretamente via `TranscriptRepository`, sem precisar de um provedor fake.
+145. **Três tabelas (`transcription_jobs`/`transcripts`/`transcript_segments`), não uma
+     tabela de job genérica reaproveitando `export_jobs`** — os dois tipos de job têm resultados
+     de natureza diferente (um arquivo em disco vs. linhas de banco consultáveis), e as fases
+     futuras de busca (Fase 7) precisam consultar segmentos de transcrição diretamente via SQL -
+     forçar os dois tipos numa tabela polimórfica só complicaria ambos sem necessidade real.
+146. **`buildTranscriptEntities` extraída como função pura e testada isoladamente, mesmo sem
+     nenhum chamador em produção nesta fase** — mesmo princípio já usado por `computeExportProgress`
+     (EXP-002, testado antes de `ExportService` sequer existir): lógica de mapeamento/geração de id
+     pura é segura de entregar e testar ANTES do pipeline completo que vai chamá-la existir,
+     reduzindo o escopo do incremento que a conecta de verdade (AI-002).
+147. **UI de transcrição vive na Biblioteca (detalhes expandidos), não no Editor** — transcrição é
+     uma propriedade da GRAVAÇÃO crua (`Transcript.projectId`), não do projeto de edição
+     (`editProjectId`); colocar o botão "Transcrever" no Editor obrigaria o usuário a criar um
+     projeto de edição só para transcrever, uma dependência artificial que a doc não pede.
 
 ## Testes
 
@@ -2292,8 +2378,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   `ffmpeg-command.test.ts` confirmando o filtro `overlay` real - posição/tamanho em pixels,
   `eof_action=pass` - e o `hstack` real - cada metade escalada/preenchida pro tamanho exato -, mais
   2 testes de integração REAL que exportam tela+câmera sintéticas em PiP e em lado-a-lado,
-  confirmando via ffprobe que a saída tem exatamente a resolução pedida).
-  **397 testes, 35 arquivos.**
+  confirmando via ffprobe que a saída tem exatamente a resolução pedida), **transcrição - abstração
+  de provedor (AI-001)** (`transcription.service.test.ts` com repositórios/`JobRunner` reais -
+  validação de projeto ausente/não-`COMPLETED`/sem trilha de áudio, enfileiramento real confirmando
+  que o job SEMPRE termina `FAILED` com a mensagem exata de "nenhum provedor configurado",
+  `listJobs`/`getStatus`, `getTranscript` lendo o mais recente com segmentos ordenados por
+  `startMs` -, `buildTranscriptEntities` isolado, e schema `transcription.schema.ts`), e a
+  atualização de `migrate.test.ts` pras 3 tabelas/3 índices novos.
+  **415 testes, 37 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2334,9 +2426,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   real curta (só microfone, com um marcador com título/nota criado durante a gravação desde o
   refinamento de marcadores), abre a Biblioteca, expande "Detalhes" (confirma a trilha de
   microfone com bytes reais e o marcador com título/nota visíveis), renomeia inline, exclui com o
-  passo de confirmação, confirma que o item some da lista E que a pasta some do disco. **1
-  teste**, validado limpo em múltiplas execuções isoladas (uma recuperou na mesma classe de
-  flakiness de bootstrap já documentada, nunca dentro do código de marcadores em si).
+  passo de confirmação, confirma que o item some da lista E que a pasta some do disco. **2
+  testes** (o segundo, AI-001: grava uma sessão curta, clica "Transcrever" nos detalhes
+  expandidos, confirma que o status chega em "Falhou" com a mensagem exata "Nenhum provedor de
+  transcrição configurado" - prova o pipeline de IPC/job de ponta a ponta pela UI). Validado limpo
+  isolado numa execução de cada (49,2s pro de transcrição); execuções subsequentes de ambos
+  bateram na mesma classe de flakiness de bootstrap já documentada, sob uma queda de RAM livre
+  real confirmada (~800MB → ~415MB de 16GB) durante a validação - nunca dentro do código de
+  marcadores/transcrição em si.
 - **Playwright** (`tests/e2e/editor.spec.ts`, arquivo próprio - mesmo padrão da decisão #54): grava
   uma sessão real curta, cria o projeto de edição pelo botão "Editar" na Biblioteca, confirma a
   navegação e o resumo da gravação vinculada na página de detalhe, reabre pela lista geral
@@ -2455,10 +2552,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 
 ## Pendências conhecidas
 
-- Editor, transcrição/IA, exportação real em múltiplos formatos (mp4/mp3/wav/etc. - pedido
-  explícito do usuário, adiado para um incremento próprio; ver "Próximo passo"), empacotamento
-  (`electron-builder`) e nuvem/colaboração — fora do escopo desta fase por desenho (ver
-  `11_ROADMAP_BACKLOG.md`).
+- Empacotamento (`electron-builder`) e nuvem/colaboração — fora do escopo do MVP por desenho (ver
+  `11_ROADMAP_BACKLOG.md`, Fases 8-9).
+- **Transcrição (AI-001) ainda não transcreve nada de verdade** — `transcription.start` sempre
+  enfileira, mas o job sempre termina `FAILED` (nenhum `TranscriptionProvider` real conectado em
+  lugar nenhum). AI-002 (próximo incremento planejado) entrega a integração real, o consentimento
+  explícito exigido por `09_SECURITY_PRIVACY_COMPLIANCE.md` §11, o armazenamento seguro da chave
+  de API (`safeStorage`) e o pipeline de mixagem de áudio que alimenta o provedor.
 - Monitor de espaço em disco não tem indicador visual de "espaço OK" explícito, só o texto de
   espaço livre sempre visível e o banner de aviso quando baixo (refinamento futuro cosmético, não
   bloqueante). Correção do bug do `check-disk-space` (ver decisão #39) foi um benefício colateral
@@ -2660,17 +2760,29 @@ na `EditorProjectPage` - ver
 EXP-009, o roadmap desta fase está completo e o **Marco MVP** (`11_ROADMAP_BACKLOG.md`) foi
 atingido: as quatro fases do MVP (Recording Core, Recovery + Library, Editor MVP, Export) estão
 todas completas e testadas de ponta a ponta - EXP-004b é um refinamento dentro desse escopo já
-entregue, não um item do roadmap em si.
+entregue, não um item do roadmap em si. A **Fase 5 — Transcrição** começou: AI-001 (abstração
+completa de provedor - schema/repositórios/job assíncrono/canais IPC/UI mínima na Biblioteca,
+`transcription.start` sempre enfileira com sucesso mas o job sempre termina `FAILED` porque
+nenhum provedor real está conectado ainda) funciona de ponta a ponta - ver
+[Transcrição: abstração de provedor](#transcrição-abstração-de-provedor-fase-5).
 
 Desenvolvimento segue de forma incremental e contínua, cada incremento validado
 (lint/typecheck/testes/build/E2E) e documentado neste README antes do próximo começar. Ordem
 planejada a partir daqui:
 
-1. Refinamentos menores ainda pendentes dentro do escopo já entregue do MVP, sem fase própria no
+1. **AI-002** (próximo incremento planejado) - a integração real com um provedor de transcrição
+   (OpenAI, conforme `11_ROADMAP_BACKLOG.md`), que exige três coisas fora do escopo de uma decisão
+   técnica livre pra delegar autonomamente: (a) o usuário fornecer sua própria chave de API (custo
+   real, por conta do usuário); (b) um consentimento explícito exibido ANTES do primeiro envio de
+   áudio a um serviço externo, exigido por `09_SECURITY_PRIVACY_COMPLIANCE.md` §11; (c) uma
+   decisão do usuário sobre usar um recurso que envia dados (potencialmente confidenciais) pra
+   fora da máquina, num app que se descreve como "local-first" - por isso este incremento fica
+   para quando o usuário confirmar que quer prosseguir, ao contrário de todo o resto deste roadmap.
+2. Refinamentos menores ainda pendentes dentro do escopo já entregue do MVP, sem fase própria no
    roadmap - ver "Pendências conhecidas" para a lista completa acumulada ao longo das quatro fases
    (ex.: `shape: 'circle'` continua uma aproximação retangular tanto no preview quanto no export
    desde EXP-004b; `SIDE_BY_SIDE` continua fixo em 50/50; marcadores ganharam título/nota +
    visualização na Biblioteca, mas ainda não têm edição/exclusão).
-2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) - o trabalho
-   pós-MVP propriamente dito, cada uma exigindo um replanejamento próprio (arquitetura, dependências
-   novas, escopo) quando chegar a vez, dado o tamanho e a natureza distinta de cada uma.
+3. Fases 6-9 (meeting intelligence, busca semântica, nuvem, integrações) - o restante do trabalho
+   pós-MVP, cada uma exigindo um replanejamento próprio (arquitetura, dependências novas, escopo)
+   quando chegar a vez, dado o tamanho e a natureza distinta de cada uma.

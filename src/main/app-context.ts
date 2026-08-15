@@ -7,15 +7,23 @@ import {
   EditProjectRepository,
   EditOperationRepository,
   ExportJobRepository,
+  TranscriptionJobRepository,
+  TranscriptRepository,
   SettingsRepository
 } from './database/repositories'
 import { ProjectService } from './services/project.service'
 import { RecoveryService } from './services/recovery.service'
 import { EditorService } from './services/editor.service'
 import { ExportService } from './services/export.service'
+import { TranscriptionService } from './services/transcription.service'
 import { SettingsService, buildDefaultSettings } from './services/settings.service'
 import { JobRunner } from './jobs/job-runner'
 import { ExportJobStore, type ExportJobPayload, type ExportJobResult } from './jobs/export-job-store'
+import {
+  TranscriptionJobStore,
+  type TranscriptionJobPayload,
+  type TranscriptionJobResult
+} from './jobs/transcription-job-store'
 import { RecordingStateMachine } from './recording/recording-state-machine'
 import { RecordingSessionManager } from './recording/recording-session-manager'
 
@@ -28,6 +36,8 @@ export interface AppContext {
   databaseClient: DatabaseClient
   projectRepository: ProjectRepository
   exportJobRepository: ExportJobRepository
+  transcriptionJobRepository: TranscriptionJobRepository
+  transcriptRepository: TranscriptRepository
   settingsRepository: SettingsRepository
   markerRepository: MarkerRepository
   editProjectRepository: EditProjectRepository
@@ -36,8 +46,10 @@ export interface AppContext {
   recoveryService: RecoveryService
   editorService: EditorService
   exportService: ExportService
+  transcriptionService: TranscriptionService
   settingsService: SettingsService
   exportJobRunner: JobRunner<ExportJobPayload, ExportJobResult>
+  transcriptionJobRunner: JobRunner<TranscriptionJobPayload, TranscriptionJobResult>
   recordingStateMachine: RecordingStateMachine
   recordingSessionManager: RecordingSessionManager
 }
@@ -57,6 +69,8 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
   const editProjectRepository = new EditProjectRepository(databaseClient.db)
   const editOperationRepository = new EditOperationRepository(databaseClient.db)
   const exportJobRepository = new ExportJobRepository(databaseClient.db)
+  const transcriptionJobRepository = new TranscriptionJobRepository(databaseClient.db)
+  const transcriptRepository = new TranscriptRepository(databaseClient.db)
   const settingsRepository = new SettingsRepository(databaseClient.db)
 
   const projectService = new ProjectService(
@@ -93,6 +107,21 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     exportJobRunner,
     exportJobRepository
   )
+  const transcriptionJobRunner = new JobRunner<TranscriptionJobPayload, TranscriptionJobResult>(
+    new TranscriptionJobStore(transcriptionJobRepository)
+  )
+  // AI-001 - nenhuma implementacao real de `TranscriptionProvider` e injetada em lugar nenhum
+  // ainda nesta fase, ver comentario em `transcription.service.ts` e
+  // `transcription/transcription-provider.ts`. `transcription.start` sempre enfileira com
+  // sucesso, mas o job sempre termina `FAILED` com uma mensagem clara - AI-002 (incremento futuro)
+  // e quem conecta um provedor de verdade.
+  const transcriptionService = new TranscriptionService(
+    projectRepository,
+    trackRepository,
+    transcriptionJobRunner,
+    transcriptionJobRepository,
+    transcriptRepository
+  )
   const recordingStateMachine = new RecordingStateMachine()
   const recordingSessionManager = new RecordingSessionManager(
     projectRepository,
@@ -107,6 +136,8 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     databaseClient,
     projectRepository,
     exportJobRepository,
+    transcriptionJobRepository,
+    transcriptRepository,
     settingsRepository,
     markerRepository,
     editProjectRepository,
@@ -115,8 +146,10 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     recoveryService,
     editorService,
     exportService,
+    transcriptionService,
     settingsService,
     exportJobRunner,
+    transcriptionJobRunner,
     recordingStateMachine,
     recordingSessionManager
   }

@@ -53,6 +53,12 @@ export const IPC_CHANNELS = {
     getStatus: 'export.getStatus',
     cancel: 'export.cancel'
   },
+  transcription: {
+    start: 'transcription.start',
+    list: 'transcription.list',
+    getStatus: 'transcription.getStatus',
+    getTranscript: 'transcription.getTranscript'
+  },
   system: {
     getAppInfo: 'system.getAppInfo',
     getDiskSpace: 'system.getDiskSpace'

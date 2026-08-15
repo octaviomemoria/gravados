@@ -7,6 +7,10 @@ import {
 import { AppSettingsSchema, SETTINGS_CATEGORY_SCHEMAS } from '../../../src/shared/schemas/settings.schema'
 import { StartRecordingRequestSchema } from '../../../src/shared/schemas/recording.schema'
 import { StartExportRequestSchema } from '../../../src/shared/schemas/export.schema'
+import {
+  StartTranscriptionRequestSchema,
+  TranscriptResponseSchema
+} from '../../../src/shared/schemas/transcription.schema'
 import { GetDiskSpaceRequestSchema } from '../../../src/shared/schemas/system.schema'
 
 describe('project.schema', () => {
@@ -111,6 +115,58 @@ describe('export.schema', () => {
       target: { kind: 'VIDEO', format: 'MP3' }
     })
     expect(result.success).toBe(false)
+  })
+})
+
+describe('transcription.schema', () => {
+  const projectId = '11111111-1111-4111-8111-111111111111'
+
+  it('accepts a request without language (deixa o provedor detectar automaticamente)', () => {
+    expect(StartTranscriptionRequestSchema.safeParse({ projectId }).success).toBe(true)
+  })
+
+  it('accepts a request with a language code', () => {
+    expect(StartTranscriptionRequestSchema.safeParse({ projectId, language: 'pt' }).success).toBe(true)
+  })
+
+  it('rejects an invalid projectId', () => {
+    expect(StartTranscriptionRequestSchema.safeParse({ projectId: 'not-a-uuid' }).success).toBe(false)
+  })
+
+  it('rejects a provider other than OPENAI (unico membro do enum nesta fase, AI-001)', () => {
+    const result = TranscriptResponseSchema.safeParse({
+      id: projectId,
+      projectId,
+      provider: 'ANTHROPIC',
+      model: 'whisper-1',
+      language: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      segments: []
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts a full transcript with segments', () => {
+    const result = TranscriptResponseSchema.safeParse({
+      id: projectId,
+      projectId,
+      provider: 'OPENAI',
+      model: 'whisper-1',
+      language: 'pt',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      segments: [
+        {
+          id: projectId,
+          transcriptId: projectId,
+          startMs: 0,
+          endMs: 1000,
+          speaker: null,
+          text: 'ola',
+          confidence: 0.5
+        }
+      ]
+    })
+    expect(result.success).toBe(true)
   })
 })
 

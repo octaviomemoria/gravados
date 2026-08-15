@@ -310,6 +310,14 @@ body {
   color: var(--ms-color-text-muted);
 }
 
+/* AI-001 - status do job de transcricao mais recente, mesmo tratamento visual discreto do
+   status de exportacao (`.editor-export-status`). */
+.library-list__transcription-status {
+  font-size: 0.8rem;
+  color: var(--ms-color-text-muted);
+  margin: var(--ms-space-2) 0 0;
+}
+
 .setup-group {
   margin-bottom: var(--ms-space-8);
 }

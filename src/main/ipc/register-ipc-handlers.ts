@@ -6,6 +6,7 @@ import { registerMarkersHandlers } from './handlers/markers.handlers'
 import { registerRecoveryHandlers } from './handlers/recovery.handlers'
 import { registerEditorHandlers } from './handlers/editor.handlers'
 import { registerExportHandlers } from './handlers/export.handlers'
+import { registerTranscriptionHandlers } from './handlers/transcription.handlers'
 import { registerSystemHandlers } from './handlers/system.handlers'
 import { registerDevicesHandlers } from './handlers/devices.handlers'
 
@@ -17,6 +18,7 @@ export function registerAllIpcHandlers(context: AppContext): void {
   registerRecoveryHandlers(context)
   registerEditorHandlers(context)
   registerExportHandlers(context)
+  registerTranscriptionHandlers(context)
   registerSystemHandlers(context)
   registerDevicesHandlers()
 }

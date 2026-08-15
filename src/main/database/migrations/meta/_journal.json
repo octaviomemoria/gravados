@@ -15,6 +15,13 @@
       "when": 1786706212627,
       "tag": "0001_cynical_jamie_braddock",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786825412088,
+      "tag": "0002_youthful_wild_child",
+      "breakpoints": true
     }
   ]
 }

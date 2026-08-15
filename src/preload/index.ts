@@ -6,6 +6,7 @@ import { createMarkersApi } from './api/markers.api'
 import { createRecoveryApi } from './api/recovery.api'
 import { createEditorApi } from './api/editor.api'
 import { createExportApi } from './api/export.api'
+import { createTranscriptionApi } from './api/transcription.api'
 import { createSystemApi } from './api/system.api'
 import { createDevicesApi } from './api/devices.api'
 import type { MeetingStudioApi } from '../shared/types/preload-api'
@@ -30,6 +31,7 @@ const meetingStudioApi: MeetingStudioApi = {
   recovery: createRecoveryApi(),
   editor: createEditorApi(),
   export: createExportApi(),
+  transcription: createTranscriptionApi(),
   system: createSystemApi(),
   devices: createDevicesApi()
 }

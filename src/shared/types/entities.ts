@@ -97,3 +97,37 @@ export interface SettingsEntity {
   valueJson: string
   updatedAt: string
 }
+
+/** AI-001 (Fase 5 — Transcrição). Rastreia so o PROCESSO assincrono - o resultado em si vive em
+ * `TranscriptEntity`/`TranscriptSegmentEntity`, criados unicamente quando este job termina
+ * `COMPLETED` (ver comentario em `main/database/schema/transcription.schema.ts`). */
+export interface TranscriptionJobEntity {
+  id: string
+  projectId: string
+  status: JobStatus
+  progress: number
+  provider: string
+  language: string | null
+  error: string | null
+  createdAt: string
+  completedAt: string | null
+}
+
+export interface TranscriptEntity {
+  id: string
+  projectId: string
+  provider: string
+  model: string
+  language: string | null
+  createdAt: string
+}
+
+export interface TranscriptSegmentEntity {
+  id: string
+  transcriptId: string
+  startMs: number
+  endMs: number
+  speaker: string | null
+  text: string
+  confidence: number | null
+}
