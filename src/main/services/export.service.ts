@@ -12,6 +12,7 @@ import type { ExportJobPayload, ExportJobResult } from '../jobs/export-job-store
 import type {
   ExportJobResponse,
   ExportTarget,
+  ExportTimeRange,
   AudioExportFormat
 } from '../../shared/schemas/export.schema'
 import { NotFoundError, ValidationError } from '../../shared/types/domain-errors'
@@ -36,9 +37,12 @@ const AUDIO_FILE_EXTENSION: Record<AudioExportFormat, string> = {
  * -> processo FFmpeg real (EXP-002) -> arquivo em `<rootPath>/exports/`.
  *
  * `target.kind` decide entre VIDEO (MP4 720p/1080p, `buildFfmpegArgs`) e AUDIO (M4A/MP3/WAV,
- * `buildAudioFfmpegArgs`) - ver `ExportTargetSchema`. ESCOPO AINDA LIMITADO no caminho de video: so
- * uma unica trilha de fundo (`buildFfmpegArgs` retorna `null`, rejeitado ANTES de enfileirar, pra
- * qualquer plano PiP/lado-a-lado) - fica pro incremento futuro EXP-004b.
+ * `buildAudioFfmpegArgs`) - ver `ExportTargetSchema`. `rangeMs` opcional (EXP-006, RF-034) recorta
+ * a exportacao pra so uma FAIXA da timeline - validado aqui contra `totalDurationMs` (o schema em
+ * si so garante `startMs < endMs`, nunca conhece a duracao real de uma timeline especifica).
+ * ESCOPO AINDA LIMITADO no caminho de video: so uma unica trilha de fundo (`buildFfmpegArgs`
+ * retorna `null`, rejeitado ANTES de enfileirar, pra qualquer plano PiP/lado-a-lado) - fica pro
+ * incremento futuro EXP-004b.
  * `startExport` e SINCRONO no enfileiramento (cria o job, dispara o FFmpeg em segundo plano) -
  * o handler IPC devolve o job em `QUEUED` imediatamente, sem o renderer bloquear esperando o
  * render inteiro (o mesmo raciocinio ja usado pelo `JobRunner` desde que foi desenhado).
@@ -52,7 +56,11 @@ export class ExportService {
     private readonly exportJobRepository: ExportJobRepository
   ) {}
 
-  startExport(editProjectId: string, target: ExportTarget): ExportJobResponse {
+  startExport(
+    editProjectId: string,
+    target: ExportTarget,
+    rangeMs?: ExportTimeRange | null
+  ): ExportJobResponse {
     const editProject = this.editProjectRepository.findById(editProjectId)
     if (!editProject) {
       throw new NotFoundError(`Projeto de edicao nao encontrado: ${editProjectId}`)
@@ -66,13 +74,21 @@ export class ExportService {
     if (timeline.totalDurationMs <= 0) {
       throw new ValidationError('A timeline esta vazia - nao ha nada para exportar')
     }
+    // EXP-006 - `ExportTimeRangeSchema` ja garante `startMs < endMs`; so falta validar contra a
+    // duracao REAL desta timeline especifica, que o schema nunca conhece. `startMs < 0` nunca
+    // acontece (schema `nonnegative()`), so `endMs` pode exceder.
+    if (rangeMs && rangeMs.endMs > timeline.totalDurationMs) {
+      throw new ValidationError(
+        'O intervalo selecionado vai alem do fim atual da timeline - selecione novamente antes de exportar.'
+      )
+    }
 
     let outputPath: string
     let args: string[] | null
     let totalDurationMs: number
 
     if (target.kind === 'VIDEO') {
-      const plan = buildRenderPlan(timeline, { resolution: target.resolution })
+      const plan = buildRenderPlan(timeline, { resolution: target.resolution, rangeMs })
       const outputFileName = `export_${target.resolution.toLowerCase()}_${Date.now()}.mp4`
       outputPath = join(project.rootPath, 'exports', outputFileName)
       args = buildFfmpegArgs(plan, project.rootPath, outputPath)
@@ -85,7 +101,7 @@ export class ExportService {
         )
       }
     } else {
-      const plan = buildRenderPlan(timeline, {})
+      const plan = buildRenderPlan(timeline, { rangeMs })
       const extension = AUDIO_FILE_EXTENSION[target.format]
       const outputFileName = `export_${target.format.toLowerCase()}_${Date.now()}.${extension}`
       outputPath = join(project.rootPath, 'exports', outputFileName)

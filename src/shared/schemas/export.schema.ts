@@ -31,6 +31,17 @@ export const ExportTargetSchema = z.discriminatedUnion('kind', [
 ])
 export type ExportTarget = z.infer<typeof ExportTargetSchema>
 
+/** EXP-006 (vigesimo setimo incremento - Fase 4, RF-034 "Permitir exportar somente intervalo
+ * selecionado"). Mesmo shape de `RemoveRangeRequestSchema` (`editor.schema.ts`) - `startMs`/
+ * `endMs` relativos a timeline EDITADA ATUAL, o mesmo referencial que `ExportTarget`/`RenderPlan`
+ * ja usam. Validado contra `totalDurationMs` pelo `ExportService` (nao aqui, que so garante
+ * `startMs < endMs` - o schema nunca conhece a duracao real de uma timeline). */
+export const ExportTimeRangeSchema = z.object({
+  startMs: z.number().int().nonnegative(),
+  endMs: z.number().int().positive()
+})
+export type ExportTimeRange = z.infer<typeof ExportTimeRangeSchema>
+
 export const ExportJobResponseSchema = z.object({
   id: IdSchema,
   editProjectId: IdSchema,
@@ -44,14 +55,21 @@ export const ExportJobResponseSchema = z.object({
 export type ExportJobResponse = z.infer<typeof ExportJobResponseSchema>
 
 /**
- * EXP-003/004/005 (vigesimo quinto/sexto incrementos - Fase 4). `target` decide entre exportar em
- * VIDEO (720p/1080p, EXP-003/004) ou so em AUDIO (M4A/MP3/WAV, EXP-005) - a mesma operacao
- * "iniciar exportacao" parametrizada, nao canais IPC separados.
+ * EXP-003/004/005/006 (vigesimo quinto/sexto/setimo incrementos - Fase 4). `target` decide entre
+ * exportar em VIDEO (720p/1080p, EXP-003/004) ou so em AUDIO (M4A/MP3/WAV, EXP-005) - a mesma
+ * operacao "iniciar exportacao" parametrizada, nao canais IPC separados. `rangeMs` opcional
+ * (EXP-006, RF-034) - omitido/`null` exporta a timeline inteira, presente exporta so aquele
+ * intervalo (a UI passa a SELECAO ativa do editor, ver `EditorProjectPage.tsx`).
  */
-export const StartExportRequestSchema = z.object({
-  editProjectId: IdSchema,
-  target: ExportTargetSchema
-})
+export const StartExportRequestSchema = z
+  .object({
+    editProjectId: IdSchema,
+    target: ExportTargetSchema,
+    rangeMs: ExportTimeRangeSchema.nullable().optional()
+  })
+  .refine((value) => !value.rangeMs || value.rangeMs.startMs < value.rangeMs.endMs, {
+    message: 'rangeMs.startMs deve ser menor que rangeMs.endMs'
+  })
 export type StartExportRequest = z.infer<typeof StartExportRequestSchema>
 export const StartExportResponseSchema = ExportJobResponseSchema
 

@@ -211,6 +211,11 @@ function EditorProjectView({
   const [exportError, setExportError] = useState<string | null>(null)
   const [exportBusy, setExportBusy] = useState(false)
 
+  // EXP-006 (RF-034 "permitir exportar somente intervalo selecionado") - reusa a MESMA `selection`
+  // ja usada por "Remover trecho selecionado" (marcada via "Marcar início/fim da seleção"), em vez
+  // de um controle de faixa de tempo dedicado só pra exportação - o usuário já tem uma forma de
+  // marcar um intervalo na tela; exportar só ele é só mais um jeito de consumir a mesma marcação.
+  // Selecão ausente/vazia = exporta a timeline inteira (comportamento de sempre desde EXP-003/004).
   const startExport = useCallback(
     async (target: ExportTarget) => {
       setExportError(null)
@@ -218,7 +223,8 @@ function EditorProjectView({
       try {
         const job = await window.meetingStudio.export.start({
           editProjectId: editProject.id,
-          target
+          target,
+          rangeMs: selection && selection.startMs < selection.endMs ? selection : undefined
         })
         setExportJob(job)
       } catch {
@@ -227,7 +233,7 @@ function EditorProjectView({
         setExportBusy(false)
       }
     },
-    [editProject.id]
+    [editProject.id, selection]
   )
 
   // EXP-003/004 - enquanto o job estiver QUEUED/RUNNING, consulta `export.getStatus` a cada 1s
@@ -707,6 +713,12 @@ function EditorProjectView({
           mensagem clara - nenhuma validacao duplicada aqui, o backend e a unica fonte de verdade
           sobre o que pode ser exportado. Botoes de audio (EXP-005) exigem so uma trilha de audio
           nao-mutada - o backend tambem rejeita com mensagem clara se nenhuma existir. */}
+      {selection && selection.startMs < selection.endMs && (
+        <p className="editor-export-range-hint" role="status">
+          Vai exportar só o trecho selecionado: {formatElapsed(selection.startMs)} -{' '}
+          {formatElapsed(selection.endMs)}
+        </p>
+      )}
       <div className="editor-export-controls">
         {(Object.keys(EXPORT_RESOLUTION_LABELS) as ExportResolution[]).map((resolution) => (
           <button

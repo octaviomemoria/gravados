@@ -67,8 +67,9 @@ describe('buildFfmpegArgs', () => {
     expect(args).toContain('-i')
     expect(args.every((arg) => typeof arg === 'string')).toBe(true)
     const inputIndex = args.indexOf('-i')
-    expect(args[inputIndex + 1]).toContain('screen_000001.webm')
-    expect(args[inputIndex + 1].startsWith(PROJECT_ROOT)).toBe(true)
+    const inputPath = args[inputIndex + 1]!
+    expect(inputPath).toContain('screen_000001.webm')
+    expect(inputPath.startsWith(PROJECT_ROOT)).toBe(true)
   })
 
   it('maps [vfinal] with libx264/-pix_fmt yuv420p and -an when there is no audio track', () => {

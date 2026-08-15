@@ -151,6 +151,21 @@ describe('ExportService', () => {
         exportService.startExport(editProject.id, { kind: 'AUDIO', format: 'WAV' })
       ).toThrow(ValidationError)
     })
+
+    it('throws ValidationError when rangeMs.endMs exceeds the timeline totalDurationMs (EXP-006)', () => {
+      const project = createProject(join(libraryRoot, 'p4'))
+      addTrackWithSegment(project.id, 'MICROPHONE', 'source/microphone/microphone_000001.webm')
+      const editProject = editorService.createEditProject(project.id)
+      // `addTrackWithSegment` cria um clip de 0-2000ms (ver `startedAtMs`/`endedAtMs` no helper).
+      const timeline = editorService.getEditedTimeline(editProject.id)
+      expect(() =>
+        exportService.startExport(
+          editProject.id,
+          { kind: 'AUDIO', format: 'WAV' },
+          { startMs: 0, endMs: timeline.totalDurationMs + 1000 }
+        )
+      ).toThrow(ValidationError)
+    })
   })
 
   describe('startExport - render real (integracao)', () => {
@@ -319,6 +334,36 @@ describe('ExportService', () => {
         expect(finalJob.outputPath).toMatch(/\.wav$/)
       },
       40_000
+    )
+
+    it(
+      'EXP-006: rangeMs trims the export to only the selected portion (WAV byte size scales with duration)',
+      async () => {
+        const { editProjectId } = await setupScreenAndMicProject()
+        // WAV e PCM sem compressao - o tamanho do arquivo e proporcional a DURACAO real
+        // codificada, a forma mais direta de provar (sem precisar de ffprobe) que `rangeMs`
+        // realmente recorta o audio exportado, nao so aceita o parametro sem aplicar.
+        const fullJob = exportService.startExport(editProjectId, { kind: 'AUDIO', format: 'WAV' })
+        const fullFinal = await waitForTerminalJob(fullJob.id)
+        expect(fullFinal.status).toBe('COMPLETED')
+        const fullSize = (await stat(fullFinal.outputPath!)).size
+
+        // Clipe sintetico tem 2000ms - exporta so o primeiro quarto (0-500ms).
+        const rangeJob = exportService.startExport(
+          editProjectId,
+          { kind: 'AUDIO', format: 'WAV' },
+          { startMs: 0, endMs: 500 }
+        )
+        const rangeFinal = await waitForTerminalJob(rangeJob.id)
+        expect(rangeFinal.status).toBe('COMPLETED')
+        const rangeSize = (await stat(rangeFinal.outputPath!)).size
+
+        expect(rangeSize).toBeGreaterThan(0)
+        // Bem menor, nao so "um pouco menor" - deixa folga generosa pro cabecalho WAV fixo (44
+        // bytes) nao dominar a comparacao numa faixa tao curta.
+        expect(rangeSize).toBeLessThan(fullSize * 0.6)
+      },
+      60_000
     )
   })
 })

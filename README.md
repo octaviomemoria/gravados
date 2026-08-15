@@ -45,12 +45,14 @@ ponta - ver
 [Autosave e indicador de salvamento](#autosave-e-indicador-de-salvamento-fase-3). A
 **Fase 4 — Export** avançou bastante: `ffmpeg-static`/`ffprobe-static` instalados, o "Timeline
 Compiler" (EXP-001/002 - traduz a timeline editada num render plan estruturado), o "FFmpeg Plan" +
-"Render Job" de vídeo (EXP-003/004 - `export.start` produz um MP4 720p/1080p REAL em disco) e
-agora também áudio-only (EXP-005 - M4A/MP3/WAV, RF-033), tudo com botões de exportação na tela do
-editor, funcionam de ponta a ponta - ver
+"Render Job" de vídeo (EXP-003/004 - `export.start` produz um MP4 720p/1080p REAL em disco),
+áudio-only (EXP-005 - M4A/MP3/WAV, RF-033) e exportação de intervalo selecionado (EXP-006, RF-034,
+reusa a seleção já existente do editor), tudo com botões de exportação na tela do editor, funcionam
+de ponta a ponta - ver
 [Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
-[Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4) e
-[Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4).
+[Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4),
+[Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4) e
+[Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4).
 Escopo de vídeo ainda limitado a uma única trilha de fundo (sem PiP/lado-a-lado real no arquivo
 exportado) - próximo incremento da fase.
 
@@ -1241,6 +1243,39 @@ na `EditorProjectPage`, mesmo indicador de status/progresso já compartilhado.
   teste de integração `ExportService` (spawn real do FFmpeg) mais os estruturais de
   `buildAudioFfmpegArgs`.
 
+### Exportação de intervalo selecionado (Fase 4)
+
+Vigésimo sétimo incremento - EXP-006, RF-034 ("Permitir exportar somente intervalo selecionado").
+`buildRenderPlan` já aceitava `rangeMs` desde EXP-001 (groundwork nunca conectado) - este
+incremento entrega só a validação + o fio até a UI, sem tocar em `render-plan.ts`/
+`ffmpeg-command.ts`.
+
+- **`StartExportRequestSchema` ganhou um campo `rangeMs` opcional** (`ExportTimeRangeSchema`, mesmo
+  shape de `RemoveRangeRequestSchema` - `startMs`/`endMs` relativos à timeline EDITADA atual).
+  Omitido/`null` exporta a timeline inteira (comportamento de sempre desde EXP-003/004); presente,
+  `ExportService` valida `rangeMs.endMs <= timeline.totalDurationMs` (o schema em si só garante
+  `startMs < endMs` - nunca conhece a duração real de uma timeline específica) antes de passar
+  direto pra `buildRenderPlan`.
+- **UI reusa a MESMA `selection` já usada por "Remover trecho selecionado" (EDIT-004/005/006)** -
+  decisão deliberada de não criar um controle de faixa de tempo dedicado só pra exportação: o
+  usuário já tem uma forma de marcar um intervalo na tela ("Marcar início/fim da seleção"), então
+  exportar só ele é só mais um jeito de consumir a mesma marcação existente. Uma dica textual
+  (`.editor-export-range-hint`) avisa quando uma seleção ativa vai ser usada, antes de qualquer
+  clique nos botões de exportação.
+- Testado via 1 novo teste de validação (`ValidationError` quando `rangeMs.endMs` excede
+  `totalDurationMs`), 1 novo teste de integração REAL (exporta o MESMO clipe sintético duas vezes -
+  inteiro e um recorte de 1/4 da duração - e confirma que o WAV recortado tem um tamanho de
+  arquivo MUITO menor, prova concreta sem precisar de `ffprobe` de que `rangeMs` realmente corta o
+  áudio exportado, não só aceita o parâmetro sem aplicar - WAV é PCM sem compressão, então o
+  tamanho do arquivo é diretamente proporcional à duração codificada) e 4 novos testes de schema
+  (`export.schema.ts` - aceita sem `rangeMs`, aceita com `rangeMs` válido, rejeita
+  `startMs >= endMs`, rejeita um `target` que mistura `kind: 'VIDEO'` sem o campo `resolution`
+  exigido). **373 testes, 35 arquivos** (mesma contagem de arquivos - tudo adicionado aos arquivos
+  já existentes). Sem novo teste E2E dedicado - a UI reusa o mesmo fluxo de seleção já exercitado
+  pelo teste E2E de trim (EDIT-004/005/006) e o mesmo fluxo de exportação já exercitado por
+  `editor (export)` (EXP-003/004); a cobertura real do caminho de faixa de tempo vem do teste de
+  integração `ExportService` (spawn real do FFmpeg).
+
 ## Estrutura de diretórios
 
 ```text
@@ -1875,6 +1910,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
      descobriria o problema no `stderr` do processo FFmpeg (`FFmpeg falhou (código N): ...`, já
      capturado e propagado como `job.error`), não numa checagem antecipada - aceitável dado que
      este app sempre controla qual binário instala.
+126. **UI de faixa de tempo (EXP-006) reusa a `selection` já existente (EDIT-004/005/006), não um
+     controle dedicado** — o usuário já tem uma forma de marcar um intervalo na tela pra
+     trim/remover; exportar só ele é só mais um consumidor da mesma marcação, evitando duplicar
+     estado/UI pra um conceito que já existe.
+127. **`ExportService` valida `rangeMs` (contra `totalDurationMs`), o schema só valida `startMs <
+     endMs`** — mesma separação de responsabilidade já usada em `removeRange`/`RemoveRangeRequestSchema`:
+     o schema nunca conhece a duração real de uma timeline específica, então validação que depende
+     de estado (não só da forma dos dados) sempre vive no serviço, nunca no schema.
 
 ## Testes
 
@@ -1974,8 +2017,11 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   `JobRunner`/`ExportJobStore` (`export-job-store.test.ts`, via os dois reais, não um store fake),
   **`buildAudioFfmpegArgs` (EXP-005)** (null sem trilha de áudio, ignora vídeo/resolução
   completamente, mapeia `[afinal]`/`-vn`, codec certo por formato M4A/MP3/WAV com/sem `-b:a`,
-  `amix`, trim de faixa de tempo, rejeita path fora do projeto).
-  **367 testes, 35 arquivos.**
+  `amix`, trim de faixa de tempo, rejeita path fora do projeto), **exportação de faixa de tempo
+  (EXP-006)** (`ValidationError` quando `rangeMs.endMs` excede `totalDurationMs`, integração REAL
+  provando via tamanho de arquivo WAV que o recorte é aplicado de verdade, schema aceita/rejeita
+  `rangeMs`/`target` conforme esperado).
+  **373 testes, 35 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2263,10 +2309,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   (EXP-003/004)** - `buildFfmpegArgs` rejeita (retorna `null`, `ExportService` traduz pra
   `ValidationError`) qualquer plano com `overlay`/`sideBySideRight` (layout PiP/lado-a-lado) -
   PiP/lado-a-lado real no arquivo EXPORTADO (não só no preview) fica pro incremento EXP-004b.
-- **Exportação de áudio (EXP-005) cobre M4A/MP3/WAV, mas ainda sem UI de faixa de tempo nem
-  cancelamento pela UI** - `buildRenderPlan` já aceita `rangeMs` e `runFfmpegProcess`/
-  `JobRunner.cancel` já suportam progresso/cancelamento desde EXP-002, mas nenhum dos dois tem
-  UI/wiring ainda; ficam pros incrementos EXP-006/007-008 respectivamente.
+- **Exportação de faixa de tempo (EXP-006) usa a seleção existente, sem indicação visual na
+  régua de QUAL trecho será exportado além de um texto** - não há destaque colorido/sombreado do
+  intervalo selecionado sobre a régua da timeline (só o texto ".editor-export-range-hint"),
+  diferente de um editor profissional que tipicamente destaca visualmente a seleção ativa.
+- **Ainda sem cancelamento pela UI** - `runFfmpegProcess`/`JobRunner.cancel` já suportam
+  progresso/cancelamento desde EXP-002, mas nenhum botão/wiring de UI existe ainda; fica pro
+  incremento EXP-007/008.
 - **Nenhuma validação via `ffprobe` do arquivo de saída antes de marcar o job `COMPLETED`
   (EXP-009, ainda não implementado)** - um arquivo corrompido ou vazio (ex.: FFmpeg saiu com
   código 0 mas produziu um arquivo inválido, caso raro mas possível) seria marcado `COMPLETED`
@@ -2305,23 +2354,24 @@ Compiler" que traduz a timeline editada numa estrutura `background`/`overlay`/`s
 `audio`/`output`, reusando a mesma lógica de layout do preview), EXP-002 (`ffmpeg-static`/
 `ffprobe-static` instalados, `runFfmpegProcess` com progresso/cancelamento reais), EXP-003/004
 (`buildFfmpegArgs` traduz o `RenderPlan` num comando FFmpeg real - o "FFmpeg Plan" da doc - e
-`ExportService` orquestra o pipeline inteiro até um MP4 720p/1080p de verdade em disco) e agora
-EXP-005 (exportação só de áudio - M4A/MP3/WAV via `buildAudioFfmpegArgs`, RF-033) já funcionam de
-ponta a ponta, com botões de exportação (vídeo E áudio) na `EditorProjectPage` - ver
-[Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
-[Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4) e
-[Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4).
+`ExportService` orquestra o pipeline inteiro até um MP4 720p/1080p de verdade em disco), EXP-005
+(exportação só de áudio - M4A/MP3/WAV via `buildAudioFfmpegArgs`, RF-033) e agora EXP-006
+(exportação de faixa de tempo - RF-034, reusando a seleção já existente do editor) já funcionam de
+ponta a ponta, com botões de exportação (vídeo E áudio, com/sem seleção) na `EditorProjectPage` -
+ver [Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
+[Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4),
+[Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4) e
+[Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4).
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 4 — Export** (próximo passo imediato): EXP-006 (faixa de tempo -
-   `buildRenderPlan` já aceita `rangeMs`, só falta a UI + validação), EXP-007/008
-   (progresso/cancelamento pela UI - `runFfmpegProcess`/`JobRunner.cancel` já suportam ambos no
-   nível de infraestrutura, falta o botão/wiring), EXP-009 (validação via ffprobe do arquivo de
-   saída antes de marcar o job `COMPLETED`), EXP-004b (PiP/lado-a-lado real no arquivo exportado,
-   hoje `buildFfmpegArgs` rejeita esse caso) - cada operação provavelmente seu próprio incremento,
-   dado o tamanho desta fase. O roadmap marca o fim desta fase como o **Marco MVP**.
+1. Continuar a **Fase 4 — Export** (próximo passo imediato): EXP-007/008 (progresso/cancelamento
+   pela UI - `runFfmpegProcess`/`JobRunner.cancel` já suportam ambos no nível de infraestrutura,
+   falta o botão/wiring), EXP-009 (validação via ffprobe do arquivo de saída antes de marcar o job
+   `COMPLETED`), EXP-004b (PiP/lado-a-lado real no arquivo exportado, hoje `buildFfmpegArgs`
+   rejeita esse caso) - cada operação provavelmente seu próprio incremento, dado o tamanho desta
+   fase. O roadmap marca o fim desta fase como o **Marco MVP**.
 2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
    depois do MVP, replanejadas quando chegar a vez.

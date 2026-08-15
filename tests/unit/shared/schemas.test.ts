@@ -76,6 +76,42 @@ describe('export.schema', () => {
   it('requires a valid uuid editProjectId', () => {
     expect(StartExportRequestSchema.safeParse({ editProjectId: 'not-a-uuid' }).success).toBe(false)
   })
+
+  const editProjectId = '11111111-1111-4111-8111-111111111111'
+
+  it('accepts a request without rangeMs (exports the whole timeline)', () => {
+    const result = StartExportRequestSchema.safeParse({
+      editProjectId,
+      target: { kind: 'AUDIO', format: 'WAV' }
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('accepts a request with a valid rangeMs (EXP-006)', () => {
+    const result = StartExportRequestSchema.safeParse({
+      editProjectId,
+      target: { kind: 'VIDEO', resolution: 'HD_720P' },
+      rangeMs: { startMs: 1000, endMs: 5000 }
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects a rangeMs where startMs is not smaller than endMs', () => {
+    const result = StartExportRequestSchema.safeParse({
+      editProjectId,
+      target: { kind: 'AUDIO', format: 'MP3' },
+      rangeMs: { startMs: 5000, endMs: 5000 }
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a target that mixes VIDEO kind with an AUDIO format field', () => {
+    const result = StartExportRequestSchema.safeParse({
+      editProjectId,
+      target: { kind: 'VIDEO', format: 'MP3' }
+    })
+    expect(result.success).toBe(false)
+  })
 })
 
 describe('system.schema', () => {
