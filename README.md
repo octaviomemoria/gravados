@@ -391,15 +391,28 @@ Fase 0, sem nenhum canal IPC nem UI até este incremento.
   andamento (funciona igual durante ou depois da gravação), então vive em seu próprio domínio
   IPC (`markers.handlers.ts`), útil desde já para verificação de teste e para uma futura tela de
   detalhes do projeto na Biblioteca.
-- **UI desta etapa é o "marcador instantâneo"** — clicar em "Marcador" cria um marcador sem
-  título/nota (ambos ficam `null`) e mostra um contador discreto ("N marcadores") ao lado do
-  cronômetro. O schema/IPC/banco já validam e persistem `title`/`note` corretamente (RF-016 os
-  define como opcionais no dado, não na UI) — só a captura desses campos durante uma gravação ao
-  vivo fica pra um refinamento futuro (mesmo padrão de escopo já usado para segmentação/layout na
-  tela de setup, ver README "Pendências conhecidas").
-- Testado de ponta a ponta em `tests/e2e/recording.spec.ts` (cenário "markers", microfone sozinho
-  — adicionar um marcador não depende de qual fonte é gravada; um segundo teste confirma que o
-  botão fica escondido e a ação é bloqueada durante `PAUSADO`) e via 7 testes sintéticos em
+- **UI desta etapa era o "marcador instantâneo"** — clicar em "Marcador" criava um marcador sem
+  título/nota (ambos `null`), mostrando só um contador discreto ("N marcadores") ao lado do
+  cronômetro. O schema/IPC/banco já validavam e persistiam `title`/`note` corretamente desde o
+  início (RF-016 os define como opcionais no DADO, não na UI) — só a captura desses campos numa
+  gravação ao vivo ficou pendente até um refinamento posterior (ver abaixo).
+- **Título/nota do marcador + visualização na Biblioteca (refinamento pós-MVP, sem alteração de
+  backend)** — dois campos de texto opcionais (`RecordingControls.tsx`) ficam visíveis ao lado do
+  botão "Marcador" durante gravação ativa, preenchidos ANTES do clique (não um modal bloqueante
+  depois - evita interromper a gravação ao vivo pra digitar) - o clique captura o marcador com o
+  que estiver digitado naquele instante via `recording.addMarker({projectId, title, note})`
+  (schema inalterado, já suportava os dois campos desde RF-016) e limpa os campos, prontos pro
+  próximo marcador. Os marcadores de uma gravação já finalizada ficam visíveis nos detalhes
+  expandidos da Biblioteca (mesmo painel de trilhas/segmentos, LIB-002) - primeira UI real
+  consumindo `markers.list` (canal existente desde RF-016, só exercitado por teste até aqui).
+  Zero mudança de schema/IPC/repositório - o gap era inteiramente de UI, os dois canais já
+  suportavam tudo que faltava.
+- Testado de ponta a ponta em `tests/e2e/recording.spec.ts` (cenário "markers" atualizado - um
+  marcador com título/nota preenchidos, outro deixado em branco de propósito, confirmando os dois
+  caminhos e que os campos são limpos após o clique; um segundo teste confirma que o botão fica
+  escondido e a ação é bloqueada durante `PAUSADO`), em `tests/e2e/library.spec.ts` (o mesmo
+  cenário de detalhes/renomear/excluir agora também cria um marcador com título/nota durante a
+  gravação e confirma que aparece nos detalhes expandidos) e via 7 testes sintéticos em
   `recording-session-manager.test.ts` (timestamp relativo ao início com `vi.useFakeTimers()`,
   desconto de pausa fechada, título/nota opcionais, persistência via `listMarkers`, e as 3
   rejeições: sem sessão ativa, durante pausa, `projectId` divergente).
@@ -2141,6 +2154,26 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
      pelo FFmpeg real - suficiente pra provar que a composição funciona de ponta a ponta, sem
      precisar decodificar frames individualmente pra comparar pixels (custo desproporcional ao que
      esta verificação precisa provar).
+141. **Título/nota do marcador preenchidos ANTES do clique em "Marcador", não num modal
+     bloqueante depois** — dois campos de texto opcionais ficam visíveis ao lado do botão durante
+     gravação ativa; o clique captura o marcador com o que estiver digitado naquele instante e
+     limpa os campos. Um modal pós-clique interromperia visualmente a gravação ao vivo (a tela
+     escureceria/travaria por trás de um diálogo) pelo tempo que o usuário levasse pra digitar -
+     inaceitável pro caso de uso real de um marcador (capturar um instante RAPIDAMENTE, sem perder
+     o fio da reunião).
+142. **Refinamento de marcadores (título/nota + visualização) não tocou schema/IPC/repositório -
+     só UI** — `AddMarkerRequestSchema`/`markers.list` já suportavam tudo que faltava desde
+     RF-016 (Fase 1); o gap identificado era inteiramente de superfície (nenhuma UI preenchendo
+     `title`/`note` na hora de criar, nenhuma UI consumindo `markers.list` depois). Confirmar isso
+     por leitura de código ANTES de escrever qualquer linha evitou trabalho de backend
+     desnecessário - mesmo raciocínio já usado em EXP-007 (progresso de exportação, que também já
+     estava pronto e só precisava ser descoberto, não construído).
+143. **Busca de marcadores separada da busca de detalhes na Biblioteca (`markers.list` +
+     `library.getDetails`, duas chamadas independentes)** — uma falha ao buscar marcadores não
+     deveria impedir o resto dos detalhes (duração/trilhas/tamanho) de aparecer; `markers` cai
+     pra `[]` nesse caso (renderiza "Nenhum marcador nesta gravação" em vez de propagar o erro pra
+     a seção inteira) - os dois conjuntos de dados são logicamente independentes, então uma falha
+     num não devia contaminar o outro.
 
 ## Testes
 
@@ -2265,8 +2298,8 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
   do sistema + microfone**, **segmentação por tamanho (câmera, limite de 1 MB)**, **pausar/
-  retomar (microfone)**, **marcadores (microfone, criação durante gravação + bloqueio durante
-  pausa)**, **monitor de espaço em disco (rejeição de início abaixo do limite mínimo; banner de
+  retomar (microfone)**, **marcadores (microfone, criação com título/nota opcionais + bloqueio
+  durante pausa)**, **monitor de espaço em disco (rejeição de início abaixo do limite mínimo; banner de
   aviso + auto-stop seguro abaixo do limite crítico, confirmando um único segmento finalizado e
   manifest `COMPLETED`)** e **recuperação (dois lançamentos reais e sequenciais do Electron - o
   primeiro grava e fecha sem clicar em "Parar", o segundo relança o app e confirma o selo
@@ -2298,10 +2331,12 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   sem "REC" a tempo) numa das duas execuções completas deste incremento e agora se recupera no
   retry, exatamente como os demais blocos já faziam.
 - **Playwright** (`tests/e2e/library.spec.ts`, arquivo próprio - decisão #54): grava uma sessão
-  real curta (só microfone), abre a Biblioteca, expande "Detalhes" (confirma a trilha de microfone
-  com bytes reais), renomeia inline, exclui com o passo de confirmação, confirma que o item some da
-  lista E que a pasta some do disco. **1 teste**, validado limpo e rápido (7.6-10.2s) em múltiplas
-  execuções isoladas consecutivas.
+  real curta (só microfone, com um marcador com título/nota criado durante a gravação desde o
+  refinamento de marcadores), abre a Biblioteca, expande "Detalhes" (confirma a trilha de
+  microfone com bytes reais e o marcador com título/nota visíveis), renomeia inline, exclui com o
+  passo de confirmação, confirma que o item some da lista E que a pasta some do disco. **1
+  teste**, validado limpo em múltiplas execuções isoladas (uma recuperou na mesma classe de
+  flakiness de bootstrap já documentada, nunca dentro do código de marcadores em si).
 - **Playwright** (`tests/e2e/editor.spec.ts`, arquivo próprio - mesmo padrão da decisão #54): grava
   uma sessão real curta, cria o projeto de edição pelo botão "Editar" na Biblioteca, confirma a
   navegação e o resumo da gravação vinculada na página de detalhe, reabre pela lista geral
@@ -2428,11 +2463,10 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   espaço livre sempre visível e o banner de aviso quando baixo (refinamento futuro cosmético, não
   bloqueante). Correção do bug do `check-disk-space` (ver decisão #39) foi um benefício colateral
   para o indicador pré-existente da Home, que estava silenciosamente quebrado desde a Fase 0.
-- Marcadores desta etapa não capturam título/nota durante a gravação ao vivo (UI só cria o
-  "marcador instantâneo", sem título/sem nota) — o schema/IPC/banco já suportam os dois campos
-  corretamente (RF-016), só falta a UI pra preenchê-los na hora. Também não há tela/lista pra ver
-  os marcadores depois de gravados (o canal `markers.list` já existe e está testado, só sem UI
-  consumindo ainda) nem edição/exclusão de um marcador já criado.
+- **Marcadores não têm edição/exclusão depois de criados** — título/nota (refinamento pós-MVP) e
+  visualização na Biblioteca já funcionam, mas um marcador é imutável após o clique; corrigir um
+  título digitado errado exigiria um novo canal IPC (`markers.update`/`.delete`, nenhum dos dois
+  existe ainda) - fora do escopo desse refinamento, que reusou só os dois canais já existentes.
 - Segmentação por TEMPO não é exercitada em E2E (só a via testes unitários sintéticos, que não
   dependem de tempo real) — `timeSegmentationMinutes` é um inteiro em minutos (mínimo 1) no
   schema, sem caminho para forçar uma rotação em segundos num teste sem mudar o schema só por
@@ -2635,7 +2669,8 @@ planejada a partir daqui:
 1. Refinamentos menores ainda pendentes dentro do escopo já entregue do MVP, sem fase própria no
    roadmap - ver "Pendências conhecidas" para a lista completa acumulada ao longo das quatro fases
    (ex.: `shape: 'circle'` continua uma aproximação retangular tanto no preview quanto no export
-   desde EXP-004b; `SIDE_BY_SIDE` continua fixo em 50/50).
+   desde EXP-004b; `SIDE_BY_SIDE` continua fixo em 50/50; marcadores ganharam título/nota +
+   visualização na Biblioteca, mas ainda não têm edição/exclusão).
 2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) - o trabalho
    pós-MVP propriamente dito, cada uma exigindo um replanejamento próprio (arquitetura, dependências
    novas, escopo) quando chegar a vez, dado o tamanho e a natureza distinta de cada uma.

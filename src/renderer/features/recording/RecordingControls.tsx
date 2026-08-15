@@ -19,7 +19,9 @@ export interface RecordingControlsProps {
   onStop: () => void
   onPause: () => void
   onResume: () => void
-  onAddMarker: () => void
+  /** RF-016 - `title`/`note` vem dos dois campos opcionais abaixo, ja preenchidos pelo usuario
+   * ANTES do clique (nao um modal bloqueante depois) - ver comentario no corpo do componente. */
+  onAddMarker: (title?: string, note?: string) => void
 }
 
 /**
@@ -43,8 +45,20 @@ export function RecordingControls({
   onAddMarker
 }: RecordingControlsProps) {
   const [title, setTitle] = useState('')
+  // RF-016 - preenchidos ANTES de clicar em "Marcador", nao num modal depois do clique (evita
+  // interromper a gravacao ao vivo com uma caixa de dialogo bloqueante) - o clique captura o
+  // marcador com o que estiver digitado NAQUELE instante e limpa os dois campos, prontos pro
+  // proximo marcador.
+  const [markerTitle, setMarkerTitle] = useState('')
+  const [markerNote, setMarkerNote] = useState('')
   const isActive = status === 'recording' || status === 'paused' || status === 'stopping'
   const isPaused = status === 'paused'
+
+  function handleAddMarker(): void {
+    onAddMarker(markerTitle.trim() || undefined, markerNote.trim() || undefined)
+    setMarkerTitle('')
+    setMarkerNote('')
+  }
 
   return (
     <section className="setup-group recording-controls">
@@ -96,6 +110,32 @@ export function RecordingControls({
         </p>
       )}
 
+      {/* RF-016 - so durante gravacao ativa (nao pausada, mesmo guard do botao "Marcador" logo
+          abaixo): titulo/nota digitados AQUI valem pro PROXIMO clique em "Marcador", nao pro
+          marcador mais recente ja criado (nenhum "editar depois" nesta tela - so na Biblioteca). */}
+      {status === 'recording' && (
+        <div className="recording-controls__marker-fields">
+          <input
+            type="text"
+            className="device-select"
+            aria-label="Titulo do marcador"
+            placeholder="Titulo do marcador (opcional)"
+            value={markerTitle}
+            onChange={(event) => setMarkerTitle(event.target.value)}
+            maxLength={200}
+          />
+          <input
+            type="text"
+            className="device-select"
+            aria-label="Nota do marcador"
+            placeholder="Nota do marcador (opcional)"
+            value={markerNote}
+            onChange={(event) => setMarkerNote(event.target.value)}
+            maxLength={2000}
+          />
+        </div>
+      )}
+
       <div className="recording-controls__actions">
         {!isActive ? (
           <Button
@@ -117,7 +157,7 @@ export function RecordingControls({
             {/* RF-016 - so durante gravacao ativa (nao pausada, ver comentario em
                 `AddMarkerRequestSchema`): enquanto pausado nao ha "instante atual" pra marcar. */}
             {status === 'recording' && (
-              <Button variant="secondary" onClick={onAddMarker}>
+              <Button variant="secondary" onClick={handleAddMarker}>
                 Marcador
               </Button>
             )}

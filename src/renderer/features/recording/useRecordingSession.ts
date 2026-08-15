@@ -649,17 +649,18 @@ export function useRecordingSession(sources: RecordingSources) {
   }, [withTrackLock, scheduleTimeRotation])
 
   /**
-   * RF-016 - marcador instantaneo (sem titulo/nota nesta UI, ver comentario em
-   * `AddMarkerRequestSchema`). So chama o main quando `status === 'recording'` - o mesmo guard
-   * que o main aplica (rejeita durante `PAUSED`), checado aqui tambem pra nao fazer uma chamada
-   * IPC fadada a falhar quando o botao, por algum motivo, ainda estiver visivel/habilitado.
+   * RF-016 - marcador com titulo/nota opcionais (digitados na UI ANTES do clique, ver
+   * `RecordingControls.tsx` - nenhum modal bloqueante depois). So chama o main quando
+   * `status === 'recording'` - o mesmo guard que o main aplica (rejeita durante `PAUSED`),
+   * checado aqui tambem pra nao fazer uma chamada IPC fadada a falhar quando o botao, por algum
+   * motivo, ainda estiver visivel/habilitado.
    */
-  const addMarker = useCallback(async () => {
+  const addMarker = useCallback(async (title?: string, note?: string) => {
     const projectId = projectIdRef.current
     if (!projectId || state.status !== 'recording') return
 
     try {
-      const { marker } = await window.meetingStudio.recording.addMarker({ projectId })
+      const { marker } = await window.meetingStudio.recording.addMarker({ projectId, title, note })
       setState((prev) => ({ ...prev, markers: [...prev.markers, marker] }))
     } catch (error) {
       console.error('Falha ao adicionar marcador', error)

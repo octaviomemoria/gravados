@@ -170,7 +170,7 @@ export function RecordingSetupPage() {
         onStop={() => void recordingSession.stop()}
         onPause={() => void recordingSession.pause()}
         onResume={() => void recordingSession.resume()}
-        onAddMarker={() => void recordingSession.addMarker()}
+        onAddMarker={(title, note) => void recordingSession.addMarker(title, note)}
       />
     </div>
   )

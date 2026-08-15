@@ -100,6 +100,14 @@ test.describe('library (details, rename, delete)', () => {
       })
       .toBe(true)
 
+    // RF-016 - marcador com titulo/nota, criado aqui pra confirmar mais adiante que a Biblioteca
+    // (LIB-002 + RF-016) mostra o marcador de verdade nos detalhes expandidos, nao so
+    // `markers.list` via `evaluate` (ja coberto em `recording.spec.ts`).
+    await appWindow.getByLabel('Titulo do marcador').fill('Ponto chave')
+    await appWindow.getByLabel('Nota do marcador').fill('Revisar depois')
+    await appWindow.getByRole('button', { name: 'Marcador' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('1 marcador', { timeout: 10_000 })
+
     await appWindow.getByRole('button', { name: 'Parar' }).click()
     await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
       timeout: SELECT_TIMEOUT_MS
@@ -116,6 +124,11 @@ test.describe('library (details, rename, delete)', () => {
       timeout: POLL_TIMEOUT_MS
     })
     await expect(listItem.getByText('1 segmento', { exact: false })).toBeVisible()
+    // RF-016 - marcador com titulo/nota (criado durante a gravacao acima) aparece nos mesmos
+    // detalhes expandidos - `markers.list` ja existia desde a Fase 1, esta e a primeira vez que
+    // uma tela de verdade consome o resultado (antes so era exercitado por teste via `evaluate`).
+    await expect(listItem.getByText('Ponto chave', { exact: false })).toBeVisible()
+    await expect(listItem.getByText('Revisar depois', { exact: false })).toBeVisible()
 
     // --- Renomear (LIB-004). Uma vez em modo de edicao, o titulo original deixa de aparecer como
     // TEXTO no DOM (vira o `value` de um `<input>`, que `hasText` nao enxerga) - entao os

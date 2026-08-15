@@ -299,6 +299,17 @@ body {
   padding-left: var(--ms-space-4);
 }
 
+/* RF-016 - lista de marcadores nos detalhes expandidos da Biblioteca, mesmo tratamento visual da
+   lista de trilhas. */
+.library-list__markers {
+  margin: var(--ms-space-2) 0 0;
+  padding-left: var(--ms-space-4);
+}
+
+.library-list__marker-note {
+  color: var(--ms-color-text-muted);
+}
+
 .setup-group {
   margin-bottom: var(--ms-space-8);
 }
@@ -415,6 +426,15 @@ body {
 
 .recording-controls__actions {
   margin-top: var(--ms-space-3);
+}
+
+/* RF-016 - titulo/nota do PROXIMO marcador, preenchidos antes do clique em "Marcador" (sem
+   interromper a gravacao com um modal). */
+.recording-controls__marker-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ms-space-2);
+  margin-top: var(--ms-space-2);
 }
 
 .recording-indicator {

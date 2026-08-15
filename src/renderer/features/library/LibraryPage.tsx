@@ -6,6 +6,7 @@ import { formatFileSize } from './format-file-size'
 import { formatElapsed } from '../recording/format-elapsed'
 import { TRACK_TYPE_LABELS } from './track-type-labels'
 import type { ProjectResponse, ProjectDetailsResponse } from '@shared/schemas/project.schema'
+import type { MarkerResponse } from '@shared/schemas/markers.schema'
 
 /**
  * RECOV-002/RECOV-003 (decimo incremento - Fase 2, recuperacao). Um projeto chega com
@@ -44,6 +45,12 @@ export function LibraryPage() {
   const [details, setDetails] = useState<ProjectDetailsResponse | null>(null)
   const [detailsLoadingId, setDetailsLoadingId] = useState<string | null>(null)
   const [detailsErrorId, setDetailsErrorId] = useState<string | null>(null)
+
+  // RF-016 - marcadores (timestamp/titulo/nota) buscados junto com os detalhes, mesmo padrao de
+  // "sob demanda ao expandir" - `markers.list` ja existia desde a Fase 1, nunca tinha nenhuma UI
+  // consumindo (so era exercitado por teste). Falha ao buscar marcadores NAO impede o resto dos
+  // detalhes de aparecer (ver `handleToggleDetails`) - sao dados independentes.
+  const [markers, setMarkers] = useState<MarkerResponse[] | null>(null)
 
   // LIB-004: edicao inline do titulo.
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -114,6 +121,7 @@ export function LibraryPage() {
     setDetailsErrorId(null)
     setExpandedId(projectId)
     setDetails(null)
+    setMarkers(null)
     setDetailsLoadingId(projectId)
     try {
       const result = await window.meetingStudio.library.getDetails(projectId)
@@ -122,6 +130,15 @@ export function LibraryPage() {
       setDetailsErrorId(projectId)
     } finally {
       setDetailsLoadingId(null)
+    }
+    // RF-016 - busca separada de `getDetails` de proposito: uma falha aqui nao deveria impedir o
+    // resto dos detalhes (duracao/trilhas/tamanho) de aparecer - `markers` fica `[]` nesse caso,
+    // renderizando como "sem marcadores" em vez de um erro bloqueando a secao inteira.
+    try {
+      const result = await window.meetingStudio.markers.list(projectId)
+      setMarkers(result)
+    } catch {
+      setMarkers([])
     }
   }
 
@@ -326,6 +343,28 @@ export function LibraryPage() {
                             </li>
                           ))}
                         </ul>
+                      )}
+                      {/* RF-016 - `markers` so aparece depois de resolvido (null enquanto a busca
+                          de `markers.list` esta em voo) - sem indicador de carregamento proprio,
+                          discreto o bastante pra nao competir com o "Carregando detalhes..." de
+                          cima (o mesmo clique dispara as duas buscas). */}
+                      {markers && (
+                        <>
+                          <h4>Marcadores</h4>
+                          {markers.length === 0 ? (
+                            <p>Nenhum marcador nesta gravacao.</p>
+                          ) : (
+                            <ul className="library-list__markers">
+                              {markers.map((marker) => (
+                                <li key={marker.id}>
+                                  {formatElapsed(marker.timestampMs)}
+                                  {marker.title && <strong> — {marker.title}</strong>}
+                                  {marker.note && <span className="library-list__marker-note"> {marker.note}</span>}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </>
                       )}
                     </>
                   )}

@@ -578,8 +578,16 @@ test.describe('recording (markers)', () => {
     const markerButton = appWindow.getByRole('button', { name: 'Marcador' })
     await expect(markerButton).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
 
+    // RF-016 - titulo/nota preenchidos ANTES do clique (nao um modal depois) - o primeiro
+    // marcador leva os dois campos, o segundo fica sem nenhum (marcador instantaneo, campos
+    // deixados em branco de proposito) - prova os dois caminhos no mesmo teste.
+    await appWindow.getByLabel('Titulo do marcador').fill('Decisao importante')
+    await appWindow.getByLabel('Nota do marcador').fill('Aprovado por unanimidade')
     await markerButton.click()
     await expect(appWindow.getByRole('status')).toContainText('1 marcador', { timeout: 10_000 })
+    // Campos limpos automaticamente depois do clique, prontos pro proximo marcador.
+    await expect(appWindow.getByLabel('Titulo do marcador')).toHaveValue('')
+    await expect(appWindow.getByLabel('Nota do marcador')).toHaveValue('')
 
     await markerButton.click()
     await expect(appWindow.getByRole('status')).toContainText('2 marcadores', { timeout: 10_000 })
@@ -598,8 +606,11 @@ test.describe('recording (markers)', () => {
     // ter acontecido ANTES do primeiro.
     expect(markers[1]!.timestampMs).toBeGreaterThanOrEqual(markers[0]!.timestampMs)
     expect(markers[0]!.projectId).toBe(projectId)
-    // Marcador instantaneo (sem titulo/nota nesta UI - ver comentario em `AddMarkerRequestSchema`).
-    expect(markers.every((marker) => marker.title === null && marker.note === null)).toBe(true)
+    expect(markers[0]!.title).toBe('Decisao importante')
+    expect(markers[0]!.note).toBe('Aprovado por unanimidade')
+    // Segundo marcador instantaneo (campos deixados em branco de proposito) - continua suportado.
+    expect(markers[1]!.title).toBeNull()
+    expect(markers[1]!.note).toBeNull()
   })
 
   test('rejects adding a marker while paused', async () => {
