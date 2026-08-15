@@ -26,15 +26,16 @@ e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-exclui
 **Fase 3 — Editor MVP** está em andamento: criar/abrir um projeto de edição vinculado a uma
 gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002), o preview
 completo com playhead sincronizado e reprodução multi-trilha (EDIT-003, partes 1 e 2), corte/
-split/remover-intervalo (EDIT-004/005/006), desfazer/refazer (EDIT-007) e ganho/mudo por trilha
-(EDIT-008) já funcionam de ponta a ponta - ver
+split/remover-intervalo (EDIT-004/005/006), desfazer/refazer (EDIT-007), ganho/mudo por trilha
+(EDIT-008) e fade in/out por trilha (EDIT-009) já funcionam de ponta a ponta - ver
 [Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3),
 [Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3),
 [Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3),
 [Playhead sincronizado e reprodução multi-trilha](#playhead-sincronizado-e-reprodução-multi-trilha-fase-3),
 [Corte, split e remover intervalo](#corte-split-e-remover-intervalo-fase-3),
-[Desfazer e refazer](#desfazer-e-refazer-fase-3) e
-[Ganho e mudo por trilha](#ganho-e-mudo-por-trilha-fase-3).
+[Desfazer e refazer](#desfazer-e-refazer-fase-3),
+[Ganho e mudo por trilha](#ganho-e-mudo-por-trilha-fase-3) e
+[Fade in/out por trilha](#fade-inout-por-trilha-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -836,6 +837,47 @@ operacao, herdando desfazer/refazer/poda-de-ramo-abandonado de graca.
   independente, e que Ctrl+Z desfaz so a ULTIMA operacao do log (o ganho da camera), preservando o
   mudo do microfone (uma operacao anterior).
 
+### Fade in/out por trilha (Fase 3)
+
+Vigésimo incremento - EDIT-009. Mesmo truque do EDIT-008: `SET_FADE` é um TERCEIRO tipo de operação
+sobre o log já existente do EDIT-007, de novo sem NENHUMA mudança de schema/migration - só uma
+segunda passagem de fold em paralelo à do `SET_GAIN`, independente dela (uma trilha pode ter ambas
+operações ativas simultaneamente, uma para cada campo).
+
+- **Fade é fundamentalmente diferente de ganho: depende da posição do playhead, não só da
+  timeline.** Ganho/mudo (EDIT-008) é um efeito estático - calculado uma vez quando a timeline muda
+  e reaplicado só nesse momento. Fade precisa ser recalculado a CADA tick de reprodução (a cada
+  frame do `requestAnimationFrame`, e a cada seek), já que "quanto falta pro fim do fade" muda
+  continuamente enquanto o vídeo toca. Isso forçou consolidar dois `useEffect`s antes separados em
+  `useMultiTrackPlayback` (um de montagem, outro só de ganho) num único efeito, e mover o cálculo de
+  volume pra dentro de `applyTimeToTrack` (já chamada em todo tick + seek, reaproveitando o "motor"
+  existente em vez de criar um terceiro caminho de atualização).
+- **`fadeVolumeMultiplier` combina fade-in e fade-out via `Math.min`** (nunca excede 1, e trata
+  corretamente o caso de uma trilha curta onde as duas janelas se sobrepõem no meio - o multiplicador
+  mais silencioso sempre vence). Função pura em `timeline-playback.ts`, testada isoladamente sem
+  precisar de um elemento `<video>` real.
+- Volume final aplicado ao elemento é `dbToLinearVolume(gainDb) * fadeVolumeMultiplier(...)` - os
+  dois efeitos (EDIT-008 e EDIT-009) compõem multiplicativamente, sem precisar de nenhuma
+  coordenação especial entre eles.
+- **UI**: dois campos numéricos ("Fade in"/"Fade out", em segundos, step 0.5) na coluna de rótulo de
+  cada trilha (`Timeline.tsx`, prop opcional `onSetTrackFade` - mesmo padrão opt-in do
+  `onSetTrackGain`), convertendo segundos↔ms na fronteira UI/IPC. Handler no componente pai
+  (`EditorProjectPage`) com seu PRÓPRIO guard de sequência (`fadeRequestSeqRef`, independente do
+  `gainRequestSeqRef`) - mesmo raciocínio do EDIT-008: não usa `busy` global, não reseta
+  playhead/seleção.
+- Testado via 10 novos testes de integração do `EditorService.setTrackFade`
+  (`tests/unit/main/editor.service.test.ts`: aplica a trilha certa sem afetar as outras, um segundo
+  `SET_FADE` na mesma trilha SUBSTITUI em vez de acumular, rejeita trackId inexistente, revision
+  incrementa, undo/redo funcionam sobre esta operação, poda de ramo abandonado, uma trilha removida
+  por `REMOVE_RANGE` não quebra nada, e **`SET_GAIN`/`SET_FADE` coexistem de forma independente na
+  mesma trilha sem um sobrescrever o outro**) + 11 testes de `fadeVolumeMultiplier` (sem fade = 1,
+  silêncio exato no início/fim da janela, rampa linear, plateau antes/depois da janela, combinação
+  fade-in+fade-out via mínimo, trilha degenerada sem NaN/divisão por zero) e um novo teste E2E
+  (`test.describe('editor (fade)')`): grava microfone+câmera, ajusta fade-in e fade-out da trilha de
+  microfone pelos campos numéricos, confirma via `editor.getEditedTimeline` que os dois valores
+  foram persistidos corretamente, e que Ctrl+Z desfaz só a ÚLTIMA operação do log (o fade-out),
+  preservando o fade-in (uma operação anterior) - mesmo formato de asserção do teste de gain/mute.
+
 ## Estrutura de diretórios
 
 ```text
@@ -1327,6 +1369,20 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
     playhead/seleção (ao contrário de corte/undo/redo, que podem reestruturar a timeline), e um
     slider de range dispara eventos rápidos demais para o padrão de `busy` global fazer sentido;
     um guard de sequência (`gainRequestSeqRef`) descarta respostas IPC desatualizadas em vez disso.
+94. **`SET_FADE` é um terceiro tipo de operação independente de `SET_GAIN`**, não um campo a mais
+    no mesmo payload — uma trilha pode ter ambas ativas simultaneamente (fold em
+    `getEditedTimeline` roda as duas passagens sem interferência mútua), evitando acoplar dois
+    conceitos de mixagem que o usuário ajusta em momentos diferentes.
+95. **Fade recalcula o volume a cada tick de reprodução, não só quando a timeline muda** (ao
+    contrário de ganho/mudo, que é estático) — o multiplicador depende da posição atual do
+    playhead relativa ao início/fim da trilha; isso exigiu mover o cálculo pra dentro de
+    `applyTimeToTrack` (já chamada a cada frame + seek) em vez de um `useEffect` isolado.
+96. **`fadeVolumeMultiplier` combina fade-in/fade-out via `Math.min`**, nunca soma nem multiplica
+    as duas rampas — garante que o resultado nunca excede 1 e que numa trilha curta (onde as duas
+    janelas se sobrepõem) o multiplicador mais silencioso sempre vence, sem casos especiais.
+97. **Volume final = `dbToLinearVolume(gainDb) × fadeVolumeMultiplier(...)`** — os efeitos do
+    EDIT-008 e do EDIT-009 compõem multiplicativamente no ponto de aplicação (`applyTimeToTrack`),
+    sem nenhuma coordenação especial entre os dois fold passes que os calculam.
 
 ## Testes
 
@@ -1387,9 +1443,16 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   incrementa, undo/redo funcionam sobre esta operação igual a qualquer outra do log, poda de ramo
   abandonado, uma trilha depois totalmente removida por `REMOVE_RANGE` não quebra nada)**,
   **`dbToLinearVolume` puro (0dB=1, -60dB≈0.001, -6dB≈meia amplitude, clamps defensivos)**,
+  **`EditorService.setTrackFade` de ponta a ponta (aplica a trilha certa sem afetar as outras, um
+  segundo `SET_FADE` na mesma trilha SUBSTITUI em vez de acumular, rejeita trackId inexistente,
+  revision incrementa, undo/redo funcionam sobre esta operação, poda de ramo abandonado, trilha
+  removida por `REMOVE_RANGE` não quebra nada, `SET_GAIN`/`SET_FADE` coexistem de forma
+  independente na mesma trilha)**, **`fadeVolumeMultiplier` puro (sem fade = 1, silêncio exato nas
+  bordas da janela, rampa linear, plateau antes/depois da janela, combinação fade-in+fade-out via
+  mínimo, trilha degenerada sem NaN/divisão por zero)**,
   wrapper de IPC (validação/erro/sucesso), schemas Zod (incluindo `project.openFolder`), erros de
   domínio, migrations (tabelas/índices/FKs), repositórios (project/settings/export-job), serviço
-  de configurações, store de tema, smoke test de componente (jsdom). **252 testes, 30 arquivos.**
+  de configurações, store de tema, smoke test de componente (jsdom). **273 testes, 30 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -1454,25 +1517,27 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   EDIT-008) grava microfone+câmera, muta a trilha de microfone pelo botão, ajusta o ganho da
   câmera pelo slider (setter nativo bypassando o rastreador de valor do React), confirma via
   `editor.getEditedTimeline` que as duas trilhas são ajustadas de forma independente, e que
-  Ctrl+Z desfaz só a ÚLTIMA operação do log (o ganho da câmera), preservando o mudo do microfone.
-  **8 testes**, isolado `editor (gain/mute)` passou de forma limpa (sem retry, 24,8s). Validação
-  deste incremento caiu no episódio de contenção de recursos MAIS severo já observado nesta sessão
-  - confirmado via métricas diretas do SO (`Get-CimInstance Win32_OperatingSystem`), não só
-  contagem de processos: RAM livre chegou a **0,4-0,5 GB de 15,8 GB** em vários pontos da
-  validação (>99% em uso), recuperando e caindo repetidamente entre 0,4 GB e 3,7 GB ao longo de
-  ~30 minutos de execuções. `editor (gain/mute)` recuperou no retry #1 na primeira execução
-  completa da suíte (14,6min, 18 passaram/7 falharam/4 flaky) mas esgotou as 3 tentativas na
-  segunda (15,2min, 18 passaram/6 falharam/5 flaky) - mas **toda falha, sem exceção, confirmada
-  via `error-context.md` de cada tentativa, ocorreu na etapa de setup compartilhada** (aguardar
-  `getByLabel('Camera')` ficar visível ou `getByRole('status')` conter "REC"), nunca dentro do
-  código de ganho/mudo em si; a mesma classe de falha atingiu simultaneamente testes sem nenhuma
-  relação de código com ganho/mudo (`library`, `recording microphone+camera`,
-  `recording screen+microphone`) nas mesmas execuções. Correção de lógica confirmada pelos 9
-  testes de integração dedicados do `EditorService.setTrackGain` (100% verdes) e pela execução
-  isolada do próprio teste E2E, que passou sem nenhum retry antes do pico mais severo de pressão
-  de memória - evidência de que o problema é a exaustão real de RAM da máquina no momento da
-  validação (aparentemente causada por processos concorrentes não relacionados a este projeto -
-  ver decisão registrada na memória persistente do agente), não uma regressão deste incremento.
+  Ctrl+Z desfaz só a ÚLTIMA operação do log (o ganho da câmera), preservando o mudo do microfone;
+  nono teste (`test.describe('editor (fade)')`, EDIT-009) grava microfone+câmera, ajusta fade-in e
+  fade-out da trilha de microfone pelos dois campos numéricos, confirma via
+  `editor.getEditedTimeline` que os dois valores foram persistidos corretamente, e que Ctrl+Z
+  desfaz só a ÚLTIMA operação do log (o fade-out), preservando o fade-in.
+  **9 testes**, isolado `editor (fade)` passou de forma limpa (sem retry, 21,4s). Validação deste
+  incremento caiu num episódio de contenção de recursos ainda mais severo que o do EDIT-008 -
+  RAM livre chegou a **0,2 GB de 15,8 GB** em vários pontos (>98,7% em uso), incluindo um estol de
+  ~22 horas reais no meio de uma execução completa da suíte (a máquina aparentemente hibernou/
+  suspendeu por um longo período; confirmado via `Get-Date`/`CreationDate` de processo, não apenas
+  pela duração de teste reportada pelo Playwright, que por si só já mostrou uma discrepância
+  gigante). Sob essa pressão extrema, a execução completa da suíte passou a falhar de forma
+  disseminada (não só o já conhecido bootstrap de câmera/status, mas praticamente todo teste que
+  depende do setup de gravação) - **toda falha, sem exceção, confirmada via `error-context.md`,
+  ocorreu na mesma etapa de setup compartilhada** (`getByRole('status')` nunca contendo "REC" a
+  tempo), nunca dentro do código de fade em si. Correção de lógica confirmada pelos 10 testes de
+  integração dedicados do `EditorService.setTrackFade` + 11 de `fadeVolumeMultiplier` (todos
+  verdes) e pela execução isolada do próprio teste E2E, que passou sem nenhum retry antes do pico
+  de pressão de memória - mesma linha de evidência já usada nos incrementos anteriores (EDIT-007/
+  008) para aceitar a exaustão real de RAM da máquina como causa raiz, não uma regressão deste
+  incremento.
 
 ## Pendências conhecidas
 
@@ -1548,8 +1613,8 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   edição, que precisará dos segmentos um a um.
 - Projeto de edição ainda não tem renomear nem excluir (só a Biblioteca tem essas ações, para
   gravações - não para projetos de edição). Corte/split/remover-intervalo (EDIT-004/005/006),
-  desfazer/refazer (EDIT-007) e ganho/mudo por trilha (EDIT-008) já funcionam; fade, transformação
-  de câmera e layout ainda não (EDIT-009 em diante).
+  desfazer/refazer (EDIT-007), ganho/mudo (EDIT-008) e fade in/out (EDIT-009) por trilha já
+  funcionam; transformação de câmera e layout ainda não (EDIT-010 em diante).
 - `EditorProjectPage` não trata um `id` de projeto de edição inexistente/inválido na URL de forma
   amigável (`editor.get` lança `NotFoundError`, capturado só como um estado de erro genérico) -
   refinamento futuro, não bloqueante.
@@ -1572,7 +1637,13 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - **Ganho por trilha limitado a atenuação (-60..0dB), sem amplificação acima do original**
   (EDIT-008) - os elementos `<video>`/`<audio>` nativos usados pelo player só suportam `volume`
   linear 0..1; amplificar (ex.: reforçar um microfone gravado baixo) exigiria trocar para a Web
-  Audio API (`GainNode`), refinamento futuro. Fade-in/fade-out (EDIT-009) ainda não implementado.
+  Audio API (`GainNode`), refinamento futuro.
+- **Fade in/out (EDIT-009) é por trilha inteira, não por clip individual nem por janela arbitrária
+  no meio da timeline** - `fadeInMs`/`fadeOutMs` sempre contam a partir do início/fim da trilha
+  inteira (primeiro clip ao último), então uma trilha com múltiplos clips rotacionados/cortados não
+  tem como aplicar um fade só num clip específico no meio. Também não há campo numérico validando
+  que `fadeInMs + fadeOutMs` não ultrapasse a duração da trilha (o `Math.min` em
+  `fadeVolumeMultiplier` já lida com a sobreposição sem quebrar, mas a UI não avisa o usuário).
 - O relógio do player não pausa sozinho ao final de cada clip em caso de gap real entre segmentos
   de uma mesma trilha (ex.: um pause/resume real) - a trilha simplesmente fica pausada durante o
   gap e retoma quando o próximo clip começa; comportamento correto, mas sem nenhuma indicação
@@ -1598,17 +1669,18 @@ mostrar na pasta, excluir) funcionam de ponta a ponta. A **Fase 3 — Editor MVP
 EDIT-001 (criar/abrir projeto de edição), EDIT-002 (timeline compilada somente-leitura), EDIT-003
 completo (partes 1 e 2 - preview com playhead sincronizado e reprodução multi-trilha via protocolo
 de mídia local seguro), EDIT-004/005/006 (corte/split/remover-intervalo, a primeira operação de
-edição real), EDIT-007 (desfazer/refazer, cursor sobre o log de operações) e EDIT-008 (ganho/mudo
-por trilha, reusando o mesmo log) já funcionam de ponta a ponta.
+edição real), EDIT-007 (desfazer/refazer, cursor sobre o log de operações), EDIT-008 (ganho/mudo
+por trilha, reusando o mesmo log) e EDIT-009 (fade in/out por trilha, terceiro tipo de operação
+sobre o mesmo log, volume recalculado a cada tick por depender do playhead) já funcionam de ponta
+a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 3 — Editor MVP**: fade in/out (EDIT-009), visibilidade/transformação de
-   câmera (EDIT-010), layout (PiP/lado-a-lado/só-tela/só-câmera, EDIT-011), autosave (EDIT-012) -
-   cada operação provavelmente seu próprio incremento, dado o tamanho desta fase
-   (05_MEDIA_EDITOR.md).
+1. Continuar a **Fase 3 — Editor MVP**: visibilidade/transformação de câmera (EDIT-010), layout
+   (PiP/lado-a-lado/só-tela/só-câmera, EDIT-011), autosave (EDIT-012) - cada operação provavelmente
+   seu próprio incremento, dado o tamanho desta fase (05_MEDIA_EDITOR.md).
 2. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
    ainda não instalados - `main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`,
    nenhum binário real, `export.start` sempre lança `NotImplementedError`), MP4 720p/1080p, faixa

@@ -24,7 +24,8 @@ export function Timeline({
   currentTimeMs,
   onSeek,
   selection,
-  onSetTrackGain
+  onSetTrackGain,
+  onSetTrackFade
 }: {
   timeline: GetTimelineResponse
   currentTimeMs?: number
@@ -35,6 +36,9 @@ export function Timeline({
    * fornecido (omitido = so o rotulo, sem controles - ex.: um preview futuro somente-leitura que
    * reuse este componente sem edicao). */
   onSetTrackGain?: (trackId: string, gainDb: number, muted: boolean) => void
+  /** EDIT-009 - duracao (ms) de fade-in/fade-out por trilha, mesmo padrao de prop opcional de
+   * `onSetTrackGain`. */
+  onSetTrackFade?: (trackId: string, fadeInMs: number, fadeOutMs: number) => void
 }) {
   const totalMs = Math.max(timeline.totalDurationMs, 1)
   const rulerMarks = buildRulerMarks(totalMs)
@@ -109,6 +113,46 @@ export function Timeline({
                     onSetTrackGain(track.id, Number(event.target.value), track.muted)
                   }
                 />
+              </div>
+            )}
+            {onSetTrackFade && (
+              <div className="timeline__track-fade-controls">
+                <label className="timeline__track-fade-field">
+                  Fade in
+                  <input
+                    type="number"
+                    className="timeline__track-fade-input"
+                    min={0}
+                    step={0.5}
+                    value={track.fadeInMs / 1000}
+                    aria-label={`Fade-in da trilha ${TRACK_TYPE_LABELS[track.type]} (segundos)`}
+                    onChange={(event) =>
+                      onSetTrackFade(
+                        track.id,
+                        Math.max(0, Math.round(Number(event.target.value) * 1000)),
+                        track.fadeOutMs
+                      )
+                    }
+                  />
+                </label>
+                <label className="timeline__track-fade-field">
+                  Fade out
+                  <input
+                    type="number"
+                    className="timeline__track-fade-input"
+                    min={0}
+                    step={0.5}
+                    value={track.fadeOutMs / 1000}
+                    aria-label={`Fade-out da trilha ${TRACK_TYPE_LABELS[track.type]} (segundos)`}
+                    onChange={(event) =>
+                      onSetTrackFade(
+                        track.id,
+                        track.fadeInMs,
+                        Math.max(0, Math.round(Number(event.target.value) * 1000))
+                      )
+                    }
+                  />
+                </label>
               </div>
             )}
           </div>

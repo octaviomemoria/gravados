@@ -42,7 +42,8 @@ export const IPC_CHANNELS = {
     removeRange: 'editor.removeRange',
     undo: 'editor.undo',
     redo: 'editor.redo',
-    setTrackGain: 'editor.setTrackGain'
+    setTrackGain: 'editor.setTrackGain',
+    setTrackFade: 'editor.setTrackFade'
   },
   export: {
     start: 'export.start',

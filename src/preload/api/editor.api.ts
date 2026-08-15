@@ -17,7 +17,9 @@ import {
   RedoRequestSchema,
   RedoResponseSchema,
   SetTrackGainRequestSchema,
-  SetTrackGainResponseSchema
+  SetTrackGainResponseSchema,
+  SetTrackFadeRequestSchema,
+  SetTrackFadeResponseSchema
 } from '../../shared/schemas/editor.schema'
 import type { EditorApi } from '../../shared/types/preload-api'
 import { invokeChannel } from '../invoke'
@@ -77,6 +79,12 @@ export function createEditorApi(): EditorApi {
         IPC_CHANNELS.editor.setTrackGain,
         { request: SetTrackGainRequestSchema, response: SetTrackGainResponseSchema },
         { editProjectId, trackId, gainDb, muted }
+      ),
+    setTrackFade: (editProjectId: string, trackId: string, fadeInMs: number, fadeOutMs: number) =>
+      invokeChannel(
+        IPC_CHANNELS.editor.setTrackFade,
+        { request: SetTrackFadeRequestSchema, response: SetTrackFadeResponseSchema },
+        { editProjectId, trackId, fadeInMs, fadeOutMs }
       )
   }
 }

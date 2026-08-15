@@ -5,7 +5,8 @@ import {
   isDrifting,
   msFromPointerOffset,
   DRIFT_THRESHOLD_SECONDS,
-  dbToLinearVolume
+  dbToLinearVolume,
+  fadeVolumeMultiplier
 } from '../../../src/renderer/features/editor/timeline-playback'
 import type { TimelineClip } from '../../../src/shared/schemas/editor.schema'
 
@@ -134,5 +135,57 @@ describe('dbToLinearVolume', () => {
 
   it('clamps a gainDb far below -60 (defensive) to at least 0', () => {
     expect(dbToLinearVolume(-1000)).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('fadeVolumeMultiplier', () => {
+  it('returns 1 (no attenuation) when both fadeInMs and fadeOutMs are 0', () => {
+    expect(fadeVolumeMultiplier(5000, 0, 10_000, 0, 0)).toBe(1)
+  })
+
+  it('is silent at the exact start of the track when fading in', () => {
+    expect(fadeVolumeMultiplier(1000, 1000, 10_000, 2000, 0)).toBe(0)
+  })
+
+  it('ramps up linearly during the fade-in window', () => {
+    expect(fadeVolumeMultiplier(2000, 1000, 10_000, 2000, 0)).toBeCloseTo(0.5, 5)
+  })
+
+  it('reaches full volume exactly at the end of the fade-in window', () => {
+    expect(fadeVolumeMultiplier(3000, 1000, 10_000, 2000, 0)).toBe(1)
+  })
+
+  it('stays at full volume well past the fade-in window', () => {
+    expect(fadeVolumeMultiplier(9000, 1000, 10_000, 2000, 0)).toBe(1)
+  })
+
+  it('is silent at the exact end of the track when fading out', () => {
+    expect(fadeVolumeMultiplier(10_000, 1000, 10_000, 0, 2000)).toBe(0)
+  })
+
+  it('ramps down linearly during the fade-out window', () => {
+    expect(fadeVolumeMultiplier(9000, 1000, 10_000, 0, 2000)).toBeCloseTo(0.5, 5)
+  })
+
+  it('stays at full volume before the fade-out window starts', () => {
+    expect(fadeVolumeMultiplier(5000, 1000, 10_000, 0, 2000)).toBe(1)
+  })
+
+  it('combines fade-in and fade-out via the minimum, never exceeding 1', () => {
+    // Track duration 10s, 2s fade-in, 2s fade-out - well into the middle, both fades inactive.
+    expect(fadeVolumeMultiplier(5000, 0, 10_000, 2000, 2000)).toBe(1)
+  })
+
+  it('on a track shorter than fadeIn+fadeOut, the smaller (more silent) multiplier always wins', () => {
+    // Track spans 0..3000ms, fadeIn=2000ms, fadeOut=2000ms - windows overlap in the middle.
+    // At 1500ms: fade-in progress = 1500/2000 = 0.75; fade-out remaining = 1500/2000 = 0.75.
+    expect(fadeVolumeMultiplier(1500, 0, 3000, 2000, 2000)).toBeCloseTo(0.75, 5)
+    // Never exceeds 1 even right at a boundary.
+    expect(fadeVolumeMultiplier(0, 0, 3000, 2000, 2000)).toBe(0)
+  })
+
+  it('returns 1 for a degenerate track (endMs <= startMs), never NaN/divide-by-zero', () => {
+    expect(fadeVolumeMultiplier(500, 1000, 1000, 2000, 2000)).toBe(1)
+    expect(fadeVolumeMultiplier(500, 1000, 500, 2000, 2000)).toBe(1)
   })
 })

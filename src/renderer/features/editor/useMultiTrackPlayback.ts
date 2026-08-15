@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { buildMeetingMediaUrl } from '@shared/constants/media-protocol'
-import { findClipAtTime, clipLocalTimeSeconds, isDrifting, dbToLinearVolume } from './timeline-playback'
+import {
+  findClipAtTime,
+  clipLocalTimeSeconds,
+  isDrifting,
+  dbToLinearVolume,
+  fadeVolumeMultiplier
+} from './timeline-playback'
 import type { GetTimelineResponse, TimelineTrack } from '@shared/schemas/editor.schema'
 
 /**
@@ -67,6 +73,17 @@ export function useMultiTrackPlayback(timeline: GetTimelineResponse | null): Mul
     (track: TimelineTrack, globalMs: number, forceSeek: boolean) => {
       const el = elementsRef.current.get(track.id)
       if (!el || !timeline) return
+      // EDIT-008/EDIT-009 - ganho fixo (`gainDb`) e fade dependente da posicao do playhead
+      // combinados a CADA chamada (nao um efeito estatico separado) - o fade precisa recalcular
+      // conforme `globalMs` avanca durante a reproducao, diferente de ganho/mudo (constantes
+      // enquanto a trilha nao muda). `trackStartMs`/`trackEndMs` vem do primeiro/ultimo clip da
+      // trilha NA TIMELINE EDITADA ATUAL (podem mudar apos um corte).
+      el.muted = track.muted
+      const trackStartMs = track.clips[0]?.startMs ?? 0
+      const trackEndMs = track.clips[track.clips.length - 1]?.endMs ?? 0
+      el.volume =
+        dbToLinearVolume(track.gainDb) *
+        fadeVolumeMultiplier(globalMs, trackStartMs, trackEndMs, track.fadeInMs, track.fadeOutMs)
       const clip = findClipAtTime(track.clips, globalMs)
       if (!clip) {
         // Fora da cobertura desta trilha (antes do primeiro clip, depois do ultimo, ou num gap) -
@@ -172,31 +189,20 @@ export function useMultiTrackPlayback(timeline: GetTimelineResponse | null): Mul
     return fn
   }, [])
 
-  // Pre-carrega o instante 0 em cada trilha assim que os elementos montam, para que o preview
-  // mostre um frame real sem precisar apertar "play" primeiro. So mexe no DOM dos elementos
-  // (`applyTimeToAllTracks`), nunca em state React, de proposito - resetar o ESTADO do player
-  // (playhead/isPlaying) quando o usuario navega para outro projeto de edicao e responsabilidade
-  // do `key={editProject.id}` no componente pai (`EditorProjectPage`), que remonta a subarvore
-  // inteira - o padrao recomendado pelo React para "resetar estado quando um id muda", em vez de
-  // um efeito chamando setState de forma sincrona.
+  // Pre-carrega o instante ATUAL do playhead em cada trilha sempre que a timeline mudar - cobre
+  // tanto a montagem inicial (`playheadMsRef.current` comeca em 0, mostra um frame real sem
+  // precisar apertar "play") quanto qualquer recalculo posterior (corte/undo/redo - o proprio
+  // handler ja chama `playback.seek(0)` ANTES desta timeline mudar de identidade, entao o ref ja
+  // reflete 0 quando este efeito roda; ganho/mudo/fade via `setTrackGain`/`setTrackFade` NAO
+  // mexem no playhead, entao reaplica na posicao atual sem mover a reproducao). So mexe no DOM
+  // dos elementos (`applyTimeToAllTracks`), nunca em state React, de proposito - resetar o ESTADO
+  // do player (playhead/isPlaying) quando o usuario navega para outro projeto de edicao e
+  // responsabilidade do `key={editProject.id}` no componente pai (`EditorProjectPage`), que
+  // remonta a subarvore inteira - o padrao recomendado pelo React para "resetar estado quando um
+  // id muda", em vez de um efeito chamando setState de forma sincrona.
   useEffect(() => {
-    applyTimeToAllTracks(0, true)
+    applyTimeToAllTracks(playheadMsRef.current, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeline?.editProjectId])
-
-  // EDIT-008 - aplica ganho/mudo de cada trilha no elemento correspondente sempre que a timeline
-  // mudar (montagem inicial - `getTrackRef` ja populou `elementsRef` antes deste efeito rodar, no
-  // mesmo commit - ou apos um `setTrackGain`/`undo`/`redo` recalcular a timeline editada). Efeito
-  // separado de `applyTimeToAllTracks` de proposito: ganho/mudo nao dependem da posicao do
-  // playhead, so do estado atual de CADA trilha.
-  useEffect(() => {
-    if (!timeline) return
-    for (const track of timeline.tracks) {
-      const el = elementsRef.current.get(track.id)
-      if (!el) continue
-      el.muted = track.muted
-      el.volume = dbToLinearVolume(track.gainDb)
-    }
   }, [timeline])
 
   useEffect(() => {

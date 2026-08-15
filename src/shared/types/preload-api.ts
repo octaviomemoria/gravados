@@ -127,6 +127,16 @@ export interface EditorApi {
     gainDb: number,
     muted: boolean
   ) => Promise<GetEditedTimelineResponse>
+  /** EDIT-009 - ajusta fade-in/fade-out (ms, relativos ao proprio inicio/fim da trilha) de uma
+   * trilha. Substitui o estado inteiro da trilha (nao acumula) - poda qualquer "refazer"
+   * pendente, igual `removeRange`/`setTrackGain`. Rejeita se `trackId` nao existir na timeline
+   * editada atual. */
+  setTrackFade: (
+    editProjectId: string,
+    trackId: string,
+    fadeInMs: number,
+    fadeOutMs: number
+  ) => Promise<GetEditedTimelineResponse>
 }
 
 export interface ExportApi {

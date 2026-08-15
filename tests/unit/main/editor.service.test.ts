@@ -664,4 +664,142 @@ describe('EditorService', () => {
       )
     })
   })
+
+  describe('setTrackFade', () => {
+    function createTrackWithSegment(
+      projectId: string,
+      type: 'MICROPHONE' | 'CAMERA',
+      startMs: number,
+      endMs: number
+    ): string {
+      const trackId = randomUUID()
+      trackRepository.create({
+        id: trackId,
+        projectId,
+        type,
+        enabled: true,
+        position: 0,
+        startOffsetMs: 0
+      })
+      segmentRepository.create({
+        id: randomUUID(),
+        trackId,
+        seqIndex: 1,
+        relativePath: `source/${type.toLowerCase()}/${type.toLowerCase()}_000001.webm`,
+        startedAtMs: startMs,
+        endedAtMs: endMs,
+        durationMs: endMs - startMs,
+        byteSize: 1000,
+        mimeType: type === 'CAMERA' ? 'video/webm' : 'audio/webm',
+        finalized: true
+      })
+      return trackId
+    }
+
+    it('raw getTimeline always reports fadeInMs/fadeOutMs 0, before any SET_FADE', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      const raw = service.getTimeline(editProject.id)
+      expect(raw.tracks[0]).toMatchObject({ fadeInMs: 0, fadeOutMs: 0 })
+    })
+
+    it('applies fadeInMs/fadeOutMs to the target track and leaves other tracks untouched', () => {
+      const project = createProject('COMPLETED')
+      const micTrackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      createTrackWithSegment(project.id, 'CAMERA', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      const updated = service.setTrackFade(editProject.id, micTrackId, 1000, 2000)
+      const micTrack = updated.tracks.find((track) => track.id === micTrackId)!
+      const otherTrack = updated.tracks.find((track) => track.id !== micTrackId)!
+      expect(micTrack).toMatchObject({ fadeInMs: 1000, fadeOutMs: 2000 })
+      expect(otherTrack).toMatchObject({ fadeInMs: 0, fadeOutMs: 0 })
+    })
+
+    it('a second SET_FADE on the same track REPLACES the previous state, does not accumulate', () => {
+      const project = createProject('COMPLETED')
+      const trackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackFade(editProject.id, trackId, 500, 500)
+      const updated = service.setTrackFade(editProject.id, trackId, 3000, 1000)
+      expect(updated.tracks[0]).toMatchObject({ fadeInMs: 3000, fadeOutMs: 1000 })
+    })
+
+    it('rejects a trackId that does not exist in the current edited timeline', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      expect(() => service.setTrackFade(editProject.id, randomUUID(), 1000, 1000)).toThrow(
+        'nao encontrada'
+      )
+    })
+
+    it('bumps the edit project revision, same as removeRange/setTrackGain', () => {
+      const project = createProject('COMPLETED')
+      const trackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+      const before = service.getEditProject(editProject.id).revision
+      service.setTrackFade(editProject.id, trackId, 1000, 1000)
+      expect(service.getEditProject(editProject.id).revision).toBe(before + 1)
+    })
+
+    it('is undoable/redoable, same as any other operation on the log', () => {
+      const project = createProject('COMPLETED')
+      const trackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackFade(editProject.id, trackId, 1000, 2000)
+      const afterUndo = service.undo(editProject.id)
+      expect(afterUndo.tracks[0]).toMatchObject({ fadeInMs: 0, fadeOutMs: 0 })
+
+      const afterRedo = service.redo(editProject.id)
+      expect(afterRedo.tracks[0]).toMatchObject({ fadeInMs: 1000, fadeOutMs: 2000 })
+    })
+
+    it('a SET_FADE created after an undo prunes the abandoned redo branch, same as removeRange', () => {
+      const project = createProject('COMPLETED')
+      const trackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackFade(editProject.id, trackId, 1000, 1000)
+      service.undo(editProject.id)
+
+      const afterNewFade = service.setTrackFade(editProject.id, trackId, 2500, 500)
+      expect(afterNewFade.tracks[0]).toMatchObject({ fadeInMs: 2500, fadeOutMs: 500 })
+      expect(afterNewFade.canRedo).toBe(false)
+    })
+
+    it('a SET_FADE targeting a track later fully removed by REMOVE_RANGE has no visible effect (no crash)', () => {
+      const project = createProject('COMPLETED')
+      const micTrackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackFade(editProject.id, micTrackId, 1000, 1000)
+      const afterCut = service.removeRange(editProject.id, 0, 5000)
+      expect(afterCut.tracks).toHaveLength(0)
+    })
+
+    it('SET_GAIN and SET_FADE on the same track coexist independently', () => {
+      const project = createProject('COMPLETED')
+      const trackId = createTrackWithSegment(project.id, 'MICROPHONE', 0, 5000)
+      const editProject = service.createEditProject(project.id)
+
+      service.setTrackGain(editProject.id, trackId, -12, true)
+      const updated = service.setTrackFade(editProject.id, trackId, 1000, 1000)
+      expect(updated.tracks[0]).toMatchObject({
+        gainDb: -12,
+        muted: true,
+        fadeInMs: 1000,
+        fadeOutMs: 1000
+      })
+    })
+
+    it('throws NotFoundError for an unknown edit project', () => {
+      expect(() => service.setTrackFade(randomUUID(), randomUUID(), 1000, 1000)).toThrow(
+        'nao encontrado'
+      )
+    })
+  })
 })

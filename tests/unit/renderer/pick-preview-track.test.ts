@@ -6,7 +6,7 @@ import {
 import type { TimelineTrack } from '../../../src/shared/schemas/editor.schema'
 
 function track(type: TimelineTrack['type'], id = type): TimelineTrack {
-  return { id, type, clips: [], gainDb: 0, muted: false }
+  return { id, type, clips: [], gainDb: 0, muted: false, fadeInMs: 0, fadeOutMs: 0 }
 }
 
 describe('pickPreviewTrack', () => {

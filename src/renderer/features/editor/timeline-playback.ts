@@ -92,3 +92,41 @@ export function msFromPointerOffset(
 export function dbToLinearVolume(gainDb: number): number {
   return Math.min(1, Math.max(0, Math.pow(10, gainDb / 20)))
 }
+
+/**
+ * EDIT-009 (vigesimo incremento - Fase 3, fade in/out). Multiplicador de volume (0..1) de uma
+ * trilha num instante global, combinando fade-in (rampa de silencio ate o volume normal logo
+ * apos `trackStartMs`) e fade-out (rampa ate silencio logo antes de `trackEndMs`) - ambos
+ * relativos ao proprio inicio/fim da trilha (primeiro/ultimo clip dela na timeline EDITADA), nao
+ * um intervalo arbitrario no meio (ver comentario em `TimelineTrackSchema`). Multiplicado pelo
+ * volume de `dbToLinearVolume(track.gainDb)` no chamador - as duas fontes de atenuacao (ganho
+ * fixo + fade dependente do playhead) sao independentes.
+ *
+ * `fadeInMs`/`fadeOutMs` iguais a `0` desativam aquele lado (retorno sempre `1` daquele lado,
+ * nunca `NaN`/divisao por zero). Quando o fade-in e o fade-out se sobrepoem (trilha mais curta
+ * que a soma das duas duracoes), o menor multiplicador vence (`Math.min`) - nunca soma/estoura
+ * acima de 1 nem produz um "pico" de volume no meio de uma trilha curta.
+ */
+export function fadeVolumeMultiplier(
+  globalTimeMs: number,
+  trackStartMs: number,
+  trackEndMs: number,
+  fadeInMs: number,
+  fadeOutMs: number
+): number {
+  if (trackEndMs <= trackStartMs) return 1
+  let multiplier = 1
+  if (fadeInMs > 0) {
+    const elapsedSinceStart = globalTimeMs - trackStartMs
+    if (elapsedSinceStart < fadeInMs) {
+      multiplier = Math.min(multiplier, Math.max(0, elapsedSinceStart / fadeInMs))
+    }
+  }
+  if (fadeOutMs > 0) {
+    const remainingUntilEnd = trackEndMs - globalTimeMs
+    if (remainingUntilEnd < fadeOutMs) {
+      multiplier = Math.min(multiplier, Math.max(0, remainingUntilEnd / fadeOutMs))
+    }
+  }
+  return multiplier
+}

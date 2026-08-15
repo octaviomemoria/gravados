@@ -114,8 +114,8 @@ export class EditorService {
               byteSize: segment.byteSize
             }
           })
-        // Timeline BRUTA - nenhum SET_GAIN (EDIT-008) ainda foi aplicado, sempre volume original.
-        return { id: track.id, type: track.type, clips, gainDb: 0, muted: false }
+        // Timeline BRUTA - nenhum SET_GAIN/SET_FADE (EDIT-008/009) ainda foi aplicado.
+        return { id: track.id, type: track.type, clips, gainDb: 0, muted: false, fadeInMs: 0, fadeOutMs: 0 }
       })
       // Trilha sem nenhum clip sobrevivente (ex.: audio do sistema sem suporte na plataforma,
       // RF-005) nao aparece na timeline - nada para desenhar, so ruido visual.
@@ -134,10 +134,10 @@ export class EditorService {
    * BRUTA (`getTimeline`) com o LOG ordenado de `edit_operations` aplicado por cima, uma operacao
    * de cada vez, em `sequence` - cada `REMOVE_RANGE` opera sobre o RESULTADO da anterior (a
    * timeline "atual" do ponto de vista do usuario naquele momento), nunca sobre a bruta original
-   * diretamente. `SET_GAIN` (EDIT-008) e aplicado numa segunda passagem, com semantica diferente
-   * (substitui, nao acumula - ver comentario mais abaixo). Tipos de operacao ainda nao
-   * implementados (fade/camera transform - EDIT-009 em diante) sao ignorados silenciosamente - o
-   * compilador nunca quebra so porque um tipo futuro apareceu no log.
+   * diretamente. `SET_GAIN` (EDIT-008) e `SET_FADE` (EDIT-009) sao aplicados em passagens
+   * seguintes, com semantica diferente (substituem, nao acumulam - ver comentarios mais abaixo).
+   * Tipos de operacao ainda nao implementados (camera transform/layout - EDIT-010 em diante) sao
+   * ignorados silenciosamente - o compilador nunca quebra so porque um tipo futuro apareceu no log.
    *
    * EDIT-007 (decimo oitavo incremento - undo/redo) - so reproduz operacoes com
    * `sequence <= activeOperationSequence` (o cursor no historico); linhas alem do cursor existem
@@ -178,6 +178,20 @@ export class EditorService {
     tracks = tracks.map((track) => {
       const gain = gainByTrackId.get(track.id)
       return gain ? { ...track, gainDb: gain.gainDb, muted: gain.muted } : track
+    })
+
+    // EDIT-009 - mesmo padrao de fold do SET_GAIN acima: um SET_FADE novo SUBSTITUI o
+    // fadeInMs/fadeOutMs inteiro da trilha, nao acumula.
+    const fadeByTrackId = new Map<string, { fadeInMs: number; fadeOutMs: number }>()
+    for (const operation of activeOperations) {
+      if (operation.type !== 'SET_FADE') continue
+      if (operation.trackId === null) continue
+      const payload = JSON.parse(operation.payloadJson) as { fadeInMs: number; fadeOutMs: number }
+      fadeByTrackId.set(operation.trackId, payload)
+    }
+    tracks = tracks.map((track) => {
+      const fade = fadeByTrackId.get(track.id)
+      return fade ? { ...track, fadeInMs: fade.fadeInMs, fadeOutMs: fade.fadeOutMs } : track
     })
 
     return {
@@ -252,11 +266,41 @@ export class EditorService {
   }
 
   /**
-   * EDIT-007/EDIT-008 - ponto UNICO onde uma operacao NOVA e gravada no log, reusado por
-   * `removeRange` e `setTrackGain` (e por qualquer operacao futura - fade/camera transform/
-   * layout, EDIT-009 em diante). Sempre poda (`DELETE`) qualquer coisa alem do cursor ANTES de
-   * inserir - uma acao nova invalida o "refazer" pendente, o mesmo comportamento padrao de
-   * qualquer editor, independente do TIPO da operacao.
+   * EDIT-009 (vigesimo incremento - Fase 3, fade in/out, `05_MEDIA_EDITOR.md` §4). Mesmo padrao
+   * de `setTrackGain`: substitui o estado inteiro da trilha, valida `trackId` contra a timeline
+   * editada atual. `fadeInMs`/`fadeOutMs` sao duracoes relativas ao proprio inicio/fim da trilha
+   * (nao timestamps absolutos) - o player (`fadeVolumeMultiplier`, renderer) calcula a partir do
+   * primeiro/ultimo clip da trilha a cada instante.
+   */
+  setTrackFade(
+    editProjectId: string,
+    trackId: string,
+    fadeInMs: number,
+    fadeOutMs: number
+  ): GetEditedTimelineResponse {
+    const editProject = this.getEditProject(editProjectId)
+    const current = this.getEditedTimeline(editProjectId)
+    if (!current.tracks.some((track) => track.id === trackId)) {
+      throw new NotFoundError(`Trilha nao encontrada na timeline atual: ${trackId}`)
+    }
+
+    this.appendOperation(editProjectId, editProject, {
+      type: 'SET_FADE',
+      startMs: null,
+      endMs: null,
+      trackId,
+      payloadJson: JSON.stringify({ fadeInMs, fadeOutMs })
+    })
+
+    return this.getEditedTimeline(editProjectId)
+  }
+
+  /**
+   * EDIT-007/EDIT-008/EDIT-009 - ponto UNICO onde uma operacao NOVA e gravada no log, reusado por
+   * `removeRange`, `setTrackGain` e `setTrackFade` (e por qualquer operacao futura - camera
+   * transform/layout, EDIT-010 em diante). Sempre poda (`DELETE`) qualquer coisa alem do cursor
+   * ANTES de inserir - uma acao nova invalida o "refazer" pendente, o mesmo comportamento padrao
+   * de qualquer editor, independente do TIPO da operacao.
    */
   private appendOperation(
     editProjectId: string,

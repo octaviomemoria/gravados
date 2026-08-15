@@ -551,6 +551,30 @@ body {
   height: 14px;
 }
 
+/* EDIT-009 - fade-in/fade-out por trilha. */
+.timeline__track-fade-controls {
+  display: flex;
+  gap: var(--ms-space-2);
+}
+
+.timeline__track-fade-field {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.68rem;
+  color: var(--ms-color-text-muted);
+}
+
+.timeline__track-fade-input {
+  width: 2.6em;
+  font-size: 0.7rem;
+  padding: 1px 2px;
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-color-border);
+  background: var(--ms-color-bg);
+  color: var(--ms-color-text);
+}
+
 .timeline__track-lane {
   position: relative;
   flex: 1 1 auto;

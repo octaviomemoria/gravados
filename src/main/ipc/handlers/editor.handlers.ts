@@ -17,7 +17,9 @@ import {
   RedoRequestSchema,
   RedoResponseSchema,
   SetTrackGainRequestSchema,
-  SetTrackGainResponseSchema
+  SetTrackGainResponseSchema,
+  SetTrackFadeRequestSchema,
+  SetTrackFadeResponseSchema
 } from '../../../shared/schemas/editor.schema'
 import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
@@ -83,6 +85,18 @@ export function registerEditorHandlers(context: AppContext): void {
         request.trackId,
         request.gainDb,
         request.muted
+      )
+  )
+
+  registerHandler(
+    IPC_CHANNELS.editor.setTrackFade,
+    { request: SetTrackFadeRequestSchema, response: SetTrackFadeResponseSchema },
+    async (request) =>
+      context.editorService.setTrackFade(
+        request.editProjectId,
+        request.trackId,
+        request.fadeInMs,
+        request.fadeOutMs
       )
   )
 }

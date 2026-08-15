@@ -13,14 +13,14 @@ import type {
 import type { ProjectDetailsResponse } from '@shared/schemas/project.schema'
 
 /**
- * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007/EDIT-008 (Fase 3, Editor MVP). Pagina de
- * detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura da
- * gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a timeline EDITADA
- * (`Timeline.tsx`, EDIT-002/EDIT-004-005-006/EDIT-008) + o player multi-trilha sincronizado
- * (`useMultiTrackPlayback`, EDIT-003 parte 2) + corte/split/remover-intervalo (EDIT-004/005/006 -
- * todos o mesmo primitivo `REMOVE_RANGE`, ver `RemoveRangeRequestSchema`) + desfazer/refazer
- * (EDIT-007) + ganho/mudo por trilha (EDIT-008). Sem fade/camera transform/layout ainda (EDIT-009
- * em diante).
+ * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007/EDIT-008/EDIT-009 (Fase 3, Editor MVP).
+ * Pagina de detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo somente-leitura
+ * da gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a timeline EDITADA
+ * (`Timeline.tsx`, EDIT-002/EDIT-004-005-006/EDIT-008/EDIT-009) + o player multi-trilha
+ * sincronizado (`useMultiTrackPlayback`, EDIT-003 parte 2) + corte/split/remover-intervalo
+ * (EDIT-004/005/006 - todos o mesmo primitivo `REMOVE_RANGE`, ver `RemoveRangeRequestSchema`) +
+ * desfazer/refazer (EDIT-007) + ganho/mudo (EDIT-008) + fade in/out (EDIT-009) por trilha. Sem
+ * transformacao de camera/layout ainda (EDIT-010 em diante).
  */
 export function EditorProjectPage() {
   const { id } = useParams<{ id: string }>()
@@ -232,6 +232,32 @@ function EditorProjectView({
     [editProject.id]
   )
 
+  // EDIT-009 - mesmo padrao de `setTrackGain`: nao usa `applyTimelineMutation`/`busy`, guard de
+  // sequencia proprio (`fadeRequestSeqRef`) independente do de ganho - ajustar fade e uma acao
+  // diferente, nao deveria descartar uma resposta de ganho em andamento nem vice-versa.
+  const fadeRequestSeqRef = useRef(0)
+  const setTrackFade = useCallback(
+    async (trackId: string, fadeInMs: number, fadeOutMs: number) => {
+      setActionError(null)
+      const requestSeq = ++fadeRequestSeqRef.current
+      try {
+        const updated = await window.meetingStudio.editor.setTrackFade(
+          editProject.id,
+          trackId,
+          fadeInMs,
+          fadeOutMs
+        )
+        if (requestSeq !== fadeRequestSeqRef.current) return
+        setTimeline(updated)
+      } catch {
+        if (requestSeq === fadeRequestSeqRef.current) {
+          setActionError('Nao foi possivel ajustar o fade da trilha.')
+        }
+      }
+    },
+    [editProject.id]
+  )
+
   // `05_MEDIA_EDITOR.md` §15 - Ctrl+Z desfaz, Ctrl+Shift+Z refaz; atalhos nunca disparam com o
   // foco num campo de texto (aqui so o nome do projeto seria editavel num incremento futuro, mas
   // o guard ja fica pronto pra quando existir).
@@ -385,11 +411,14 @@ function EditorProjectView({
           onSeek={playback.seek}
           selection={selection}
           onSetTrackGain={(trackId, gainDb, muted) => void setTrackGain(trackId, gainDb, muted)}
+          onSetTrackFade={(trackId, fadeInMs, fadeOutMs) =>
+            void setTrackFade(trackId, fadeInMs, fadeOutMs)
+          }
         />
       ) : (
         <p>Carregando timeline...</p>
       )}
-      <EmptyState message="Fade, transformacao de camera e layout chegam nos proximos incrementos da Fase 3." />
+      <EmptyState message="Transformacao de camera e layout chegam nos proximos incrementos da Fase 3." />
     </div>
   )
 }

@@ -831,3 +831,126 @@ test.describe('editor (gain/mute)', () => {
     expect(micTrackAfterUndo.muted).toBe(true)
   })
 })
+
+/**
+ * EDIT-009 (vigesimo incremento - Fase 3, fade in/out). Mesmo padrao do teste de gain/mute:
+ * grava microfone + camera, ajusta fade-in/fade-out de UMA trilha via os campos numericos e
+ * confirma via `editor.getEditedTimeline` que a outra trilha nao e afetada.
+ */
+test.describe('editor (fade)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await electronApp.close()
+  })
+
+  test('sets fade-in/fade-out per track independently, via the numeric fields', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - fade ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+    const cameraSelect = appWindow.getByLabel('Camera', { exact: true })
+    await expect(cameraSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await cameraSelect.selectOption({ index: 1 })
+    await expect(appWindow.locator('video.camera-preview')).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    const cameraPath = join(rootPath, 'source', 'camera', 'camera_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath) && fileHasBytes(cameraPath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando os primeiros chunks de audio e video serem persistidos em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(appWindow.locator('.timeline__track')).toHaveCount(2, { timeout: POLL_TIMEOUT_MS })
+
+    const editProjectId = await appWindow.evaluate(async () => {
+      const list = await window.meetingStudio.editor.list()
+      return list[0]!.id
+    })
+
+    // --- Ajusta fade-in (2s) e fade-out (1.5s) da trilha de MICROFONE via os campos numericos.
+    const micTrackRow = appWindow.locator('.timeline__track').filter({ hasText: 'Microfone' })
+    const micFadeInInput = micTrackRow.getByLabel('Fade-in da trilha Microfone (segundos)')
+    const micFadeOutInput = micTrackRow.getByLabel('Fade-out da trilha Microfone (segundos)')
+    await micFadeInInput.fill('2')
+    // Espera o primeiro ajuste completar o round-trip IPC + re-render ANTES do segundo - o
+    // handler do segundo campo le `track.fadeInMs` do estado React atual no momento do evento
+    // (closure), entao disparar os dois `.fill()` de volta sem esperar arriscaria capturar o
+    // valor ANTIGO (0) se o primeiro `setTrackFade` ainda estivesse em voo.
+    await expect
+      .poll(
+        async () => {
+          const current = await appWindow.evaluate(
+            (id) => window.meetingStudio.editor.getEditedTimeline(id),
+            editProjectId
+          )
+          return current.tracks.find((track) => track.type === 'MICROPHONE')?.fadeInMs
+        },
+        { timeout: POLL_TIMEOUT_MS }
+      )
+      .toBe(2000)
+    await micFadeOutInput.fill('1.5')
+
+    const afterFade = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    const micTrackAfterFade = afterFade.tracks.find((track) => track.type === 'MICROPHONE')!
+    const cameraTrackAfterFade = afterFade.tracks.find((track) => track.type === 'CAMERA')!
+    expect(micTrackAfterFade.fadeInMs).toBe(2000)
+    expect(micTrackAfterFade.fadeOutMs).toBe(1500)
+    // Camera nao foi tocada - fade e independente por trilha, igual ganho/mudo (EDIT-008).
+    expect(cameraTrackAfterFade.fadeInMs).toBe(0)
+    expect(cameraTrackAfterFade.fadeOutMs).toBe(0)
+
+    // --- Desfazer (Ctrl+Z) reverte so a ULTIMA operacao do log (o fade-out, a segunda mudanca) -
+    // o fade-in continua ativo (a primeira mudanca), confirmando que sao a mesma operacao
+    // SUBSTITUINDO o estado inteiro da trilha a cada chamada (nao acumulando fade-in e fade-out
+    // como operacoes separadas). Tira o foco do campo de fade-out ANTES do atalho - o listener
+    // global de teclado ignora Ctrl+Z/Ctrl+Shift+Z com o foco em qualquer `<input>` (guard
+    // deliberado documentado em `EditorProjectPage`), e `.fill()` deixa o campo focado.
+    await micFadeOutInput.blur()
+    await appWindow.keyboard.down('Control')
+    await appWindow.keyboard.press('z')
+    await appWindow.keyboard.up('Control')
+    const afterUndo = await appWindow.evaluate(
+      (id) => window.meetingStudio.editor.getEditedTimeline(id),
+      editProjectId
+    )
+    const micTrackAfterUndo = afterUndo.tracks.find((track) => track.type === 'MICROPHONE')!
+    expect(micTrackAfterUndo.fadeInMs).toBe(2000)
+    expect(micTrackAfterUndo.fadeOutMs).toBe(0)
+  })
+})

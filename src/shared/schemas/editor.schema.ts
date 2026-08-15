@@ -88,7 +88,18 @@ export const TimelineTrackSchema = z.object({
    * `.volume` (duas propriedades independentes).
    */
   gainDb: z.number().min(-60).max(0),
-  muted: z.boolean()
+  muted: z.boolean(),
+  /**
+   * EDIT-009 (vigesimo incremento - Fase 3, fade in/out). `0` em ambos na timeline BRUTA e sempre
+   * que uma trilha nao tem nenhum `SET_FADE` ativo no log - sem fade. Relativos ao proprio inicio/
+   * fim da trilha (primeiro/ultimo clip dela na timeline EDITADA), nao um intervalo arbitrario no
+   * meio - fade-in/fade-out no MVP e sempre nas pontas da trilha (mesmo escopo de "trim inicio/
+   * fim" ser mais simples que uma selecao arbitraria em EDIT-004/005/006). Igual `gainDb`/`muted`,
+   * um `SET_FADE` novo SUBSTITUI o estado inteiro da trilha (nao acumula) - ver comentario em
+   * `SetTrackFadeRequestSchema`.
+   */
+  fadeInMs: z.number().int().nonnegative(),
+  fadeOutMs: z.number().int().nonnegative()
 })
 export type TimelineTrack = z.infer<typeof TimelineTrackSchema>
 
@@ -106,10 +117,11 @@ export type GetTimelineResponse = z.infer<typeof GetTimelineResponseSchema>
  * EDIT-004/005/006 (decimo setimo incremento - Fase 3, primeira operacao de edicao real). A
  * timeline EDITADA - a bruta (`getTimeline`) com o LOG ordenado de `edit_operations` ja aplicado
  * por cima, ate o cursor ativo (`edit_projects.activeOperationSequence` - EDIT-007, undo/redo).
- * `SET_GAIN` (EDIT-008) tambem e aplicado aqui. Tipos de operacao futuros (fade/camera transform,
- * EDIT-009 em diante) sao ignorados pelo compilador sem quebrar, ate ganharem seu proprio
- * incremento. `canUndo`/`canRedo` poupam a UI de replicar a logica de "existe operacao ativa pra
- * desfazer" / "existe operacao alem do cursor pra refazer" sozinha.
+ * `SET_GAIN` (EDIT-008) e `SET_FADE` (EDIT-009) tambem sao aplicados aqui. Tipos de operacao
+ * futuros (camera transform/layout, EDIT-010 em diante) sao ignorados pelo compilador sem
+ * quebrar, ate ganharem seu proprio incremento. `canUndo`/`canRedo` poupam a UI de replicar a
+ * logica de "existe operacao ativa pra desfazer" / "existe operacao alem do cursor pra refazer"
+ * sozinha.
  */
 export const GetEditedTimelineRequestSchema = GetTimelineRequestSchema
 export type GetEditedTimelineRequest = GetTimelineRequest
@@ -180,3 +192,20 @@ export const SetTrackGainRequestSchema = z.object({
 export type SetTrackGainRequest = z.infer<typeof SetTrackGainRequestSchema>
 export const SetTrackGainResponseSchema = GetEditedTimelineResponseSchema
 export type SetTrackGainResponse = GetEditedTimelineResponse
+
+/**
+ * EDIT-009 (vigesimo incremento - Fase 3, fade in/out, `05_MEDIA_EDITOR.md` §4). Mesmo padrao de
+ * `SET_GAIN` (EDIT-008): reusa o log de `edit_operations` + cursor de EDIT-007, um `SET_FADE`
+ * novo SUBSTITUI o `fadeInMs`/`fadeOutMs` inteiro da trilha (nao acumula). Relativos ao proprio
+ * inicio/fim da trilha, nao um intervalo arbitrario - `fadeInMs`/`fadeOutMs` sao duracoes (ms),
+ * nao timestamps.
+ */
+export const SetTrackFadeRequestSchema = z.object({
+  editProjectId: IdSchema,
+  trackId: IdSchema,
+  fadeInMs: z.number().int().nonnegative(),
+  fadeOutMs: z.number().int().nonnegative()
+})
+export type SetTrackFadeRequest = z.infer<typeof SetTrackFadeRequestSchema>
+export const SetTrackFadeResponseSchema = GetEditedTimelineResponseSchema
+export type SetTrackFadeResponse = GetEditedTimelineResponse
