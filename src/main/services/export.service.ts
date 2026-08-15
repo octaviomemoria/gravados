@@ -5,8 +5,13 @@ import type { ExportJobRepository } from '../database/repositories/export-job.re
 import type { EditorService } from './editor.service'
 import { buildRenderPlan } from '../media/render-plan'
 import { buildFfmpegArgs, buildAudioFfmpegArgs } from '../media/ffmpeg-command'
-import { resolveFfmpegBinaries } from '../media/ffmpeg/ffmpeg-locator'
-import { runFfmpegProcess } from '../media/ffmpeg/ffmpeg-runner'
+import { resolveFfmpegBinaries, type FfmpegBinaryPaths } from '../media/ffmpeg/ffmpeg-locator'
+import {
+  runFfmpegProcess,
+  runFfprobeProcess,
+  buildFfprobeArgs,
+  validateFfprobeOutput
+} from '../media/ffmpeg/ffmpeg-runner'
 import type { JobRunner } from '../jobs/job-runner'
 import type { ExportJobPayload, ExportJobResult } from '../jobs/export-job-store'
 import type {
@@ -29,15 +34,16 @@ const AUDIO_FILE_EXTENSION: Record<AudioExportFormat, string> = {
 }
 
 /**
- * EXP-003/004/005/008 (vigesimo quinto/sexto/oitavo incrementos - Fase 4, "Render Job" da doc -
- * `05_MEDIA_EDITOR.md` §12: `Edit Model → Timeline Compiler → FFmpeg Plan → Render Job →
- * Validation → Output`). Orquestra o pipeline inteiro: timeline editada -> `RenderPlan` (EXP-001)
- * -> args FFmpeg (EXP-003 video / EXP-005 audio) -> job assincrono via `JobRunner`/
- * `ExportJobRepository` (ja instanciados desde a Fase 0/EXP-001, so agora exercitados de verdade)
- * -> processo FFmpeg real (EXP-002, cancelavel de verdade desde EXP-008) -> arquivo em
- * `<rootPath>/exports/`. Progresso (EXP-007) ja fluia pra UI desde EXP-003/004 (a mesma
- * infraestrutura `onProgress`/`JobRunner` ja existia, so nunca tinha sido exercitada de ponta a
- * ponta) - este incremento entrega so o cancelamento (`cancelExport`), a metade que faltava.
+ * EXP-003/004/005/008/009 (vigesimo quinto/sexto/oitavo/nono incrementos - Fase 4, "Render Job" da
+ * doc - `05_MEDIA_EDITOR.md` §12: `Edit Model → Timeline Compiler → FFmpeg Plan → Render Job →
+ * Validation → Output`, TODAS as etapas implementadas desde EXP-009). Orquestra o pipeline
+ * inteiro: timeline editada -> `RenderPlan` (EXP-001) -> args FFmpeg (EXP-003 video / EXP-005
+ * audio) -> job assincrono via `JobRunner`/`ExportJobRepository` (ja instanciados desde a
+ * Fase 0/EXP-001, so agora exercitados de verdade) -> processo FFmpeg real (EXP-002, cancelavel de
+ * verdade desde EXP-008) -> validacao real via ffprobe (EXP-009 - `exitCode 0` sozinho nunca
+ * provava que o arquivo escrito e utilizavel de verdade) -> arquivo em `<rootPath>/exports/`.
+ * Progresso (EXP-007) ja fluia pra UI desde EXP-003/004 (a mesma infraestrutura `onProgress`/
+ * `JobRunner` ja existia, so nunca tinha sido exercitada de ponta a ponta).
  *
  * `target.kind` decide entre VIDEO (MP4 720p/1080p, `buildFfmpegArgs`) e AUDIO (M4A/MP3/WAV,
  * `buildAudioFfmpegArgs`) - ver `ExportTargetSchema`. `rangeMs` opcional (EXP-006, RF-034) recorta
@@ -65,7 +71,12 @@ export class ExportService {
     private readonly projectRepository: ProjectRepository,
     private readonly editorService: EditorService,
     private readonly exportJobRunner: JobRunner<ExportJobPayload, ExportJobResult>,
-    private readonly exportJobRepository: ExportJobRepository
+    private readonly exportJobRepository: ExportJobRepository,
+    /** EXP-009 - override opcional pra `resolveFfmpegBinaries`, existe SO pra teste (apontar o
+     * ffprobe pra um binario propositalmente quebrado sem precisar de uma variavel de ambiente
+     * global, que vazaria pra qualquer outro teste rodando em paralelo no mesmo processo). Em
+     * producao sempre `undefined` - `app-context.ts` nunca passa este parametro. */
+    private readonly ffmpegBinaryOverrides?: Partial<FfmpegBinaryPaths>
   ) {}
 
   startExport(
@@ -132,9 +143,12 @@ export class ExportService {
     // ja usado no resto do servico.
     const resolvedArgs: string[] = args
 
-    const { ffmpegPath } = resolveFfmpegBinaries()
+    const { ffmpegPath, ffprobePath } = resolveFfmpegBinaries(this.ffmpegBinaryOverrides)
     if (!ffmpegPath) {
       throw new ValidationError('Binario do FFmpeg nao encontrado - reinstale as dependencias do app')
+    }
+    if (!ffprobePath) {
+      throw new ValidationError('Binario do FFprobe nao encontrado - reinstale as dependencias do app')
     }
 
     const job = this.exportJobRunner.enqueue('export', { editProjectId })
@@ -167,6 +181,22 @@ export class ExportService {
           }
           if (result.exitCode !== 0) {
             throw new Error(`FFmpeg falhou (codigo ${result.exitCode}): ${result.stderr.slice(-2000)}`)
+          }
+          // EXP-009 (RenderPlan doc §12, etapa "Validation") - `exitCode 0` sozinho nao prova que
+          // o arquivo escrito e um arquivo de midia REAL e utilizavel (um encode que produziu zero
+          // frames, por exemplo, ainda pode sair com exitCode 0 em alguns casos de borda). Roda o
+          // ffprobe de verdade contra o proprio `outputPath` antes de aceitar o resultado como
+          // sucesso - um `throw` aqui e capturado pelo `catch` de `JobRunner.run()`, marcando o job
+          // `FAILED` (nunca `COMPLETED`) com o motivo exato da invalidez.
+          const probeResult = await runFfprobeProcess(ffprobePath, buildFfprobeArgs(outputPath))
+          if (probeResult.exitCode !== 0) {
+            throw new Error(
+              `Validacao do arquivo exportado falhou (ffprobe saiu com codigo ${probeResult.exitCode}): ${probeResult.stderr.slice(-1000)}`
+            )
+          }
+          const validation = validateFfprobeOutput(probeResult.stdout)
+          if (!validation.valid) {
+            throw new Error(`Arquivo exportado invalido: ${validation.reason}`)
           }
           return { outputPath }
         } finally {

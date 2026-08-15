@@ -43,20 +43,23 @@ ponta - ver
 [Transformação de câmera (PiP)](#transformação-de-câmera-pip-fase-3),
 [Layout da composição](#layout-da-composição-fase-3) e
 [Autosave e indicador de salvamento](#autosave-e-indicador-de-salvamento-fase-3). A
-**Fase 4 — Export** avançou bastante: `ffmpeg-static`/`ffprobe-static` instalados, o "Timeline
-Compiler" (EXP-001/002 - traduz a timeline editada num render plan estruturado), o "FFmpeg Plan" +
-"Render Job" de vídeo (EXP-003/004 - `export.start` produz um MP4 720p/1080p REAL em disco),
-áudio-only (EXP-005 - M4A/MP3/WAV, RF-033), exportação de intervalo selecionado (EXP-006, RF-034,
-reusa a seleção já existente do editor) e cancelamento real de exportação (EXP-007/008, RF-035 -
-mata o processo FFmpeg de verdade, não só muda um status), tudo com botões de exportação na tela do
-editor, funcionam de ponta a ponta - ver
+**Fase 4 — Export está completa** (marcando o **Marco MVP** do roadmap): `ffmpeg-static`/
+`ffprobe-static` instalados, o "Timeline Compiler" (EXP-001/002 - traduz a timeline editada num
+render plan estruturado), o "FFmpeg Plan" + "Render Job" de vídeo (EXP-003/004 - `export.start`
+produz um MP4 720p/1080p REAL em disco), áudio-only (EXP-005 - M4A/MP3/WAV, RF-033), exportação de
+intervalo selecionado (EXP-006, RF-034, reusa a seleção já existente do editor), cancelamento real
+de exportação (EXP-007/008, RF-035 - mata o processo FFmpeg de verdade, não só muda um status) e
+agora a etapa "Validation" da doc (EXP-009 - confirma via ffprobe REAL que o arquivo escrito é
+utilizável antes de marcar o job `COMPLETED`, não só confia no `exitCode` do FFmpeg), tudo com
+botões de exportação na tela do editor, funcionam de ponta a ponta - ver
 [Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
 [Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4),
 [Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4),
-[Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4) e
-[Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4).
+[Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4),
+[Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4) e
+[Validação do arquivo exportado via ffprobe](#validação-do-arquivo-exportado-via-ffprobe-fase-4).
 Escopo de vídeo ainda limitado a uma única trilha de fundo (sem PiP/lado-a-lado real no arquivo
-exportado) - próximo incremento da fase.
+exportado, EXP-004b) - próximo incremento, já fora do Marco MVP.
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -1329,6 +1332,50 @@ real, não só mudando um status no banco.
   que aparece, confirma o status "Cancelada" e que o botão de cancelar some). **376 testes, 35
   arquivos** (mesma contagem de arquivos - tudo adicionado aos arquivos já existentes).
 
+### Validação do arquivo exportado via ffprobe (Fase 4)
+
+Vigésimo nono incremento - EXP-009, a etapa "Validation" do pipeline da doc (`05_MEDIA_EDITOR.md`
+§12: `Edit Model → Timeline Compiler → FFmpeg Plan → Render Job → Validation → Output`) - a última
+ainda faltando desde EXP-003/004, e o último item do roadmap da Fase 4: com este incremento, a
+**Fase 4 — Export está completa**, marcando o **Marco MVP** do `11_ROADMAP_BACKLOG.md`.
+
+- **`exitCode 0` do FFmpeg nunca provava, sozinho, que o arquivo escrito é um arquivo de mídia
+  REAL e utilizável** — um encode que produz um container tecnicamente bem formado mas com zero
+  frames de verdade (caso raro, mas possível em cenários de borda) ainda podia sair com `exitCode
+  0`, e `ExportService` até este incremento só confiava nele para marcar o job `COMPLETED`.
+  `ExportService.startExport` agora roda o ffprobe REAL contra o próprio `outputPath` logo após o
+  FFmpeg terminar - um `throw` na validação é capturado por `JobRunner.run()` exatamente como
+  qualquer outra falha do handler, marcando o job `FAILED` (nunca `COMPLETED`) com o motivo exato.
+- **`runFfprobeProcess` é um wrapper de processo SEPARADO de `runFfmpegProcess`, não reaproveitado**
+  — ffprobe nunca escreve num arquivo de mídia; a saída que importa é o JSON INTEIRO acumulado em
+  stdout (`buildFfprobeArgs`, já existente desde EXP-002), bem diferente do progresso incremental
+  `-progress pipe:1` do FFmpeg (onde só a ÚLTIMA linha `out_time_us=` de cada chunk importa, nunca
+  o acumulado). Forçar os dois pelo mesmo wrapper exigiria uma flag pra alternar entre "acumular
+  tudo" vs. "processar linha a linha e descartar" - mais confuso que duas funções pequenas.
+- **`validateFfprobeOutput` é uma função PURA (nenhum spawn, nenhum I/O)** que interpreta o JSON
+  já capturado — testável isoladamente com strings fabricadas em vez de precisar rodar um ffprobe
+  real pra cada caso de borda. Um arquivo é considerado válido quando: (1) o stdout é JSON válido;
+  (2) existe pelo menos um `stream`; (3) `format.duration` é um número finito POSITIVO — os três
+  jeitos concretos de um export "ter dado certo pelo exitCode" mas produzido um arquivo inútil.
+- **`ExportService` ganhou um construtor opcional `ffmpegBinaryOverrides`, só pra teste** — permite
+  apontar o `ffprobePath` pra um binário propositalmente quebrado sem precisar de uma variável de
+  ambiente global (que vazaria pra qualquer outro teste rodando em paralelo no mesmo processo);
+  em produção, `app-context.ts` nunca passa esse parâmetro, sempre resolvendo os binários reais.
+- Testado via 6 novos testes de `validateFfprobeOutput` (JSON inválido, não-objeto, zero streams,
+  streams ausente, duração zero/ausente/não-numérica, caso válido com `durationMs` calculado
+  corretamente), 4 novos testes de `runFfprobeProcess` (spawns reais via `process.execPath`, mesmo
+  padrão já usado pra `runFfmpegProcess` - captura de stdout/stderr, acumulação através de múltiplos
+  chunks, exit code não-zero sem lançar, rejeição quando o binário não pode ser spawnado), e 2 novos
+  testes de integração REAL em `export.service.test.ts`: um que aponta `ffprobePath` pra um binário
+  inexistente via `ffmpegBinaryOverrides` contra o MESMO clipe sintético válido de sempre - prova
+  que mesmo um FFmpeg com `exitCode 0` e um MP4 genuinamente bom em disco termina em `FAILED` (não
+  `COMPLETED`) quando a validação não consegue rodar - e outro confirmando que o caminho feliz
+  (ffprobe real bem-sucedido) nunca introduz um falso negativo. **388 testes, 35 arquivos** (mesma
+  contagem de arquivos - `ffmpeg-runner.test.ts` e `export.service.test.ts` já existiam). Sem novo
+  teste E2E dedicado - a validação é transparente pro fluxo de UI já existente (os testes E2E
+  `editor (export)`, incluindo o de cancelamento, já exercitam o caminho de sucesso da validação em
+  toda exportação real que fazem); reconfirmados passando limpos nesta validação.
+
 ## Estrutura de diretórios
 
 ```text
@@ -1994,6 +2041,29 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
      logicamente distinta de iniciar (opera sobre um job já enfileirado, identificado por `id`),
      mesmo raciocínio já usado pra outros pares início/interrupção deste app (`recording.start`/
      `.stop`, `recording.pause`/`.resume`).
+132. **`runFfprobeProcess` é um wrapper de processo separado de `runFfmpegProcess`, não
+     reaproveitado** — ffprobe nunca escreve num arquivo de mídia; a saída que importa é o JSON
+     INTEIRO acumulado em stdout, bem diferente do progresso incremental `-progress pipe:1` do
+     FFmpeg (onde só a última linha `out_time_us=` de cada chunk importa). Forçar os dois pelo
+     mesmo wrapper exigiria uma flag "acumular tudo" vs. "processar linha a linha e descartar" -
+     mais confuso que duas funções pequenas e diretas.
+133. **`validateFfprobeOutput` é uma função pura (nenhum spawn, nenhum I/O)** — testável
+     isoladamente com strings JSON fabricadas em vez de precisar rodar um ffprobe real pra cada
+     caso de borda (JSON inválido, zero streams, duração ausente/zero/não-numérica). Mesmo
+     princípio de separação já usado em `buildFfmpegArgs`/`buildRenderPlan` - lógica de decisão
+     pura, separada do wrapper de processo que produz a entrada dela.
+134. **`ExportService.startExport` roda o ffprobe REAL contra o próprio `outputPath` antes de
+     aceitar o resultado do FFmpeg como sucesso** — `exitCode 0` sozinho nunca provava que o
+     arquivo escrito é utilizável de verdade (um encode com zero frames de verdade ainda pode
+     sair com `exitCode 0` em casos de borda). Um `throw` na validação é capturado por
+     `JobRunner.run()` exatamente como qualquer outra falha do handler, marcando o job `FAILED`
+     (nunca `COMPLETED`) com o motivo exato — reaproveitando o mesmo mecanismo de tratamento de
+     erro já usado pelo caminho `result.exitCode !== 0`, sem um branch especial.
+135. **`ExportService` ganhou um construtor opcional `ffmpegBinaryOverrides`, existe só pra
+     teste** — permite apontar o `ffprobePath` pra um binário propositalmente quebrado sem
+     precisar de uma variável de ambiente global (`MEETING_STUDIO_FFPROBE_PATH`), que vazaria pra
+     qualquer outro teste rodando em paralelo no mesmo processo Vitest. Em produção,
+     `app-context.ts` nunca passa esse parâmetro - sempre resolve os binários reais.
 
 ## Testes
 
@@ -2102,8 +2172,14 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   em `job-runner.test.ts`; integração REAL em `export.service.test.ts` que cancela um clipe
   sintético deliberadamente maior/mais pesado ~300ms após iniciar, confirma `CANCELED` com
   `outputPath: null`, prova que o processo real morreu observando o arquivo de saída parar de
-  crescer, e confirma que cancelar de novo um job já terminal é um no-op seguro).
-  **376 testes, 35 arquivos.**
+  crescer, e confirma que cancelar de novo um job já terminal é um no-op seguro), **validação do
+  arquivo exportado via ffprobe (EXP-009)** (`validateFfprobeOutput` puro - JSON inválido,
+  não-objeto, zero streams, streams ausente, duração zero/ausente/não-numérica, caso válido com
+  `durationMs` calculado -, `runFfprobeProcess` via spawns reais de `process.execPath`, e
+  integração REAL confirmando que um `ffprobePath` quebrado faz o job terminar `FAILED` mesmo com
+  um MP4 genuinamente válido em disco e `exitCode 0` do FFmpeg, mais o caminho feliz confirmando
+  zero falsos negativos).
+  **388 testes, 35 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2402,10 +2478,12 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   régua de QUAL trecho será exportado além de um texto** - não há destaque colorido/sombreado do
   intervalo selecionado sobre a régua da timeline (só o texto ".editor-export-range-hint"),
   diferente de um editor profissional que tipicamente destaca visualmente a seleção ativa.
-- **Nenhuma validação via `ffprobe` do arquivo de saída antes de marcar o job `COMPLETED`
-  (EXP-009, ainda não implementado)** - um arquivo corrompido ou vazio (ex.: FFmpeg saiu com
-  código 0 mas produziu um arquivo inválido, caso raro mas possível) seria marcado `COMPLETED`
-  mesmo assim; o `ExportService` só confia no `exitCode` do processo FFmpeg hoje.
+- **A validação via ffprobe (EXP-009) confirma stream(s) + duração positiva, não a integridade
+  frame-a-frame do arquivo** - um MP4 com o header correto, pelo menos um stream e uma duração
+  plausível passa na validação mesmo que uma parte NO MEIO do arquivo esteja corrompida (ex.: um
+  crash do FFmpeg bem no fim do encode, depois do `moov atom` já ter sido escrito) - decodificação
+  frame-a-frame completa exigiria um custo de CPU/tempo desproporcional ao problema real que esta
+  validação existe pra pegar (encodes que terminam com `exitCode 0` mas nunca produziram frames).
 - **Sem suporte a multicamera nem a trilhas de vídeo além de SCREEN/CAMERA no render plan** -
   `RenderPlan.background`/`overlay`/`sideBySideRight` assumem exatamente essas duas trilhas de
   vídeo possíveis, o mesmo escopo do EDIT-010/011; qualquer expansão futura (`05_MEDIA_EDITOR.md`
@@ -2435,32 +2513,36 @@ sobre o mesmo log, volume recalculado a cada tick por depender do playhead), EDI
 (layout da composição - PiP/lado-a-lado/só-tela/só-câmera, quarto tipo de operação sobre o mesmo
 log, primeira a mirar a composição inteira em vez de uma trilha) e EDIT-012 (salvamento automático
 - persistência atômica da escrita do log de operações + indicador de dirty-state na UI) funcionam
-de ponta a ponta. A **Fase 4 — Export** avançou bastante: EXP-001 (render plan - "Timeline
-Compiler" que traduz a timeline editada numa estrutura `background`/`overlay`/`sideBySideRight`/
-`audio`/`output`, reusando a mesma lógica de layout do preview), EXP-002 (`ffmpeg-static`/
-`ffprobe-static` instalados, `runFfmpegProcess` com progresso/cancelamento reais), EXP-003/004
-(`buildFfmpegArgs` traduz o `RenderPlan` num comando FFmpeg real - o "FFmpeg Plan" da doc - e
-`ExportService` orquestra o pipeline inteiro até um MP4 720p/1080p de verdade em disco), EXP-005
-(exportação só de áudio - M4A/MP3/WAV via `buildAudioFfmpegArgs`, RF-033), EXP-006 (exportação de
-faixa de tempo - RF-034, reusando a seleção já existente do editor) e agora EXP-007/008 (progresso -
-já funcionava desde EXP-003/004 - e cancelamento de verdade pela UI, matando o processo FFmpeg
-real, RF-035) já funcionam de ponta a ponta, com botões de exportação (vídeo E áudio, com/sem
-seleção, com cancelar) na `EditorProjectPage` - ver
+de ponta a ponta. A **Fase 4 — Export está completa**: EXP-001 (render plan - "Timeline Compiler"
+que traduz a timeline editada numa estrutura `background`/`overlay`/`sideBySideRight`/`audio`/
+`output`, reusando a mesma lógica de layout do preview), EXP-002 (`ffmpeg-static`/`ffprobe-static`
+instalados, `runFfmpegProcess` com progresso/cancelamento reais), EXP-003/004 (`buildFfmpegArgs`
+traduz o `RenderPlan` num comando FFmpeg real - o "FFmpeg Plan" da doc - e `ExportService`
+orquestra o pipeline inteiro até um MP4 720p/1080p de verdade em disco), EXP-005 (exportação só de
+áudio - M4A/MP3/WAV via `buildAudioFfmpegArgs`, RF-033), EXP-006 (exportação de faixa de tempo -
+RF-034, reusando a seleção já existente do editor), EXP-007/008 (progresso - já funcionava desde
+EXP-003/004 - e cancelamento de verdade pela UI, matando o processo FFmpeg real, RF-035) e agora
+EXP-009 (validação real via ffprobe, a etapa "Validation" da doc, confirmando que o arquivo
+exportado é utilizável antes de marcar o job `COMPLETED`) funcionam de ponta a ponta, com botões de
+exportação (vídeo E áudio, com/sem seleção, com cancelar) na `EditorProjectPage` - ver
 [Render plan e wrapper FFmpeg real](#render-plan-e-wrapper-ffmpeg-real-fase-4),
 [Export real: comando FFmpeg + ExportService](#export-real-comando-ffmpeg--exportservice-fase-4),
 [Exportação só de áudio](#exportação-só-de-áudio---m4ampp3wav-fase-4),
-[Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4) e
-[Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4).
+[Exportação de intervalo selecionado](#exportação-de-intervalo-selecionado-fase-4),
+[Progresso e cancelamento de exportação](#progresso-e-cancelamento-de-exportação-fase-4) e
+[Validação do arquivo exportado via ffprobe](#validação-do-arquivo-exportado-via-ffprobe-fase-4).
+Com EXP-009, o roadmap desta fase está completo e o **Marco MVP** (`11_ROADMAP_BACKLOG.md`) foi
+atingido: as quatro fases do MVP (Recording Core, Recovery + Library, Editor MVP, Export) estão
+todas completas e testadas de ponta a ponta.
 
-Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
-cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
-próximo começar. Ordem planejada:
+Desenvolvimento segue de forma incremental e contínua, cada incremento validado
+(lint/typecheck/testes/build/E2E) e documentado neste README antes do próximo começar. Ordem
+planejada a partir daqui:
 
-1. Continuar a **Fase 4 — Export** (próximo passo imediato): EXP-009 (validação via ffprobe do
-   arquivo de saída antes de marcar o job `COMPLETED` - o `ExportService` hoje só confia no
-   `exitCode` do processo FFmpeg), EXP-004b (PiP/lado-a-lado real no arquivo exportado, hoje
-   `buildFfmpegArgs` rejeita esse caso) - cada operação provavelmente seu próprio incremento, dado
-   o tamanho desta fase. EXP-009 fecha o roadmap desta fase; o roadmap marca o fim dela como o
-   **Marco MVP**.
-2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
-   depois do MVP, replanejadas quando chegar a vez.
+1. Refinamentos ainda pendentes dentro do escopo já entregue do MVP, sem fase própria no roadmap:
+   EXP-004b (PiP/lado-a-lado real no arquivo exportado - hoje `buildFfmpegArgs` rejeita esse caso,
+   só suporta uma única trilha de vídeo de fundo) é o principal - ver "Pendências conhecidas" para
+   a lista completa de refinamentos menores acumulados ao longo das quatro fases.
+2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) - o trabalho
+   pós-MVP propriamente dito, cada uma exigindo um replanejamento próprio (arquitetura, dependências
+   novas, escopo) quando chegar a vez, dado o tamanho e a natureza distinta de cada uma.

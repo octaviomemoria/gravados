@@ -47,6 +47,88 @@ export function buildFfprobeArgs(inputPath: string): string[] {
   return ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', inputPath]
 }
 
+/** EXP-009 - resultado de rodar o ffprobe (nao um arquivo de midia como `runFfmpegProcess` produz -
+ * a "saida" aqui e o JSON que o proprio ffprobe escreve em stdout via `buildFfprobeArgs`). */
+export interface FfprobeRunResult {
+  exitCode: number | null
+  stdout: string
+  stderr: string
+}
+
+/**
+ * EXP-009 (vigesimo nono incremento - Fase 4, RF-035/RenderPlan doc §12 "Validation" - a etapa
+ * final do pipeline `Edit Model → Timeline Compiler → FFmpeg Plan → Render Job → Validation →
+ * Output`, unica ainda faltando desde EXP-003/004). Wrapper deliberadamente SEPARADO de
+ * `runFfmpegProcess` (nao reaproveitado) - ffprobe nunca escreve num arquivo de midia, a saida
+ * INTEIRA que importa e o JSON acumulado em stdout, diferente do progresso incremental
+ * `-progress pipe:1` do FFmpeg (onde só a ULTIMA linha `out_time_us=` de cada chunk importa,
+ * nunca o acumulado). Forcar os dois pelo mesmo wrapper exigiria uma flag pra alternar entre
+ * "acumular tudo" vs "processar linha a linha e descartar", mais confuso que duas funcoes
+ * pequenas e diretas.
+ */
+export function runFfprobeProcess(
+  binaryPath: string,
+  args: readonly string[]
+): Promise<FfprobeRunResult> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(binaryPath, [...args], { windowsHide: true })
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf-8')
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf-8')
+    })
+    child.on('error', reject)
+    child.on('close', (exitCode) => {
+      resolvePromise({ exitCode, stdout, stderr })
+    })
+  })
+}
+
+/** EXP-009 - resultado de validar a saida do ffprobe contra o arquivo exportado. `durationMs`
+ * presente so quando `valid: true` - um arquivo invalido nunca tem uma duracao confiavel pra
+ * reportar. */
+export interface FfprobeValidationResult {
+  valid: boolean
+  reason?: string
+  durationMs?: number
+}
+
+/**
+ * EXP-009 - funcao PURA (nenhum spawn, nenhum I/O) que interpreta o JSON que `runFfprobeProcess`
+ * capturou em stdout, testavel isoladamente com strings fabricadas em vez de precisar rodar um
+ * ffprobe real pra cada caso de borda. Um arquivo exportado e considerado valido quando: (1) o
+ * stdout e JSON valido (um ffprobe que morreu ou nunca rodou de verdade contra o arquivo nao
+ * produz JSON); (2) existe pelo menos UM stream (`streams`, formato/vazio - um arquivo com zero
+ * streams e zero bytes uteis, mesmo que o container em si seja tecnicamente bem formado); (3)
+ * `format.duration` e um numero finito POSITIVO (um arquivo com duracao zero ou ausente indica um
+ * encode que nunca produziu frames de verdade, mesmo com `exitCode 0` do FFmpeg - o cenario exato
+ * que esta validacao existe pra pegar, ja que o `ExportService` ate agora so confiava no
+ * `exitCode`).
+ */
+export function validateFfprobeOutput(stdout: string): FfprobeValidationResult {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    return { valid: false, reason: 'saida do ffprobe nao e JSON valido' }
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return { valid: false, reason: 'saida do ffprobe nao e um objeto JSON' }
+  }
+  const data = parsed as { format?: { duration?: string }; streams?: unknown[] }
+  if (!Array.isArray(data.streams) || data.streams.length === 0) {
+    return { valid: false, reason: 'nenhum stream de audio/video encontrado no arquivo exportado' }
+  }
+  const durationSeconds = Number(data.format?.duration)
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return { valid: false, reason: 'arquivo exportado tem duracao zero, ausente ou invalida' }
+  }
+  return { valid: true, durationMs: Math.round(durationSeconds * 1000) }
+}
+
 /**
  * EXP-007 - extrai `out_time_us` (microssegundos, nome inequivoco - ao contrario de
  * `out_time_ms`, que por uma excentricidade historica do proprio FFmpeg tambem vem em

@@ -479,5 +479,67 @@ describe('ExportService', () => {
       },
       40_000
     )
+
+    /**
+     * EXP-009 (RenderPlan doc §12, etapa "Validation") - prova que a validacao via ffprobe REALMENTE
+     * decide o resultado final do job, nao so existe sem efeito. Reusa o MESMO clipe sintetico
+     * valido de sempre (`setupScreenAndMicProject`) - o FFmpeg real termina com `exitCode 0` e
+     * escreve um MP4 genuinamente bom - mas aponta `ffprobePath` (via `ffmpegBinaryOverrides`, o
+     * unico motivo desse parametro existir no construtor) pra um binario que nao existe de
+     * verdade. `runFfprobeProcess` rejeita a promise ao tentar spawnar (`ENOENT`), o handler de
+     * `startExport` propaga o erro, e `JobRunner.run()` marca o job `FAILED` - nunca `COMPLETED`,
+     * mesmo com um MP4 perfeitamente valido gravado em disco. Confirma que `exitCode 0` do FFmpeg
+     * sozinho NAO e mais suficiente pra aceitar uma exportacao como bem-sucedida.
+     */
+    it(
+      'EXP-009: marks the job FAILED (not COMPLETED) when ffprobe validation cannot run, even with a valid FFmpeg exit code',
+      async () => {
+        const { editProjectId } = await setupScreenAndMicProject()
+
+        const exportJobRunnerForBrokenProbe = new JobRunner(new ExportJobStore(exportJobRepository))
+        const exportServiceWithBrokenProbe = new ExportService(
+          editProjectRepository,
+          projectRepository,
+          editorService,
+          exportJobRunnerForBrokenProbe,
+          exportJobRepository,
+          { ffprobePath: join(libraryRoot, 'binario-ffprobe-que-nao-existe.exe') }
+        )
+
+        const job = exportServiceWithBrokenProbe.startExport(editProjectId, {
+          kind: 'AUDIO',
+          format: 'WAV'
+        })
+        const finalJob = await waitForTerminalJob(job.id)
+
+        expect(finalJob.status).toBe('FAILED')
+        expect(finalJob.error).toBeTruthy()
+        // `outputPath` nunca e setado num job FAILED (`ExportJobStore.update`/`ExportJobRepository.
+        // fail` so gravam `error`/`completedAt`) - mesmo com o WAV real tendo sido escrito em disco
+        // com sucesso pelo FFmpeg, o job nunca reporta um caminho utilizavel pro chamador.
+        expect(finalJob.outputPath).toBeNull()
+      },
+      40_000
+    )
+
+    /**
+     * EXP-009 - complementa o teste acima com a metade "positiva": quando o ffprobe REAL roda com
+     * sucesso contra um arquivo genuinamente valido (o mesmo clipe sintetico de sempre), a
+     * validacao NUNCA rejeita um export que deveria ter sido aceito - `finalJob.status` continua
+     * `COMPLETED`, exatamente como nos testes de VIDEO/AUDIO/rangeMs acima (todos escritos ANTES
+     * do EXP-009 existir, e que continuam passando sem alteracao nenhuma - a prova mais direta de
+     * que a validacao nao introduziu nenhum falso negativo pro caminho feliz).
+     */
+    it(
+      'EXP-009: a genuinely valid exported file passes real ffprobe validation and completes normally',
+      async () => {
+        const { editProjectId } = await setupScreenAndMicProject()
+        const job = exportService.startExport(editProjectId, { kind: 'AUDIO', format: 'WAV' })
+        const finalJob = await waitForTerminalJob(job.id)
+        expect(finalJob.status).toBe('COMPLETED')
+        expect(finalJob.outputPath).toBeTruthy()
+      },
+      40_000
+    )
   })
 })

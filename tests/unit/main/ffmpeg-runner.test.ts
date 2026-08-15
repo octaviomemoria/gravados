@@ -3,7 +3,9 @@ import {
   buildFfprobeArgs,
   parseFfmpegProgressLine,
   computeExportProgress,
-  runFfmpegProcess
+  runFfmpegProcess,
+  runFfprobeProcess,
+  validateFfprobeOutput
 } from '../../../src/main/media/ffmpeg/ffmpeg-runner'
 import { resolveFfmpegBinaries } from '../../../src/main/media/ffmpeg/ffmpeg-locator'
 
@@ -136,5 +138,89 @@ describe('runFfmpegProcess', () => {
     const result = await handle.result
     expect(() => handle.cancel()).not.toThrow()
     expect(result.canceled).toBe(false)
+  })
+})
+
+// EXP-009 - mesmo padrao ja usado acima pra `runFfmpegProcess` (spawns REAIS via `process.execPath`
+// com scripts inline, sem mockar `child_process`) - `runFfprobeProcess` nunca escreve num arquivo
+// de midia, entao nao precisa do binario ffprobe de verdade pra testar o wrapper de processo em
+// si (spawn/stdout/stderr/exitCode); a integracao com o ffprobe REAL fica coberta em
+// `export.service.test.ts` (que gera clipes sinteticos de verdade via `ffmpeg-static`).
+describe('runFfprobeProcess', () => {
+  it('captures stdout/stderr and resolves with the real exit code', async () => {
+    const result = await runFfprobeProcess(process.execPath, [
+      '-e',
+      'process.stdout.write("out-chunk"); process.stderr.write("err-chunk"); process.exit(0)'
+    ])
+    expect(result).toEqual({ exitCode: 0, stdout: 'out-chunk', stderr: 'err-chunk' })
+  })
+
+  it('accumulates stdout across multiple chunks (not just the last one, unlike progress parsing)', async () => {
+    const result = await runFfprobeProcess(process.execPath, [
+      '-e',
+      'process.stdout.write("{\\"a\\":1,"); process.stdout.write("\\"b\\":2}"); process.exit(0)'
+    ])
+    expect(result.stdout).toBe('{"a":1,"b":2}')
+    expect(JSON.parse(result.stdout)).toEqual({ a: 1, b: 2 })
+  })
+
+  it('reports a non-zero exit code without throwing', async () => {
+    const result = await runFfprobeProcess(process.execPath, ['-e', 'process.exit(1)'])
+    expect(result.exitCode).toBe(1)
+  })
+
+  it('rejects when the binary itself cannot be spawned (path does not exist)', async () => {
+    await expect(
+      runFfprobeProcess('C:/this/binary/does/not/exist.exe', [])
+    ).rejects.toThrow()
+  })
+})
+
+describe('validateFfprobeOutput', () => {
+  it('accepts a well-formed ffprobe JSON with at least one stream and a positive duration', () => {
+    const stdout = JSON.stringify({
+      format: { duration: '2.048000' },
+      streams: [{ codec_type: 'video' }]
+    })
+    expect(validateFfprobeOutput(stdout)).toEqual({ valid: true, durationMs: 2048 })
+  })
+
+  it('rejects stdout that is not valid JSON (ffprobe never actually ran against the file)', () => {
+    const result = validateFfprobeOutput('not json at all')
+    expect(result.valid).toBe(false)
+    expect(result.reason).toMatch(/JSON/)
+  })
+
+  it('rejects JSON that is not an object (e.g. a bare array or primitive)', () => {
+    expect(validateFfprobeOutput('[]').valid).toBe(false)
+    expect(validateFfprobeOutput('42').valid).toBe(false)
+    expect(validateFfprobeOutput('null').valid).toBe(false)
+  })
+
+  it('rejects a file with zero streams (technically well-formed container, zero usable content)', () => {
+    const stdout = JSON.stringify({ format: { duration: '2.0' }, streams: [] })
+    const result = validateFfprobeOutput(stdout)
+    expect(result.valid).toBe(false)
+    expect(result.reason).toMatch(/stream/)
+  })
+
+  it('rejects a file with a missing "streams" field entirely', () => {
+    const stdout = JSON.stringify({ format: { duration: '2.0' } })
+    expect(validateFfprobeOutput(stdout).valid).toBe(false)
+  })
+
+  it('rejects a file with zero, missing, or non-numeric duration', () => {
+    const withoutDuration = JSON.stringify({ format: {}, streams: [{ codec_type: 'audio' }] })
+    const zeroDuration = JSON.stringify({
+      format: { duration: '0' },
+      streams: [{ codec_type: 'audio' }]
+    })
+    const nonNumericDuration = JSON.stringify({
+      format: { duration: 'N/A' },
+      streams: [{ codec_type: 'audio' }]
+    })
+    expect(validateFfprobeOutput(withoutDuration).valid).toBe(false)
+    expect(validateFfprobeOutput(zeroDuration).valid).toBe(false)
+    expect(validateFfprobeOutput(nonNumericDuration).valid).toBe(false)
   })
 })
