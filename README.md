@@ -23,13 +23,15 @@ está completa: detecção e reparo de gravações interrompidas por um encerram
 (RECOV-002/RECOV-003), e detalhes/renomear/excluir na Biblioteca (LIB-002/004/006) funcionam de
 ponta a ponta - ver [Recuperação de gravações incompletas](#recuperação-de-gravações-incompletas-fase-2)
 e [Biblioteca: detalhes, renomear, excluir](#biblioteca-detalhes-renomear-excluir-fase-2). A
-**Fase 3 — Editor MVP** está em andamento: criar/abrir um projeto de edição vinculado a uma
+**Fase 3 — Editor MVP** está completa: criar/abrir um projeto de edição vinculado a uma
 gravação concluída (EDIT-001), a timeline compilada somente-leitura (EDIT-002), o preview
 completo com playhead sincronizado e reprodução multi-trilha (EDIT-003, partes 1 e 2), corte/
 split/remover-intervalo (EDIT-004/005/006), desfazer/refazer (EDIT-007), ganho/mudo por trilha
 (EDIT-008), fade in/out por trilha (EDIT-009), visibilidade/posição/tamanho de câmera (EDIT-010,
-overlay picture-in-picture sobre a trilha de fundo) e layout da composição (EDIT-011, PiP/
-lado-a-lado/só-tela/só-câmera) já funcionam de ponta a ponta - ver
+overlay picture-in-picture sobre a trilha de fundo), layout da composição (EDIT-011, PiP/
+lado-a-lado/só-tela/só-câmera) e salvamento automático (EDIT-012, toda mutação já persiste de
+forma atômica no instante em que acontece - nunca há um botão "Salvar") funcionam de ponta a
+ponta - ver
 [Editor: criar e abrir projeto de edição](#editor-criar-e-abrir-projeto-de-edição-fase-3),
 [Timeline: dados e visualização somente-leitura](#timeline-dados-e-visualização-somente-leitura-fase-3),
 [Preview: protocolo de mídia local + player mínimo](#preview-protocolo-de-mídia-local--player-mínimo-fase-3),
@@ -38,8 +40,9 @@ lado-a-lado/só-tela/só-câmera) já funcionam de ponta a ponta - ver
 [Desfazer e refazer](#desfazer-e-refazer-fase-3),
 [Ganho e mudo por trilha](#ganho-e-mudo-por-trilha-fase-3),
 [Fade in/out por trilha](#fade-inout-por-trilha-fase-3),
-[Transformação de câmera (PiP)](#transformação-de-câmera-pip-fase-3) e
-[Layout da composição](#layout-da-composição-fase-3).
+[Transformação de câmera (PiP)](#transformação-de-câmera-pip-fase-3),
+[Layout da composição](#layout-da-composição-fase-3) e
+[Autosave e indicador de salvamento](#autosave-e-indicador-de-salvamento-fase-3).
 
 A especificação funcional/técnica completa vive em [`documentacao/meeting-studio-docs/`](documentacao/meeting-studio-docs/);
 este README documenta apenas a fundação de código já implementada.
@@ -997,6 +1000,51 @@ mesmo padrão de `REMOVE_RANGE`) - layout não é uma propriedade de uma trilha 
   `editor.getEditedTimeline` cada troca, e que Ctrl+Z desfaz só a ÚLTIMA troca (volta pra "Só
   câmera", não até `PIP`).
 
+### Autosave e indicador de salvamento (Fase 3)
+
+Vigésimo terceiro incremento - EDIT-012, **último item planejado da Fase 3** antes do Marco MVP
+(`05_MEDIA_EDITOR.md` §7-8: "dirty state; autosave... nunca exigir clique em salvar para proteger
+horas de edição"). Diferente de todos os incrementos anteriores da fase, este não adiciona uma
+operação nova ao log - a arquitetura já garantia, desde o EDIT-004/005/006, que TODA mutação
+(corte, ganho, fade, transformação de câmera, layout) persiste via IPC no INSTANTE em que
+acontece, nunca esperando um clique em "Salvar" que nem existe. O que faltava era (1) uma garantia
+real de que essa persistência é ATÔMICA, e (2) tornar essa garantia VISÍVEL pro usuário.
+
+- **Bug real corrigido: `appendOperation` (o ponto único de escrita de qualquer operação no log)
+  agora envolve suas três escritas (`deleteAfterSequence`, `create`, `touchAfterEdit`) numa ÚNICA
+  transação SQLite** (`this.db.transaction(...)`, `EditorService` passou a receber o `AppDatabase`
+  bruto além dos repositórios). Antes do EDIT-012 eram três `.run()` independentes, cada um
+  auto-commitando na hora - um crash do processo (queda de energia, `kill -9`, o app forçado a
+  fechar) entre o `create` e o `touchAfterEdit` deixava uma linha NOVA gravada no log com
+  `sequence = N+1`, mas `activeOperationSequence` ainda em `N`: a operação ficava fisicamente no
+  banco porém INVISÍVEL pra `getEditedTimeline` (filtra `sequence <= activeOperationSequence`),
+  silenciosamente "perdendo" a última edição do usuário antes do crash sem nenhum sinal de erro.
+  Com a transação, ou as três escritas commitam juntas, ou nenhuma commita - nunca um meio-termo
+  inconsistente. Exatamente o tipo de garantia que "autosave: nunca perder horas de edição"
+  pressupõe existir.
+- **Indicador de dirty-state na UI** (`EditorProjectPage.tsx`): um contador `pendingSaves`
+  (não um booleano - várias mutações podem estar em voo ao mesmo tempo, ex.: arrastar um slider de
+  ganho enquanto uma troca de layout anterior ainda não voltou) incrementado/decrementado ao redor
+  de TODAS as sete mutações existentes (`removeRange`, `undo`, `redo`, `setTrackGain`,
+  `setTrackFade`, `setTrackTransform`, `setLayoutPreset`), sem alterar a lógica própria de cada
+  handler (mensagens de erro específicas por ação continuam intactas via `actionError`). Texto
+  exibido: "Salvando alteração..." enquanto `pendingSaves > 0`, "Alterações salvas
+  automaticamente" quando chega a zero sem falha, "Falha ao salvar a última alteração" (com
+  destaque visual) se a última mutação rejeitou.
+- **Nenhuma mudança de debounce/coalescência de operações neste incremento** - um arrasto de
+  slider (ganho, transformação de câmera) continua criando uma operação por evento `input`,
+  igual antes do EDIT-012 (registrado como pendência conhecida - refinamento futuro, não
+  bloqueante para o Marco MVP).
+- Testado via 1 novo teste de integração de atomicidade
+  (`tests/unit/main/editor.service.test.ts`, `appendOperation atomicity (EDIT-012)`): simula um
+  crash NO MEIO da escrita (monkey-patch de `editOperationRepository.create` pra lançar), confirma
+  que o cursor/revision e o log ficam EXATAMENTE como antes da tentativa (nem linha órfã, nem
+  cursor dessincronizado), e que o serviço continua funcional depois - uma operação nova,
+  bem-sucedida, funciona igual. E um novo teste E2E (`test.describe('editor (autosave
+  indicator)')`): grava microfone, confirma que o indicador já começa em "Alterações salvas
+  automaticamente" (mesmo sem nenhuma mutação ainda), troca o layout, confirma que o indicador
+  volta pro mesmo texto (nunca preso em "Salvando..." nem mostrando erro).
+
 ## Estrutura de diretórios
 
 ```text
@@ -1536,6 +1584,24 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
      ambas) — nunca mostra uma tela em branco só porque o preset pedido não faz sentido para esta
      gravação específica; reusa `pickPreviewTrack`/`pickOverlayCameraTrack` internamente em vez de
      duplicar a lógica de fallback.
+106. **`appendOperation` envolve suas três escritas (`deleteAfterSequence`/`create`/
+     `touchAfterEdit`) numa única transação SQLite** — antes do EDIT-012 eram três `.run()`
+     independentes; um crash entre `create` e `touchAfterEdit` deixava uma operação gravada no
+     banco mas invisível pro cursor, perdendo silenciosamente a última edição do usuário. Com a
+     transação, ou tudo commita junto ou nada commita.
+107. **`EditorService` passou a receber o `AppDatabase` bruto, não só os repositórios** — único
+     jeito de `appendOperation` orquestrar uma transação abrangendo chamadas de DOIS repositórios
+     diferentes (`EditOperationRepository` e `EditProjectRepository`), que compartilham a mesma
+     conexão SQLite mas não têm nenhuma forma própria de coordenar uma transação entre si.
+108. **Indicador de dirty-state usa um CONTADOR (`pendingSaves`), não um booleano** — várias
+     mutações podem estar em voo simultaneamente (ex.: um slider de ganho arrastado enquanto uma
+     troca de layout anterior ainda não voltou); só mostra "tudo salvo" quando NENHUMA está
+     pendente, evitando um falso "salvo" no meio de duas chamadas concorrentes.
+109. **Sem debounce/coalescência de operações de arrasto neste incremento** — um arrasto de slider
+     continua gerando uma operação por evento `input`, igual antes do EDIT-012; considerado fora
+     do escopo mínimo de "autosave = nunca perder trabalho" (a garantia de atomicidade já cobre o
+     caso real de perda de dados), registrado como refinamento futuro em vez de arriscar um ajuste
+     não totalmente testado nos sete handlers existentes.
 
 ## Testes
 
@@ -1618,7 +1684,10 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   mesmo sem as trilhas correspondentes, revision incrementa, undo/redo funcionam, poda de ramo
   abandonado, coexiste independente de `SET_GAIN`/`SET_FADE`/`SET_CAMERA_TRANSFORM`), **`computePreviewLayout` puro**
   (os 4 presets com/sem as trilhas necessárias, fallback pro comportamento PIP, zero trilhas).
-  **309 testes, 30 arquivos.**
+  **`appendOperation` atomicity (EDIT-012)** (simula um crash no meio da escrita - `create` lança
+  depois do `deleteAfterSequence` já ter rodado dentro da mesma transação - confirma que cursor,
+  revision e o log ficam EXATAMENTE como antes da tentativa, e que o serviço continua funcional
+  depois). **310 testes, 30 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -1731,7 +1800,20 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   `EditorService.setLayoutPreset` + 10 de `computePreviewLayout` (todos verdes) e pelas execuções
   isoladas/primeira-execução-completa limpas do próprio teste E2E - mesma linha de evidência já
   usada em todos os incrementos anteriores da Fase 3 para aceitar a contenção de recursos da
-  máquina como causa raiz das falhas restantes, não uma regressão deste incremento.
+  máquina como causa raiz das falhas restantes, não uma regressão deste incremento; décimo segundo
+  teste (`test.describe('editor (autosave indicator)')`, EDIT-012) grava só microfone, confirma
+  que o indicador ".editor-save-status" já mostra "Alterações salvas automaticamente" ANTES de
+  qualquer mutação, troca o layout pelo select, e confirma que o indicador volta pro mesmo texto
+  (nunca preso em "Salvando..." nem com a classe de erro).
+  **12 testes**, isolado `editor (autosave indicator)` passou de forma limpa (10,3s, sem retry)
+  depois de uma primeira tentativa isolada que bateu na mesma classe de bootstrap já documentada
+  (`getByRole('status')` sem "REC" a tempo, confirmado via `error-context.md`, nunca dentro do
+  código de dirty-state em si). Rodada dedicada de regressão nos testes pré-existentes de
+  `gain/mute`, `layout` e `undo/redo` (que agora também passam pelos novos `beginSave`/`endSave`
+  em TODOS os sete handlers de mutação) confirmou que os únicos dois falharam/um ficou flaky na
+  mesma etapa de setup compartilhada de sempre, nunca dentro da lógica nova - sem nenhuma regressão
+  visível causada pelo indicador de salvamento. Correção de lógica confirmada pelo teste de
+  atomicidade do `EditorService` (100% verde) e pela execução isolada limpa do próprio teste E2E.
 
 ## Pendências conhecidas
 
@@ -1808,8 +1890,9 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - Projeto de edição ainda não tem renomear nem excluir (só a Biblioteca tem essas ações, para
   gravações - não para projetos de edição). Corte/split/remover-intervalo (EDIT-004/005/006),
   desfazer/refazer (EDIT-007), ganho/mudo (EDIT-008), fade in/out (EDIT-009), visibilidade/
-  posição/tamanho de câmera (EDIT-010) por trilha e layout da composição (EDIT-011) já funcionam;
-  autosave ainda não (EDIT-012 em diante).
+  posição/tamanho de câmera (EDIT-010) por trilha, layout da composição (EDIT-011) e salvamento
+  automático (EDIT-012) já funcionam - **Fase 3 (Editor MVP) está completa**, próximo passo é a
+  Fase 4 (Export).
 - `EditorProjectPage` não trata um `id` de projeto de edição inexistente/inválido na URL de forma
   amigável (`editor.get` lança `NotFoundError`, capturado só como um estado de erro genérico) -
   refinamento futuro, não bloqueante.
@@ -1868,6 +1951,15 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - **`removeRange` não valida limite mínimo de duração remanescente** - tecnicamente possível
   remover a timeline inteira até sobrar `totalDurationMs = 0` (ou próximo disso); nenhum teste
   cobre esse caso extremo, e a UI não impede explicitamente, só fica sem nada útil pra mostrar.
+- **Sem debounce/coalescência de operações de arrasto (EDIT-012)** - um arrasto de slider de
+  ganho ou de posição/tamanho de câmera continua gerando UMA operação por evento `input` do
+  navegador (pode ser dezenas por gesto de arrasto), cada uma podando a anterior via a mesma
+  regra de undo/redo - na prática um "desfazer" depois de um arrasto reverte só o ÚLTIMO tique do
+  mouse, não o gesto inteiro. A garantia de atomicidade do EDIT-012 elimina o risco real de perda
+  de dados; coalescer um arrasto inteiro numa única operação fica como refinamento futuro.
+- **Sem histórico/auditoria visível de saves** - o indicador (EDIT-012) só mostra o estado ATUAL
+  ("salvando"/"salvo"/"falhou"), não um log de quando cada mutação foi persistida nem uma forma de
+  reexibir uma falha antiga depois que o indicador já voltou pro estado "salvo".
 
 ## Próximo passo
 
@@ -1876,28 +1968,30 @@ quatro fontes de captura simultâneas, segmentação por tempo/tamanho, pausar/r
 marcadores (RF-016) e monitor de espaço em disco (RF-042) estão implementados e testados de ponta a
 ponta. A **Fase 2 — Recovery + Library** também está completa: RECOV-001/002/003 (manifest,
 detecção e reparo de gravações incompletas) e LIB-001/002/004/005/006 (listar, detalhes, renomear,
-mostrar na pasta, excluir) funcionam de ponta a ponta. A **Fase 3 — Editor MVP** está em andamento:
+mostrar na pasta, excluir) funcionam de ponta a ponta. A **Fase 3 — Editor MVP está completa**:
 EDIT-001 (criar/abrir projeto de edição), EDIT-002 (timeline compilada somente-leitura), EDIT-003
 completo (partes 1 e 2 - preview com playhead sincronizado e reprodução multi-trilha via protocolo
 de mídia local seguro), EDIT-004/005/006 (corte/split/remover-intervalo, a primeira operação de
 edição real), EDIT-007 (desfazer/refazer, cursor sobre o log de operações), EDIT-008 (ganho/mudo
 por trilha, reusando o mesmo log), EDIT-009 (fade in/out por trilha, terceiro tipo de operação
 sobre o mesmo log, volume recalculado a cada tick por depender do playhead), EDIT-010
-(visibilidade/posição/tamanho de câmera, overlay PiP automático sobre a trilha de fundo) e EDIT-011
+(visibilidade/posição/tamanho de câmera, overlay PiP automático sobre a trilha de fundo), EDIT-011
 (layout da composição - PiP/lado-a-lado/só-tela/só-câmera, quarto tipo de operação sobre o mesmo
-log, primeira a mirar a composição inteira em vez de uma trilha) já funcionam de ponta a ponta.
+log, primeira a mirar a composição inteira em vez de uma trilha) e EDIT-012 (salvamento automático
+- persistência atômica da escrita do log de operações + indicador de dirty-state na UI) funcionam
+de ponta a ponta.
 
 Desenvolvimento segue de forma incremental e contínua rumo ao Marco MVP (`11_ROADMAP_BACKLOG.md`),
 cada incremento validado (lint/typecheck/testes/build/E2E) e documentado neste README antes do
 próximo começar. Ordem planejada:
 
-1. Continuar a **Fase 3 — Editor MVP**: autosave (EDIT-012) - último item planejado da fase antes
-   do Marco MVP.
-2. **Fase 4 — Export** (EXP-001..009): pipeline real de FFmpeg (`ffmpeg-static`/`ffprobe-static`
-   ainda não instalados - `main/media/ffmpeg/` hoje é só um wrapper `spawn()` + `buildFfprobeArgs`,
-   nenhum binário real, `export.start` sempre lança `NotImplementedError`), MP4 720p/1080p, faixa
-   de tempo, progresso, cancelamento, validação via ffprobe - inclui a exportação em múltiplos
-   formatos pedida explicitamente pelo usuário (MP4/MP3/WAV/M4A-AAC/AVI/MPEG/OGG/etc.). O roadmap
+1. **Fase 4 — Export** (EXP-001..009, próximo passo imediato): pipeline real de FFmpeg
+   (`ffmpeg-static`/`ffprobe-static` ainda não instalados - `main/media/ffmpeg/` hoje é só um
+   wrapper `spawn()` + `buildFfprobeArgs`, nenhum binário real, `export.start` sempre lança
+   `NotImplementedError`), MP4 720p/1080p, faixa de tempo, progresso, cancelamento, validação via
+   ffprobe - inclui a exportação em múltiplos formatos pedida explicitamente pelo usuário
+   (MP4/MP3/WAV/M4A-AAC/AVI/MPEG/OGG/etc.), e precisará ler `layoutPreset`/`cameraTransform` pra
+   compor os frames de saída de acordo (hoje esses dois só afetam o preview ao vivo). O roadmap
    marca o fim desta fase como o **Marco MVP**.
-3. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
+2. Fases 5-9 (transcrição, meeting intelligence, busca semântica, nuvem, integrações) ficam para
    depois do MVP, replanejadas quando chegar a vez.

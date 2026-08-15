@@ -1210,3 +1210,77 @@ test.describe('editor (layout)', () => {
     expect(afterUndo.layoutPreset).toBe('CAMERA_ONLY')
   })
 })
+
+/**
+ * EDIT-012 (vigesimo terceiro incremento - Fase 3, autosave/dirty-state). Toda mutacao ja
+ * persistia via IPC no instante em que acontece desde o EDIT-004/005/006 - este incremento so
+ * torna essa garantia VISIVEL (indicador "Alteracoes salvas automaticamente"). Confirma que o
+ * indicador comeca no estado "salvo" e volta pro estado "salvo" (nunca fica preso em "Salvando..."
+ * nem mostra erro) depois de uma mutacao real bem-sucedida.
+ */
+test.describe('editor (autosave indicator)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeEach(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterEach(async () => {
+    await electronApp.close()
+  })
+
+  test('shows the auto-saved status by default and again after a real edit completes', async () => {
+    test.info().setTimeout(EDITOR_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - autosave ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const projects = await appWindow.evaluate(() => window.meetingStudio.library.list())
+    const rootPath = projects[0]!.rootPath
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando o primeiro chunk de audio ser persistido em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await openLibrary(appWindow)
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(appWindow.getByRole('heading', { name: title })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(appWindow.locator('.timeline__track')).toHaveCount(1, { timeout: POLL_TIMEOUT_MS })
+
+    // --- Estado inicial (nenhuma mutacao ainda) - ja "salvo", sem depender de nenhuma acao.
+    const saveStatus = appWindow.locator('.editor-save-status')
+    await expect(saveStatus).toHaveText('Alterações salvas automaticamente')
+    await expect(saveStatus).not.toHaveClass(/editor-save-status--error/)
+
+    // --- Realiza uma mutacao real (troca de layout - a mais simples de disparar via UI) e
+    // confirma que o indicador volta pro estado "salvo" (nao erro, nao preso em "Salvando...").
+    const layoutSelect = appWindow.getByLabel('Layout')
+    await layoutSelect.selectOption('CAMERA_ONLY')
+    await expect(saveStatus).toHaveText('Alterações salvas automaticamente', {
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(saveStatus).not.toHaveClass(/editor-save-status--error/)
+  })
+})

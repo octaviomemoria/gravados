@@ -36,15 +36,18 @@ const LAYOUT_PRESET_LABELS: Record<LayoutPreset, string> = {
 }
 
 /**
- * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007/EDIT-008/EDIT-009/EDIT-010/EDIT-011 (Fase
- * 3, Editor MVP). Pagina de detalhe de UM projeto de edicao (`/editor/:id`) - metadados + resumo
- * somente-leitura da gravacao vinculada (reaproveitando `library.getDetails`, LIB-002) + a
- * timeline EDITADA (`Timeline.tsx`, EDIT-002/EDIT-004-005-006/EDIT-008/EDIT-009/EDIT-010) + o
- * player multi-trilha sincronizado (`useMultiTrackPlayback`, EDIT-003 parte 2) + corte/split/
- * remover-intervalo (EDIT-004/005/006 - todos o mesmo primitivo `REMOVE_RANGE`, ver
+ * EDIT-001/EDIT-002/EDIT-003/EDIT-004-005-006/EDIT-007/EDIT-008/EDIT-009/EDIT-010/EDIT-011/
+ * EDIT-012 (Fase 3, Editor MVP). Pagina de detalhe de UM projeto de edicao (`/editor/:id`) -
+ * metadados + resumo somente-leitura da gravacao vinculada (reaproveitando `library.getDetails`,
+ * LIB-002) + a timeline EDITADA (`Timeline.tsx`, EDIT-002/EDIT-004-005-006/EDIT-008/EDIT-009/
+ * EDIT-010) + o player multi-trilha sincronizado (`useMultiTrackPlayback`, EDIT-003 parte 2) +
+ * corte/split/remover-intervalo (EDIT-004/005/006 - todos o mesmo primitivo `REMOVE_RANGE`, ver
  * `RemoveRangeRequestSchema`) + desfazer/refazer (EDIT-007) + ganho/mudo (EDIT-008) + fade in/out
  * (EDIT-009) + visibilidade/posicao/tamanho de camera (EDIT-010) por trilha + layout da composicao
- * (EDIT-011, PiP/lado-a-lado/so-tela/so-camera). Sem autosave ainda (EDIT-012 em diante).
+ * (EDIT-011, PiP/lado-a-lado/so-tela/so-camera) + indicador de salvamento automatico (EDIT-012,
+ * `05_MEDIA_EDITOR.md` §7-8 - nunca ha um botao "Salvar": toda mutacao ja persiste via IPC no
+ * instante em que acontece, ver `appendOperation` no `EditorService`; este incremento so torna
+ * essa garantia VISIVEL na UI).
  */
 export function EditorProjectPage() {
   const { id } = useParams<{ id: string }>()
@@ -152,6 +155,19 @@ function EditorProjectView({
   const [selection, setSelection] = useState<{ startMs: number; endMs: number } | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // EDIT-012 - indicador de dirty-state/salvamento automatico (`05_MEDIA_EDITOR.md` §7-8).
+  // `pendingSaves` e um CONTADOR (nao um booleano) porque varias mutacoes podem estar em voo ao
+  // mesmo tempo (ex.: arrastar um slider de ganho enquanto uma troca de layout anterior ainda nao
+  // voltou) - so mostra "tudo salvo" quando NENHUMA estiver pendente. `lastSaveFailed` e
+  // independente de `actionError` (que já mostra uma mensagem especifica por acao) - cobre
+  // qualquer uma das sete mutacoes com o mesmo indicador visual, sem duplicar texto por handler.
+  const [pendingSaves, setPendingSaves] = useState(0)
+  const [lastSaveFailed, setLastSaveFailed] = useState(false)
+  const beginSave = useCallback(() => setPendingSaves((count) => count + 1), [])
+  const endSave = useCallback((succeeded: boolean) => {
+    setPendingSaves((count) => count - 1)
+    setLastSaveFailed(!succeeded)
+  }, [])
 
   const playback = useMultiTrackPlayback(timeline)
   // EDIT-011 - unica fonte de verdade pra "o que desenhar no preview": qual(is) trilha(s) de
@@ -192,6 +208,8 @@ function EditorProjectView({
     async (startMs: number, endMs: number) => {
       setActionError(null)
       setBusy(true)
+      beginSave()
+      let succeeded = false
       try {
         const updated = await window.meetingStudio.editor.removeRange(
           editProject.id,
@@ -199,42 +217,52 @@ function EditorProjectView({
           endMs
         )
         applyTimelineMutation(updated)
+        succeeded = true
       } catch {
         setActionError('Nao foi possivel remover o trecho selecionado.')
       } finally {
         setBusy(false)
+        endSave(succeeded)
       }
     },
-    [editProject.id, applyTimelineMutation]
+    [editProject.id, applyTimelineMutation, beginSave, endSave]
   )
 
   const undo = useCallback(async () => {
     if (!timeline?.canUndo) return
     setActionError(null)
     setBusy(true)
+    beginSave()
+    let succeeded = false
     try {
       const updated = await window.meetingStudio.editor.undo(editProject.id)
       applyTimelineMutation(updated)
+      succeeded = true
     } catch {
       setActionError('Nao foi possivel desfazer.')
     } finally {
       setBusy(false)
+      endSave(succeeded)
     }
-  }, [editProject.id, timeline?.canUndo, applyTimelineMutation])
+  }, [editProject.id, timeline?.canUndo, applyTimelineMutation, beginSave, endSave])
 
   const redo = useCallback(async () => {
     if (!timeline?.canRedo) return
     setActionError(null)
     setBusy(true)
+    beginSave()
+    let succeeded = false
     try {
       const updated = await window.meetingStudio.editor.redo(editProject.id)
       applyTimelineMutation(updated)
+      succeeded = true
     } catch {
       setActionError('Nao foi possivel refazer.')
     } finally {
       setBusy(false)
+      endSave(succeeded)
     }
-  }, [editProject.id, timeline?.canRedo, applyTimelineMutation])
+  }, [editProject.id, timeline?.canRedo, applyTimelineMutation, beginSave, endSave])
 
   // EDIT-008 - NAO usa `applyTimelineMutation`: ajustar ganho/mudo nao invalida a posicao do
   // playhead nem a selecao em andamento (ao contrario de corte/desfazer/refazer, que podem
@@ -249,6 +277,8 @@ function EditorProjectView({
     async (trackId: string, gainDb: number, muted: boolean) => {
       setActionError(null)
       const requestSeq = ++gainRequestSeqRef.current
+      beginSave()
+      let succeeded = false
       try {
         const updated = await window.meetingStudio.editor.setTrackGain(
           editProject.id,
@@ -256,15 +286,18 @@ function EditorProjectView({
           gainDb,
           muted
         )
+        succeeded = true
         if (requestSeq !== gainRequestSeqRef.current) return
         setTimeline(updated)
       } catch {
         if (requestSeq === gainRequestSeqRef.current) {
           setActionError('Nao foi possivel ajustar o ganho da trilha.')
         }
+      } finally {
+        endSave(succeeded)
       }
     },
-    [editProject.id]
+    [editProject.id, beginSave, endSave]
   )
 
   // EDIT-009 - mesmo padrao de `setTrackGain`: nao usa `applyTimelineMutation`/`busy`, guard de
@@ -275,6 +308,8 @@ function EditorProjectView({
     async (trackId: string, fadeInMs: number, fadeOutMs: number) => {
       setActionError(null)
       const requestSeq = ++fadeRequestSeqRef.current
+      beginSave()
+      let succeeded = false
       try {
         const updated = await window.meetingStudio.editor.setTrackFade(
           editProject.id,
@@ -282,15 +317,18 @@ function EditorProjectView({
           fadeInMs,
           fadeOutMs
         )
+        succeeded = true
         if (requestSeq !== fadeRequestSeqRef.current) return
         setTimeline(updated)
       } catch {
         if (requestSeq === fadeRequestSeqRef.current) {
           setActionError('Nao foi possivel ajustar o fade da trilha.')
         }
+      } finally {
+        endSave(succeeded)
       }
     },
-    [editProject.id]
+    [editProject.id, beginSave, endSave]
   )
 
   // EDIT-010 - mesmo padrao de `setTrackGain`/`setTrackFade`: nao usa `applyTimelineMutation`/
@@ -302,21 +340,26 @@ function EditorProjectView({
     async (trackId: string, transform: CameraTransform) => {
       setActionError(null)
       const requestSeq = ++transformRequestSeqRef.current
+      beginSave()
+      let succeeded = false
       try {
         const updated = await window.meetingStudio.editor.setTrackCameraTransform(
           editProject.id,
           trackId,
           transform
         )
+        succeeded = true
         if (requestSeq !== transformRequestSeqRef.current) return
         setTimeline(updated)
       } catch {
         if (requestSeq === transformRequestSeqRef.current) {
           setActionError('Nao foi possivel ajustar a transformacao da camera.')
         }
+      } finally {
+        endSave(succeeded)
       }
     },
-    [editProject.id]
+    [editProject.id, beginSave, endSave]
   )
 
   // EDIT-011 - mesmo padrao de `setTrackGain`/`setTrackFade`/`setTrackTransform`: nao usa
@@ -328,17 +371,22 @@ function EditorProjectView({
     async (preset: LayoutPreset) => {
       setActionError(null)
       const requestSeq = ++layoutRequestSeqRef.current
+      beginSave()
+      let succeeded = false
       try {
         const updated = await window.meetingStudio.editor.setLayoutPreset(editProject.id, preset)
+        succeeded = true
         if (requestSeq !== layoutRequestSeqRef.current) return
         setTimeline(updated)
       } catch {
         if (requestSeq === layoutRequestSeqRef.current) {
           setActionError('Nao foi possivel ajustar o layout.')
         }
+      } finally {
+        endSave(succeeded)
       }
     },
-    [editProject.id]
+    [editProject.id, beginSave, endSave]
   )
 
   // `05_MEDIA_EDITOR.md` §15 - Ctrl+Z desfaz, Ctrl+Shift+Z refaz; atalhos nunca disparam com o
@@ -536,6 +584,18 @@ function EditorProjectView({
               {actionError}
             </p>
           )}
+          {/* EDIT-012 - toda mutacao ja persiste via IPC no instante em que acontece (nunca ha um
+              botao "Salvar"); este indicador so torna essa garantia visivel. */}
+          <p
+            className={`editor-save-status${lastSaveFailed && pendingSaves === 0 ? ' editor-save-status--error' : ''}`}
+            role="status"
+          >
+            {pendingSaves > 0
+              ? 'Salvando alteração...'
+              : lastSaveFailed
+                ? 'Falha ao salvar a última alteração'
+                : 'Alterações salvas automaticamente'}
+          </p>
         </>
       ) : (
         <p>Sem midia para pre-visualizar.</p>

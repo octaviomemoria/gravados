@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { AppDatabase } from '../database/client'
 import type { EditProjectRepository } from '../database/repositories/edit-project.repository'
 import type { ProjectRepository } from '../database/repositories/project.repository'
 import type { TrackRepository } from '../database/repositories/track.repository'
@@ -28,7 +29,15 @@ export class EditorService {
     private readonly projectRepository: ProjectRepository,
     private readonly trackRepository: TrackRepository,
     private readonly segmentRepository: SegmentRepository,
-    private readonly editOperationRepository: EditOperationRepository
+    private readonly editOperationRepository: EditOperationRepository,
+    /**
+     * EDIT-012 (vigesimo terceiro incremento - Fase 3, autosave/dirty-state,
+     * `05_MEDIA_EDITOR.md` §7-8: "nunca exigir clique em salvar para proteger horas de edicao").
+     * `AppDatabase` bruto (nao so os repositorios) especificamente pra `appendOperation` poder
+     * envolver suas tres escritas numa UNICA transacao SQLite - ver comentario la embaixo sobre o
+     * bug real que isso corrige.
+     */
+    private readonly db: AppDatabase
   ) {}
 
   /**
@@ -397,27 +406,42 @@ export class EditorService {
    * `setLayoutPreset`. Sempre poda (`DELETE`) qualquer coisa alem do cursor ANTES de inserir - uma
    * acao nova invalida o "refazer" pendente, o mesmo comportamento padrao de qualquer editor,
    * independente do TIPO da operacao (nem se ela tem `trackId` ou nao).
+   *
+   * EDIT-012 - as tres escritas (`deleteAfterSequence`, `create`, `touchAfterEdit`) SEMPRE
+   * acontecem dentro de uma UNICA transacao SQLite (`this.db.transaction`). Bug real que isso
+   * corrige: antes do EDIT-012 eram tres `.run()` independentes, cada um auto-commitando na hora -
+   * um crash do processo (queda de energia, `kill -9`, o app forcado a fechar) entre o `create` e
+   * o `touchAfterEdit` deixava uma linha NOVA gravada no log com `sequence = N+1`, mas
+   * `activeOperationSequence` ainda em `N` - a operacao ficava fisicamente no banco porem invisivel
+   * pra `getEditedTimeline` (filtra `sequence <= activeOperationSequence`), silenciosamente
+   * "perdendo" a ULTIMA edicao do usuario antes do crash sem nenhum sinal de erro. Com a transacao,
+   * ou as tres escritas commitam juntas, ou nenhuma commita - nunca um meio-termo inconsistente.
+   * Exatamente o tipo de garantia que "autosave: nunca exigir salvar pra proteger horas de edicao"
+   * (`05_MEDIA_EDITOR.md` §8) pressupoe existir, mas que so ficou explicita a partir deste
+   * incremento.
    */
   private appendOperation(
     editProjectId: string,
     editProject: EditProjectEntity,
     fields: Pick<EditOperationEntity, 'type' | 'startMs' | 'endMs' | 'trackId' | 'payloadJson'>
   ): void {
-    this.editOperationRepository.deleteAfterSequence(
-      editProjectId,
-      editProject.activeOperationSequence
-    )
-    const newSequence = editProject.activeOperationSequence + 1
-    const operation: EditOperationEntity = {
-      id: randomUUID(),
-      editProjectId,
-      sequence: newSequence,
-      ...fields
-    }
-    this.editOperationRepository.create(operation)
-    this.editProjectRepository.touchAfterEdit(editProjectId, {
-      revision: editProject.revision + 1,
-      activeOperationSequence: newSequence
+    this.db.transaction(() => {
+      this.editOperationRepository.deleteAfterSequence(
+        editProjectId,
+        editProject.activeOperationSequence
+      )
+      const newSequence = editProject.activeOperationSequence + 1
+      const operation: EditOperationEntity = {
+        id: randomUUID(),
+        editProjectId,
+        sequence: newSequence,
+        ...fields
+      }
+      this.editOperationRepository.create(operation)
+      this.editProjectRepository.touchAfterEdit(editProjectId, {
+        revision: editProject.revision + 1,
+        activeOperationSequence: newSequence
+      })
     })
   }
 

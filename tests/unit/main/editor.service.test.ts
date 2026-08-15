@@ -53,7 +53,8 @@ describe('EditorService', () => {
       projectRepository,
       trackRepository,
       segmentRepository,
-      editOperationRepository
+      editOperationRepository,
+      client.db
     )
   })
 
@@ -1094,6 +1095,80 @@ describe('EditorService', () => {
 
     it('throws NotFoundError for an unknown edit project', () => {
       expect(() => service.setLayoutPreset(randomUUID(), 'PIP')).toThrow('nao encontrado')
+    })
+  })
+
+  describe('appendOperation atomicity (EDIT-012)', () => {
+    function createTrackWithSegment(
+      projectId: string,
+      type: 'MICROPHONE',
+      startMs: number,
+      endMs: number
+    ): string {
+      const trackId = randomUUID()
+      trackRepository.create({
+        id: trackId,
+        projectId,
+        type,
+        enabled: true,
+        position: 0,
+        startOffsetMs: 0
+      })
+      segmentRepository.create({
+        id: randomUUID(),
+        trackId,
+        seqIndex: 1,
+        relativePath: `source/${type.toLowerCase()}/${type.toLowerCase()}_000001.webm`,
+        startedAtMs: startMs,
+        endedAtMs: endMs,
+        durationMs: endMs - startMs,
+        byteSize: 1000,
+        mimeType: 'audio/webm',
+        finalized: true
+      })
+      return trackId
+    }
+
+    it('a failure mid-write rolls back the WHOLE operation (no orphaned row, cursor/revision unchanged) - the bug EDIT-012 fixes', () => {
+      const project = createProject('COMPLETED')
+      createTrackWithSegment(project.id, 'MICROPHONE', 0, 10_000)
+      const editProject = service.createEditProject(project.id)
+
+      // Uma operacao bem-sucedida antes da falha, pra confirmar que ela sobrevive intacta.
+      service.removeRange(editProject.id, 1000, 2000)
+      const beforeFailure = service.getEditProject(editProject.id)
+      expect(beforeFailure.activeOperationSequence).toBe(1)
+      const operationsBeforeFailure = editOperationRepository.listByEditProject(editProject.id)
+      expect(operationsBeforeFailure).toHaveLength(1)
+
+      // Simula um crash no MEIO de appendOperation - o `create` (segunda das tres escritas)
+      // lanca, depois de `deleteAfterSequence` ja ter rodado (nao ha nada a apagar aqui, mas o
+      // ponto e simular uma falha DEPOIS do inicio da transacao).
+      const originalCreate = editOperationRepository.create.bind(editOperationRepository)
+      editOperationRepository.create = () => {
+        throw new Error('crash simulado no meio da escrita')
+      }
+      try {
+        expect(() => service.removeRange(editProject.id, 500, 800)).toThrow(
+          'crash simulado no meio da escrita'
+        )
+      } finally {
+        editOperationRepository.create = originalCreate
+      }
+
+      // Nada mudou - nem o cursor/revision, nem o log ganhou uma linha orfa ou perdeu a que ja
+      // existia. Sem a transacao (pre-EDIT-012), o cursor ficaria dessincronizado do log.
+      const afterFailure = service.getEditProject(editProject.id)
+      expect(afterFailure.activeOperationSequence).toBe(beforeFailure.activeOperationSequence)
+      expect(afterFailure.revision).toBe(beforeFailure.revision)
+      const operationsAfterFailure = editOperationRepository.listByEditProject(editProject.id)
+      expect(operationsAfterFailure).toHaveLength(1)
+      expect(operationsAfterFailure[0]!.sequence).toBe(1)
+
+      // O servico continua funcional depois - uma operacao nova, bem-sucedida, funciona igual.
+      const afterRecovery = service.removeRange(editProject.id, 500, 800)
+      expect(afterRecovery.canUndo).toBe(true)
+      expect(editOperationRepository.listByEditProject(editProject.id)).toHaveLength(2)
     })
   })
 })

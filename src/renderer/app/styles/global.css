@@ -723,6 +723,17 @@ body {
   margin: 0 0 var(--ms-space-3);
 }
 
+/* EDIT-012 - indicador de dirty-state/salvamento automatico. */
+.editor-save-status {
+  font-size: 0.8rem;
+  color: var(--ms-color-text-muted);
+  margin: 0 0 var(--ms-space-3);
+}
+
+.editor-save-status--error {
+  color: var(--ms-color-danger);
+}
+
 /* EDIT-003 parte 2 - regua/lanes clicaveis buscam (seek) o player; cursor indica isso. */
 .timeline__ruler--seekable,
 .timeline__track-lane--seekable {

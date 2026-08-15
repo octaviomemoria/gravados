@@ -74,7 +74,8 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     projectRepository,
     trackRepository,
     segmentRepository,
-    editOperationRepository
+    editOperationRepository,
+    databaseClient.db
   )
   const settingsService = new SettingsService(
     settingsRepository,
