@@ -5,11 +5,11 @@ import { invokeChannel } from '../invoke'
 
 export function createSearchApi(): SearchApi {
   return {
-    transcripts: (query: string, projectId?: string) =>
+    transcripts: (query: string, projectId?: string, offset?: number) =>
       invokeChannel(
         IPC_CHANNELS.search.transcripts,
         { request: SearchTranscriptsRequestSchema, response: SearchTranscriptsResponseSchema },
-        { query, projectId }
+        { query, projectId, offset: offset ?? 0 }
       )
   }
 }

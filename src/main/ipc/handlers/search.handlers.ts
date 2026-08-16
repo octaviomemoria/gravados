@@ -12,6 +12,7 @@ export function registerSearchHandlers(context: AppContext): void {
   registerHandler(
     IPC_CHANNELS.search.transcripts,
     { request: SearchTranscriptsRequestSchema, response: SearchTranscriptsResponseSchema },
-    async (request) => context.searchService.searchTranscripts(request.query, request.projectId)
+    async (request) =>
+      context.searchService.searchTranscripts(request.query, request.projectId, request.offset)
   )
 }

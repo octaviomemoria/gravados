@@ -18,13 +18,15 @@ async function openSearch(page: Page): Promise<void> {
 /**
  * SEARCH-001 (trigesimo terceiro incremento - Fase 7 "Knowledge"). So o caminho ponta-a-ponta
  * REAL e verificavel nesta fase: buscar via UI, chamando de fato `search.transcripts` por IPC ate
- * o FTS5 real (nenhum mock). Como AI-002 (transcricao real) ainda nao existe, nenhum caminho de UI
- * consegue popular `transcript_segments` com dados reais - entao "nenhum resultado encontrado" e
- * o unico desfecho possivel hoje, e e exatamente isso que este teste confirma (mesmo espirito do
+ * o FTS5 real (nenhum mock). Este suite NAO grava nem transcreve nada de verdade (fluxo caro/lento
+ * demais pra um teste de busca) - `transcript_segments` continua vazio aqui, entao "nenhum
+ * resultado encontrado" e o unico desfecho possivel NESTE teste especifico (mesmo espirito do
  * teste E2E de AI-001, que confirma a falha esperada "nenhum provedor" em vez de simular uma
- * transcricao completa). `buildFtsMatchQuery`/`SearchService`/`SearchRepository` ja tem cobertura
- * direta com dados reais em `tests/unit/main/search.service.test.ts` (via
- * `TranscriptRepository.createWithSegments`, o unico jeito de popular a tabela hoje).
+ * transcricao completa) - isso NAO significa que a transcricao real (`WHISPER_LOCAL`, ver
+ * `whisper-local-provider.ts`) nao exista mais amplamente no app. `buildFtsMatchQuery`/
+ * `SearchService`/`SearchRepository` (incluindo paginacao via `offset`/`totalCount`/`hasMore`) ja
+ * tem cobertura direta com dados reais em `tests/unit/main/search.service.test.ts` (via
+ * `TranscriptRepository.createWithSegments`, mais rapido que popular a tabela via UI).
  */
 test.describe('search', () => {
   test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)

@@ -1596,6 +1596,39 @@ registrada)**: destaque do trecho encontrado via `snippet()` do FTS5.
   REAL do FTS5 (não um mock) que o termo buscado chega marcado `highlighted: true` e o resto do
   trecho como texto normal. **434 testes, 37 arquivos**.
 
+**Refinamento (paginação)**: resolve a pendência registrada desde a Fase 4 ("busca não tem
+paginação nem contagem exposta") - `SearchRepository` sempre limitava a `DEFAULT_LIMIT` (50)
+resultados sem a UI nunca saber quantos existiam de verdade no total nem ter como pedir mais.
+
+- **`search.transcripts` passa a devolver `{ hits, totalCount, hasMore }`, não mais um array cru**
+  - mudança de contrato deliberada (não um campo extra opcional) porque toda vez que a UI
+  precisasse do total, teria que fazer ISSO de qualquer forma; melhor um objeto desde já do que um
+  segundo canal `search.count` paralelo sempre chamado junto.
+- **`totalCount` vem de uma segunda consulta `COUNT(*)` separada** (`SearchRepository.
+  countTranscriptSegments`, MESMO `MATCH`, sem `LIMIT`/`OFFSET`) — o `better-sqlite3`/`sql` crus
+  usados aqui não dão um jeito simples de obter `COUNT(*) OVER()` junto da página numa única
+  consulta; o custo extra é desprezível (reusa o mesmo índice FTS5) e sempre executa, mesmo numa
+  busca sem resultado (`totalCount: 0`, nunca pulada).
+- **`hasMore` é calculado no `SearchService`, nunca confiado à UI** (`offset + hits.length <
+  totalCount`) - evita a UI ter que reimplementar essa conta e arriscar divergir de `totalCount`/
+  `offset`/tamanho da página.
+- **`offset` no request tem `.default(0)`** - a UI só passa um valor explícito quando pagina de
+  verdade ("Carregar mais"); um novo submit do formulário sempre usa offset 0 implícito
+  (reinicia a busca do zero).
+- **`SearchPage` mostra "N de M resultados" acima da lista e um botão "Carregar mais"** que
+  ACUMULA os hits já exibidos (nunca substitui) - um novo submit do formulário SUBSTITUI (nova
+  busca do zero). `trimmedQuery` guarda a busca atual em estado separado do campo de texto
+  editável, pra "Carregar mais" nunca precisar que o usuário reenvie o formulário.
+- Testado via `search.service.test.ts` - `SearchService` com `totalCount`/`hasMore` corretos numa
+  busca vazia, num resultado único, restrito por `projectId`, e num offset além do fim dos
+  resultados (`hits: []`, `hasMore: false`, `totalCount` continua correto); mais um novo bloco
+  `SearchRepository pagination` testando `LIMIT`/`OFFSET`/`countTranscriptSegments` diretamente com
+  uma página pequena (2 de 3 segmentos), confirmando que duas páginas juntas cobrem todos os
+  resultados sem repetição. **472 testes, 40 arquivos**. Sem novo teste E2E - o suite de
+  `search.spec.ts` nunca popula `transcript_segments` de verdade (grava/transcreve sai caro demais
+  pra um teste de busca), então nunca teria como que exercitar uma segunda página; a paginação
+  tem cobertura direta e real via `search.service.test.ts`.
+
 ### Transcrição real: Whisper 100% local (Fase 5)
 
 Terceiro refinamento pos-SEARCH-001 - pedido explícito do usuário ("alguma alternativa mais

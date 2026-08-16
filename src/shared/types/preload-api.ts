@@ -38,7 +38,7 @@ import type {
   TranscriptionJobResponse,
   TranscriptResponse
 } from '../schemas/transcription.schema'
-import type { SearchHitResponse } from '../schemas/search.schema'
+import type { SearchTranscriptsResponse } from '../schemas/search.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
 import type { RecordingState } from './recording-state'
 
@@ -191,10 +191,14 @@ export interface TranscriptionApi {
 /**
  * SEARCH-001 (Fase 7 — Knowledge). `projectId` omitido busca em todos os projetos - o caso de uso
  * principal ("memória corporativa pesquisável"); passado, restringe a um projeto so (uso futuro
- * pela Biblioteca). Nunca lanca so por nao achar nada - devolve array vazio.
+ * pela Biblioteca). Nunca lanca so por nao achar nada - devolve `hits: []`.
+ *
+ * `offset` (refinamento "paginação") pagina uma busca já em andamento - a UI chama de novo com um
+ * `offset` maior pra "Carregar mais", acumulando os hits já exibidos. `totalCount`/`hasMore` no
+ * retorno dizem se ainda há mais pra buscar.
  */
 export interface SearchApi {
-  transcripts: (query: string, projectId?: string) => Promise<SearchHitResponse[]>
+  transcripts: (query: string, projectId?: string, offset?: number) => Promise<SearchTranscriptsResponse>
 }
 
 export interface SystemApi {

@@ -122,20 +122,22 @@ describe('SearchService', () => {
     transcriptRepository.createWithSegments(transcript, entities)
   }
 
-  it('returns an empty array for an empty query, without touching the database', () => {
-    expect(searchService.searchTranscripts('   ')).toEqual([])
+  it('returns an empty hits array (and totalCount 0) for an empty query, without touching the database', () => {
+    expect(searchService.searchTranscripts('   ')).toEqual({ hits: [], totalCount: 0, hasMore: false })
   })
 
-  it('returns an empty array when there are no transcripts at all', () => {
-    expect(searchService.searchTranscripts('reuniao')).toEqual([])
+  it('returns an empty hits array when there are no transcripts at all', () => {
+    expect(searchService.searchTranscripts('reuniao')).toEqual({ hits: [], totalCount: 0, hasMore: false })
   })
 
   it('finds a segment by an exact word match', () => {
     const project = createProject('Reuniao de sprint')
     seedTranscript(project.id, [{ startMs: 0, endMs: 1000, text: 'vamos revisar o prazo de entrega' }])
 
-    const hits = searchService.searchTranscripts('prazo')
+    const { hits, totalCount, hasMore } = searchService.searchTranscripts('prazo')
     expect(hits).toHaveLength(1)
+    expect(totalCount).toBe(1)
+    expect(hasMore).toBe(false)
     expect(hits[0]!.text).toBe('vamos revisar o prazo de entrega')
     expect(hits[0]!.projectId).toBe(project.id)
     expect(hits[0]!.projectTitle).toBe('Reuniao de sprint')
@@ -152,7 +154,7 @@ describe('SearchService', () => {
     const project = createProject('Projeto X')
     seedTranscript(project.id, [{ startMs: 0, endMs: 1000, text: 'essa reuniao foi produtiva' }])
 
-    const hits = searchService.searchTranscripts('reuni')
+    const { hits } = searchService.searchTranscripts('reuni')
     expect(hits).toHaveLength(1)
   })
 
@@ -164,11 +166,11 @@ describe('SearchService', () => {
     ])
 
     const bothWords = searchService.searchTranscripts('prazo entrega')
-    expect(bothWords).toHaveLength(1)
-    expect(bothWords[0]!.text).toContain('prazo')
+    expect(bothWords.hits).toHaveLength(1)
+    expect(bothWords.hits[0]!.text).toContain('prazo')
 
     const onlyOneWord = searchService.searchTranscripts('email')
-    expect(onlyOneWord).toHaveLength(1)
+    expect(onlyOneWord.hits).toHaveLength(1)
   })
 
   it('never breaks on a query containing quotes or FTS5 operator keywords', () => {
@@ -178,18 +180,20 @@ describe('SearchService', () => {
     expect(() => searchService.searchTranscripts('"ok" AND NOT xyz')).not.toThrow()
   })
 
-  it('restricts results to the given projectId when provided', () => {
+  it('restricts results (and totalCount) to the given projectId when provided', () => {
     const projectA = createProject('A')
     const projectB = createProject('B')
     seedTranscript(projectA.id, [{ startMs: 0, endMs: 1000, text: 'orcamento aprovado' }])
     seedTranscript(projectB.id, [{ startMs: 0, endMs: 1000, text: 'orcamento rejeitado' }])
 
     const scoped = searchService.searchTranscripts('orcamento', projectA.id)
-    expect(scoped).toHaveLength(1)
-    expect(scoped[0]!.projectId).toBe(projectA.id)
+    expect(scoped.hits).toHaveLength(1)
+    expect(scoped.totalCount).toBe(1)
+    expect(scoped.hits[0]!.projectId).toBe(projectA.id)
 
     const unscoped = searchService.searchTranscripts('orcamento')
-    expect(unscoped).toHaveLength(2)
+    expect(unscoped.hits).toHaveLength(2)
+    expect(unscoped.totalCount).toBe(2)
   })
 
   it('includes speaker when present and null when absent', () => {
@@ -199,8 +203,79 @@ describe('SearchService', () => {
       { startMs: 1000, endMs: 2000, text: 'ola pessoal' }
     ])
 
-    const hits = searchService.searchTranscripts('ola').sort((a, b) => a.startMs - b.startMs)
+    const hits = [...searchService.searchTranscripts('ola').hits].sort((a, b) => a.startMs - b.startMs)
     expect(hits[0]!.speaker).toBe('Ana')
     expect(hits[1]!.speaker).toBeNull()
+  })
+
+  it('SearchService.totalCount/hasMore stay correct at an offset beyond the end of the results', () => {
+    const project = createProject('Projeto Paginacao')
+    seedTranscript(project.id, [
+      { startMs: 0, endMs: 1000, text: 'pauta um' },
+      { startMs: 1000, endMs: 2000, text: 'pauta dois' },
+      { startMs: 2000, endMs: 3000, text: 'pauta tres' }
+    ])
+
+    const firstCall = searchService.searchTranscripts('pauta', undefined, 0)
+    expect(firstCall.totalCount).toBe(3)
+    expect(firstCall.hits).toHaveLength(3) // DEFAULT_LIMIT (50) nunca corta so 3 resultados
+    expect(firstCall.hasMore).toBe(false)
+
+    // Offset alem do total - hits vazio, hasMore sempre false, totalCount continua correto.
+    const beyondEnd = searchService.searchTranscripts('pauta', undefined, 10)
+    expect(beyondEnd.hits).toHaveLength(0)
+    expect(beyondEnd.totalCount).toBe(3)
+    expect(beyondEnd.hasMore).toBe(false)
+  })
+})
+
+describe('SearchRepository pagination (LIMIT/OFFSET/COUNT direct)', () => {
+  let client: DatabaseClient
+  let projectRepository: ProjectRepository
+  let transcriptRepository: TranscriptRepository
+  let searchRepository: SearchRepository
+
+  beforeEach(() => {
+    client = createTestDatabase()
+    projectRepository = new ProjectRepository(client.db)
+    transcriptRepository = new TranscriptRepository(client.db)
+    searchRepository = new SearchRepository(client.db)
+  })
+
+  afterEach(() => {
+    client.close()
+  })
+
+  it('LIMIT/OFFSET returns the correct slice, and countTranscriptSegments matches the true total (unaffected by LIMIT/OFFSET)', () => {
+    const projectId = randomUUID()
+    projectRepository.create({
+      id: projectId,
+      title: 'Projeto Paginacao Direta',
+      createdAt: new Date().toISOString(),
+      status: 'COMPLETED',
+      rootPath: `C:\\fake\\${projectId}`
+    })
+    const { transcript, segments } = buildTranscriptEntities(projectId, 'OPENAI', {
+      model: 'whisper-1',
+      language: 'pt',
+      segments: [
+        { startMs: 0, endMs: 1000, text: 'item um' },
+        { startMs: 1000, endMs: 2000, text: 'item dois' },
+        { startMs: 2000, endMs: 3000, text: 'item tres' }
+      ]
+    })
+    transcriptRepository.createWithSegments(transcript, segments)
+
+    expect(searchRepository.countTranscriptSegments('"item"*', undefined)).toBe(3)
+
+    const firstPage = searchRepository.searchTranscriptSegments('"item"*', undefined, 2, 0)
+    expect(firstPage).toHaveLength(2)
+
+    const secondPage = searchRepository.searchTranscriptSegments('"item"*', undefined, 2, 2)
+    expect(secondPage).toHaveLength(1)
+
+    // As duas paginas juntas cobrem os 3 segmentos, sem repeticao.
+    const allIds = [...firstPage, ...secondPage].map((row) => row.segmentId)
+    expect(new Set(allIds).size).toBe(3)
   })
 })

@@ -44,7 +44,12 @@ export interface SearchHitRow {
 export class SearchRepository {
   constructor(private readonly db: AppDatabase) {}
 
-  searchTranscriptSegments(ftsQuery: string, projectId: string | undefined, limit: number): SearchHitRow[] {
+  searchTranscriptSegments(
+    ftsQuery: string,
+    projectId: string | undefined,
+    limit: number,
+    offset: number
+  ): SearchHitRow[] {
     const rows = projectId
       ? this.db.all(sql`
           SELECT
@@ -63,7 +68,7 @@ export class SearchRepository {
           JOIN projects p ON p.id = t.project_id
           WHERE transcript_segments_fts MATCH ${ftsQuery} AND t.project_id = ${projectId}
           ORDER BY rank
-          LIMIT ${limit}
+          LIMIT ${limit} OFFSET ${offset}
         `)
       : this.db.all(sql`
           SELECT
@@ -82,8 +87,31 @@ export class SearchRepository {
           JOIN projects p ON p.id = t.project_id
           WHERE transcript_segments_fts MATCH ${ftsQuery}
           ORDER BY rank
-          LIMIT ${limit}
+          LIMIT ${limit} OFFSET ${offset}
         `)
     return rows as SearchHitRow[]
+  }
+
+  /** Refinamento "paginação" - conta o total de segmentos que casam com o MESMO `MATCH` (sem
+   * `LIMIT`/`OFFSET`), pra `SearchService` devolver `totalCount`/`hasMore` junto da página atual -
+   * uma segunda consulta separada (não dá pra obter via `COUNT(*) OVER()` de forma simples com o
+   * `better-sqlite3`/drizzle `sql` usados aqui), mas reusa o MESMO índice FTS5, custo desprezível. */
+  countTranscriptSegments(ftsQuery: string, projectId: string | undefined): number {
+    const row = projectId
+      ? this.db.get<{ total: number }>(sql`
+          SELECT COUNT(*) AS total
+          FROM transcript_segments_fts fts
+          JOIN transcript_segments ts ON ts.rowid = fts.rowid
+          JOIN transcripts t ON t.id = ts.transcript_id
+          WHERE transcript_segments_fts MATCH ${ftsQuery} AND t.project_id = ${projectId}
+        `)
+      : this.db.get<{ total: number }>(sql`
+          SELECT COUNT(*) AS total
+          FROM transcript_segments_fts fts
+          JOIN transcript_segments ts ON ts.rowid = fts.rowid
+          JOIN transcripts t ON t.id = ts.transcript_id
+          WHERE transcript_segments_fts MATCH ${ftsQuery}
+        `)
+    return row.total
   }
 }

@@ -7,9 +7,13 @@ import { IdSchema } from './common.schema'
  * omitido busca em TODAS as reuniões - o caso de uso principal descrito em
  * `01_PRODUCT_VISION_PRD.md` ("memória corporativa pesquisável").
  */
+/** `offset` (refinamento pós-SEARCH-002-refine, "paginação") pagina os resultados JÁ ordenados por
+ * `rank` (relevância nativa do FTS5) - nunca reordena nem afeta o `MATCH`, só desloca a janela
+ * `LIMIT`/`OFFSET` da consulta. Omitido = primeira página (equivalente a `0`). */
 export const SearchTranscriptsRequestSchema = z.object({
   query: z.string().min(1).max(200),
-  projectId: IdSchema.optional()
+  projectId: IdSchema.optional(),
+  offset: z.number().int().nonnegative().default(0)
 })
 export type SearchTranscriptsRequest = z.infer<typeof SearchTranscriptsRequestSchema>
 
@@ -35,4 +39,13 @@ export const SearchHitResponseSchema = z.object({
 })
 export type SearchHitResponse = z.infer<typeof SearchHitResponseSchema>
 
-export const SearchTranscriptsResponseSchema = z.array(SearchHitResponseSchema)
+/** Refinamento "paginação" - `totalCount` é o total de segmentos que casaram com a busca (não só
+ * os desta página), calculado por uma consulta `COUNT(*)` separada (`SearchRepository`) sobre o
+ * MESMO `MATCH`, sempre executada (o custo extra é desprezível pro FTS5 - já usa o mesmo índice).
+ * `hasMore` evita a UI precisar recalcular `offset + hits.length < totalCount` sozinha. */
+export const SearchTranscriptsResponseSchema = z.object({
+  hits: z.array(SearchHitResponseSchema),
+  totalCount: z.number().int().nonnegative(),
+  hasMore: z.boolean()
+})
+export type SearchTranscriptsResponse = z.infer<typeof SearchTranscriptsResponseSchema>

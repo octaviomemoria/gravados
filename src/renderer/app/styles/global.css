@@ -407,6 +407,13 @@ video.library-list__player {
   font-size: 0.85rem;
 }
 
+/* Refinamento "paginação" - contagem "N de M resultados" acima da lista. */
+.search-results__count {
+  font-size: 0.85rem;
+  color: var(--ms-color-text-muted);
+  margin: 0 0 var(--ms-space-2);
+}
+
 /* Refinamento pos-SEARCH-001 - termo(s) que casaram com a busca, destacados via
    `SearchService.parseSnippet` (dado estruturado, nunca HTML bruto). */
 .search-results__text mark {

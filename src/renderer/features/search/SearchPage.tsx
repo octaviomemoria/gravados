@@ -21,27 +21,51 @@ function formatTimestamp(ms: number): string {
  * `?projectId=&startMs=` (refinamento pos-AI-002-LOCAL) - `LibraryPage` expande aquele projeto e
  * posiciona o player minimo no instante exato assim que os metadados carregam.
  */
+/** Refinamento "paginação" - `search.transcripts` devolve `{ hits, totalCount, hasMore }` (não
+ * mais um array cru). Um novo submit REINICIA a paginação (offset 0, `hits` substituído);
+ * "Carregar mais" ACUMULA (offset = quantidade já exibida, `hits` concatenado) - `trimmedQuery`
+ * guarda a busca atual pra "Carregar mais" nunca precisar o usuário reenviar o formulário. */
 export function SearchPage() {
   const [query, setQuery] = useState('')
+  const [trimmedQuery, setTrimmedQuery] = useState('')
   const [hits, setHits] = useState<SearchHitResponse[] | null>(null)
+  const [totalCount, setTotalCount] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
   const [searching, setSearching] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  function runSearch(trimmed: string, offset: number, append: boolean): void {
+    setError(null)
+    window.meetingStudio.search
+      .transcripts(trimmed, undefined, offset)
+      .then((result) => {
+        setHits((current) => (append && current ? [...current, ...result.hits] : result.hits))
+        setTotalCount(result.totalCount)
+        setHasMore(result.hasMore)
+      })
+      .catch(() => setError('Nao foi possivel completar a busca.'))
+      .finally(() => (append ? setLoadingMore(false) : setSearching(false)))
+  }
 
   function handleSubmit(event: React.FormEvent): void {
     event.preventDefault()
     const trimmed = query.trim()
+    setTrimmedQuery(trimmed)
     if (!trimmed) {
       setHits(null)
+      setTotalCount(0)
+      setHasMore(false)
       setError(null)
       return
     }
     setSearching(true)
-    setError(null)
-    window.meetingStudio.search
-      .transcripts(trimmed)
-      .then((result) => setHits(result))
-      .catch(() => setError('Nao foi possivel completar a busca.'))
-      .finally(() => setSearching(false))
+    runSearch(trimmed, 0, false)
+  }
+
+  function handleLoadMore(): void {
+    setLoadingMore(true)
+    runSearch(trimmedQuery, hits?.length ?? 0, true)
   }
 
   return (
@@ -64,28 +88,38 @@ export function SearchPage() {
         <EmptyState message="Nenhum resultado. Busca funciona sobre transcricoes ja concluidas - se nenhuma reuniao foi transcrita ainda, nao ha nada pra encontrar." />
       )}
       {hits && hits.length > 0 && (
-        <ul className="search-results">
-          {hits.map((hit) => (
-            <li key={hit.segmentId}>
-              <div className="search-results__meta">
-                <Link to={`/library?projectId=${hit.projectId}&startMs=${hit.startMs}`}>
-                  {hit.projectTitle}
-                </Link>
-                <span> - {formatTimestamp(hit.startMs)}</span>
-                {hit.speaker && <span> - {hit.speaker}</span>}
-              </div>
-              <p className="search-results__text">
-                {hit.snippetParts.map((part, index) =>
-                  part.highlighted ? (
-                    <mark key={index}>{part.text}</mark>
-                  ) : (
-                    <span key={index}>{part.text}</span>
-                  )
-                )}
-              </p>
-            </li>
-          ))}
-        </ul>
+        <>
+          <p className="search-results__count">
+            {hits.length} de {totalCount} resultado{totalCount === 1 ? '' : 's'}
+          </p>
+          <ul className="search-results">
+            {hits.map((hit) => (
+              <li key={hit.segmentId}>
+                <div className="search-results__meta">
+                  <Link to={`/library?projectId=${hit.projectId}&startMs=${hit.startMs}`}>
+                    {hit.projectTitle}
+                  </Link>
+                  <span> - {formatTimestamp(hit.startMs)}</span>
+                  {hit.speaker && <span> - {hit.speaker}</span>}
+                </div>
+                <p className="search-results__text">
+                  {hit.snippetParts.map((part, index) =>
+                    part.highlighted ? (
+                      <mark key={index}>{part.text}</mark>
+                    ) : (
+                      <span key={index}>{part.text}</span>
+                    )
+                  )}
+                </p>
+              </li>
+            ))}
+          </ul>
+          {hasMore && (
+            <button type="button" onClick={handleLoadMore} disabled={loadingMore}>
+              {loadingMore ? 'Carregando...' : 'Carregar mais'}
+            </button>
+          )}
+        </>
       )}
     </div>
   )

@@ -1,6 +1,6 @@
 import { SNIPPET_OPEN_MARKER, SNIPPET_CLOSE_MARKER } from '../database/repositories/search.repository'
 import type { SearchRepository, SearchHitRow } from '../database/repositories/search.repository'
-import type { SearchHitResponse, SnippetPart } from '../../shared/schemas/search.schema'
+import type { SearchHitResponse, SearchTranscriptsResponse, SnippetPart } from '../../shared/schemas/search.schema'
 
 const DEFAULT_LIMIT = 50
 
@@ -83,11 +83,18 @@ function toSearchHitResponse(row: SearchHitRow): SearchHitResponse {
 export class SearchService {
   constructor(private readonly searchRepository: SearchRepository) {}
 
-  searchTranscripts(query: string, projectId?: string): SearchHitResponse[] {
+  /** `offset` (refinamento "paginação") desloca a janela de resultados sem afetar o `MATCH` -
+   * `totalCount` vem de uma segunda consulta (`countTranscriptSegments`, MESMO `ftsQuery`) sempre
+   * executada, mesmo numa busca sem resultado (`totalCount: 0`, nunca pulada). `hasMore` é
+   * derivado aqui (não confiado à UI) pra nunca divergir de `totalCount`/`offset`/tamanho da
+   * página. */
+  searchTranscripts(query: string, projectId?: string, offset = 0): SearchTranscriptsResponse {
     const ftsQuery = buildFtsMatchQuery(query)
-    if (!ftsQuery) return []
-    return this.searchRepository
-      .searchTranscriptSegments(ftsQuery, projectId, DEFAULT_LIMIT)
+    if (!ftsQuery) return { hits: [], totalCount: 0, hasMore: false }
+    const hits = this.searchRepository
+      .searchTranscriptSegments(ftsQuery, projectId, DEFAULT_LIMIT, offset)
       .map(toSearchHitResponse)
+    const totalCount = this.searchRepository.countTranscriptSegments(ftsQuery, projectId)
+    return { hits, totalCount, hasMore: offset + hits.length < totalCount }
   }
 }
