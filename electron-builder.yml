@@ -1,0 +1,71 @@
+# PACKAGE-WIN (refinamento pos-MVP). Gera um instalador Windows real do app ja construido em
+# `out/` (por `electron-vite build` - `pnpm build`, sempre roda ANTES do empacotamento, nunca
+# reconstruido por aqui). Sem `icon` customizado ainda (usa o padrao do electron-builder) -
+# refinamento cosmetico futuro, nao bloqueante pra gerar um .exe funcional.
+# `npmRebuild: false` - electron-builder por padrao tenta recompilar modulos nativos
+# (`@electron/rebuild`) contra a ABI exata do Electron antes de empacotar. Decisao ja registrada
+# pro projeto inteiro (ver README "Decisoes de arquitetura" #2): `better-sqlite3` 13.x usa binarios
+# N-API pre-compilados (`prebuilds/*.node`), estaveis entre Node e Electron sem rebuild - a
+# recompilacao automatica so falha aqui (caminho do projeto com espacos/parenteses quebra o
+# toolchain node-gyp) sem nenhum ganho, ja que o binario certo ja esta em `node_modules` e e
+# desempacotado via `asarUnpack` abaixo.
+npmRebuild: false
+
+appId: com.meetingstudio.app
+productName: Meeting Studio
+copyright: Copyright © 2026 Meeting Studio
+
+directories:
+  output: dist-installer
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.map"
+
+# `getMigrationsFolderPath()` (app-paths.ts) ja esperava isso desde muito antes deste incremento -
+# `app.isPackaged` faz o boot procurar as migrations em `process.resourcesPath/migrations`, nunca
+# dentro de `out/` (que so tem JS compilado - os `.sql` crus de `main/database/migrations/` nunca
+# passam pelo bundler, `drizzle-orm` os LE do disco em runtime). Achado real ao testar o instalador
+# gerado: sem este `extraResources`, o app abria e travava em "Falha ao aplicar migrations" no
+# primeiro boot - pasta padrao de migrations no pacote instalado ficava vazia.
+extraResources:
+  - from: src/main/database/migrations
+    to: migrations
+
+# `externalizeDepsPlugin` (electron.vite.config.ts) mantem as dependencias do processo main FORA
+# do bundle (require()'d em runtime) - o electron-builder empacota `node_modules` de producao
+# automaticamente a partir de `dependencies` no package.json, entao nada extra precisa ser listado
+# aqui alem do proprio `out/`.
+
+# Modulos nativos/binarios (.node/.exe) NUNCA funcionam de dentro do app.asar (Node/Electron nao
+# conseguem `dlopen`/`spawn` um arquivo dentro do arquivo archive) - `asarUnpack` os extrai pra
+# `app.asar.unpacked`, que o Electron redireciona transparentemente (mesmo caminho aparente) tanto
+# pra leitura de arquivo quanto pra spawn de processo. Cobre: `better-sqlite3` (binding nativo),
+# `ffmpeg-static`/`ffprobe-static` (binarios spawned via child_process), `onnxruntime-node` (binding
+# nativo usado por `@huggingface/transformers`), `sharp` (binding nativo, dependencia transitiva).
+asarUnpack:
+  - "**/node_modules/better-sqlite3/**"
+  - "**/node_modules/ffmpeg-static/**"
+  - "**/node_modules/ffprobe-static/**"
+  - "**/node_modules/onnxruntime-node/**"
+  - "**/node_modules/sharp/**"
+  - "**/node_modules/@img/**"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Meeting Studio
+
+# `asar: true` (padrao do electron-builder) - todo o resto do app fica compactado num unico
+# arquivo, exceto o que `asarUnpack` extrai explicitamente acima.

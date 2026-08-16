@@ -2867,20 +2867,98 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   uma busca só de espaços; a rota "Busca" também foi adicionada à lista existente de
   `navigation.spec.ts`. Passou limpo isolado (9/9 entre os dois arquivos, 54,9s, sem retry).
 
+### Empacotamento: instalador Windows
+
+Pedido explícito do usuário ("gere um empacotamento exe"). Até aqui o app só rodava via
+`pnpm dev`/`pnpm start` (ou o `iniciar-app.bat` criado no mesmo pedido) - nunca existiu um `.exe`
+instalável de verdade.
+
+- **`electron-builder` (não `electron-forge`)** - mesma escolha que a maioria dos projetos
+  `electron-vite` já usa por padrão, config declarativa via `electron-builder.yml` na raiz
+  (auto-detectado, sem precisar de um campo `"build"` no `package.json`).
+- **`asarUnpack` é a parte que importa de verdade nesta config** - todo o resto do app fica
+  compactado num `app.asar` (padrão), mas binários/módulos nativos NUNCA funcionam de dentro de um
+  arquivo `.asar` (Node não consegue `dlopen`/`spawn` um arquivo dentro do archive) - precisam ser
+  extraídos pra `app.asar.unpacked`, que o Electron redireciona transparentemente (mesmo caminho
+  aparente) tanto pra leitura de arquivo quanto pra `spawn` de processo. Cobre `better-sqlite3`
+  (binding nativo), `ffmpeg-static`/`ffprobe-static` (binários chamados via `child_process`),
+  `onnxruntime-node` (binding nativo usado por `@huggingface/transformers`) e `sharp`/`@img/*`
+  (binding nativo, dependência transitiva do Whisper local).
+- **Bug real encontrado testando o instalador gerado**: o app abria e travava em "Falha ao aplicar
+  migrations" no primeiro boot. `getMigrationsFolderPath()` (`app-paths.ts`) já esperava isso desde
+  muito antes deste incremento - `app.isPackaged` faz o boot procurar as migrations em
+  `process.resourcesPath/migrations`, nunca dentro de `out/` (que só tem JS compilado - os `.sql`
+  crus de `main/database/migrations/` nunca passam pelo bundler, o `drizzle-orm` os lê do disco em
+  runtime). Corrigido com `extraResources` (`{ from: src/main/database/migrations, to: migrations
+  }`) - a expectativa já existia no código, só faltava a config de empacotamento satisfazê-la.
+- **`npmRebuild: false`** - `electron-builder` por padrão tenta recompilar módulos nativos contra a
+  ABI exata do Electron antes de empacotar (`@electron/rebuild`). Achado real ao rodar pela primeira
+  vez: essa recompilação falhou (`Attempting to build a module with a space in the path` - o
+  caminho deste projeto tem espaços/parênteses, que quebram o toolchain `node-gyp`), mas de forma
+  NÃO fatal (o build continuou e produziu um instalador funcional, usando o binário `.node`
+  pré-compilado já presente em `node_modules/better-sqlite3/prebuilds/`) - mesma decisão já
+  registrada pro projeto inteiro (`better-sqlite3` 13.x usa N-API, estável entre Node/Electron sem
+  rebuild, ver "Decisões de arquitetura" #2). Desativar o rebuild automático elimina o erro
+  ruidoso (e o tempo gasto tentando) sem perder nada - o binário certo já está no lugar certo.
+- **Sem ícone customizado ainda** - usa o ícone padrão do `electron-builder`/Electron; trocar por um
+  ícone de marca é puramente cosmético, fica como refinamento futuro.
+- **NSIS configurado com instalação "não-oneClick"** (`allowToChangeInstallationDirectory: true`,
+  atalhos de Área de Trabalho e Menu Iniciar) - o usuário vê e confirma onde o app é instalado, em
+  vez de uma instalação silenciosa de um clique só.
+- **Instalador NÃO é assinado digitalmente** (nenhum certificado de assinatura de código
+  configurado) - o Windows SmartScreen pode mostrar um aviso "Windows protegeu seu PC"/"editor
+  desconhecido" na primeira execução; o usuário precisa clicar "Mais informações" → "Executar assim
+  mesmo". Certificado de assinatura é um custo recorrente real (não uma escolha técnica livre pra
+  resolver sozinho) - registrado como pendência, não bloqueante pra uso pessoal/testes.
+- **Validado gerando o instalador de verdade três vezes** (`pnpm dist:win`, ~225MB o
+  `win-unpacked/Meeting Studio.exe`) - confirmado que `better-sqlite3`/`ffmpeg-static`/
+  `ffprobe-static` saem corretamente desempacotados em
+  `win-unpacked/resources/app.asar.unpacked/node_modules/`, e um smoke test REAL rodando
+  `win-unpacked/Meeting Studio.exe` direto (`--user-data-dir` isolado, `MEETING_STUDIO_E2E_FAKE_
+  MEDIA=1`) confirmando processo de pé, zero erros no log e `meeting-studio.db` criado com sucesso
+  (foi essa execução real que pegou o bug das migrations acima - nenhum teste automatizado
+  existente cobria o boot de um app EMPACOTADO, só `pnpm dev`/`pnpm start`).
+- Novo script `pnpm dist:win` (`electron-vite build && electron-builder --win`) - sempre reconstrói
+  `out/` antes de empacotar, nunca empacota um build desatualizado. Saída em `dist-installer/`
+  (gitignored, mesmo padrão de `out/`/`dist/`).
+
+### Indicador explícito de espaço em disco (Fase 1)
+
+Resolve a pendência registrada desde o monitor de espaço em disco (RF-042): o texto sempre mostrava
+só o número de GB livres, sem nenhum selo visual explícito de "espaço OK" - só havia o banner de
+aviso, exibido apenas DURANTE uma gravação ativa (`useRecordingSession`), quando o espaço já estava
+baixo.
+
+- **Reusa a MESMA função pura (`classifyDiskSpace`) e os MESMOS limiares configurados em
+  Configurações** (`recordingPresets.diskSpaceWarningThresholdMb`/`.diskSpaceCriticalThresholdMb`) -
+  nunca duplica a lógica de classificação, só passa a mostrar o resultado também fora de uma
+  gravação (`DiskSpaceIndicator`, usado na Home).
+- **Busca do status é uma promise SEPARADA da busca do espaço livre em si**, com seu próprio catch -
+  uma falha ao buscar `recordingPresets` (ou a API estar indisponível, caso defensivo coberto por
+  teste) só faz o SELO de status ficar de fora; o número de GB livres (o dado principal) nunca
+  desaparece por causa disso.
+- Testado via `DiskSpaceIndicator.test.tsx` (4 testes novos - selo "Espaco OK"/"Espaco baixo"/
+  "Espaco critico" conforme o espaço livre cruza os limiares, e o caso defensivo de `settings`
+  indisponível).
+
 ## Pendências conhecidas
 
-- Empacotamento (`electron-builder`) e nuvem/colaboração — fora do escopo do MVP por desenho (ver
-  `11_ROADMAP_BACKLOG.md`, Fases 8-9).
+- Nuvem/colaboração — fora do escopo do MVP por desenho (ver `11_ROADMAP_BACKLOG.md`, Fases 8-9).
+  Empacotamento Windows (`electron-builder`) já existe (pedido explícito do usuário) - ver
+  [Empacotamento: instalador Windows](#empacotamento-instalador-windows) - mas sem ícone
+  customizado, sem assinatura de código (o instalador gerado não é assinado digitalmente, então o
+  Windows SmartScreen pode avisar "editor desconhecido" na primeira execução) e sem builds
+  macOS/Linux ainda.
 - **Transcrição via `OPENAI` segue sem implementação** (`WHISPER_LOCAL`, o provedor padrão de
   fato, transcreve de verdade desde o refinamento pós-SEARCH-001 - ver
   [Transcrição real: Whisper 100% local](#transcrição-real-whisper-100-local-fase-5)) - AI-002
   (a alternativa PAGA, aguardando o usuário) entregaria a integração real com a OpenAI, o
   consentimento explícito exigido por `09_SECURITY_PRIVACY_COMPLIANCE.md` §11 e o armazenamento
   seguro da chave de API (`safeStorage`).
-- Monitor de espaço em disco não tem indicador visual de "espaço OK" explícito, só o texto de
-  espaço livre sempre visível e o banner de aviso quando baixo (refinamento futuro cosmético, não
-  bloqueante). Correção do bug do `check-disk-space` (ver decisão #39) foi um benefício colateral
-  para o indicador pré-existente da Home, que estava silenciosamente quebrado desde a Fase 0.
+- Correção do bug do `check-disk-space` (ver decisão #39) foi um benefício colateral para o
+  indicador pré-existente da Home, que estava silenciosamente quebrado desde a Fase 0 - o selo
+  explícito de status ("Espaço OK"/"Espaço baixo"/"Espaço crítico") foi resolvido, ver
+  [Indicador explícito de espaço em disco](#indicador-explícito-de-espaço-em-disco-fase-1).
 - Segmentação por TEMPO não é exercitada em E2E (só a via testes unitários sintéticos, que não
   dependem de tempo real) — `timeSegmentationMinutes` é um inteiro em minutos (mínimo 1) no
   schema, sem caminho para forçar uma rotação em segundos num teste sem mudar o schema só por

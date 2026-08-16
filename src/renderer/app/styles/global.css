@@ -144,6 +144,30 @@ body {
   font-size: 0.82rem;
   color: var(--ms-color-text-muted);
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ms-space-2);
+}
+
+/* Refinamento pos-RF-042 - selo explicito de status ("Espaco OK"/"Espaco baixo"/"Espaco critico"),
+   reusando `classifyDiskSpace` (mesma logica ja usada durante uma gravacao ativa). Sem token
+   "success" dedicado neste design system - `ok` fica discreto (texto mudo), so warning/critical
+   ganham destaque de cor (mesmos tokens ja usados no banner de aviso de disco). */
+.disk-space-indicator__badge {
+  font-size: 0.72rem;
+  padding: 0.1em 0.5em;
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-color-border);
+}
+
+.disk-space-indicator--warning .disk-space-indicator__badge {
+  color: var(--ms-color-warning);
+  border-color: var(--ms-color-warning);
+}
+
+.disk-space-indicator--critical .disk-space-indicator__badge {
+  color: var(--ms-color-danger);
+  border-color: var(--ms-color-danger);
 }
 
 .feature-page h1 {
