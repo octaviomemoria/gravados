@@ -16,7 +16,9 @@ function formatTimestamp(ms: number): string {
  * (mesmo espirito de qualquer outra tela deste app: um clique, uma chamada, um resultado), ja que
  * FTS5 e rapido o bastante pra nao precisar de busca-enquanto-digita. Ate AI-002 (integracao real
  * de transcricao) estar implementada, todo resultado sera sempre vazio - um estado normal, nao um
- * bug, refletido no texto do `EmptyState`.
+ * bug, refletido no texto do `EmptyState`. Cada resultado renderiza `hit.snippetParts` (nao
+ * `hit.text` inteiro) - dado ja estruturado pelo `SearchService.parseSnippet` em partes
+ * destacadas/normais, nunca HTML bruto do banco (sem `dangerouslySetInnerHTML` em lugar nenhum).
  */
 export function SearchPage() {
   const [query, setQuery] = useState('')
@@ -69,7 +71,15 @@ export function SearchPage() {
                 <span> - {formatTimestamp(hit.startMs)}</span>
                 {hit.speaker && <span> - {hit.speaker}</span>}
               </div>
-              <p className="search-results__text">{hit.text}</p>
+              <p className="search-results__text">
+                {hit.snippetParts.map((part, index) =>
+                  part.highlighted ? (
+                    <mark key={index}>{part.text}</mark>
+                  ) : (
+                    <span key={index}>{part.text}</span>
+                  )
+                )}
+              </p>
             </li>
           ))}
         </ul>

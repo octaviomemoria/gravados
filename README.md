@@ -1567,11 +1567,34 @@ mesma linha divisória já registrada entre AI-001 (livre) e AI-002 (precisa do 
   termos, nunca quebra com aspas/operadores no texto de busca, escopo por `projectId`, campo
   `speaker` presente/ausente), e a atualização de `migrate.test.ts` (16 tabelas - 11 originais +
   `transcript_segments_fts` + 4 tabelas-sombra internas do FTS5 -, novo teste confirmando os três
-  gatilhos de sincronia). **429 testes, 37 arquivos**. 2 novos testes E2E reais em
-  `tests/e2e/search.spec.ts` (busca via UI mostra o estado "nenhum resultado" esperado - a única
-  forma de confirmar que o pipeline de IPC chega até a UI de ponta a ponta nesta fase -, e o botão
-  "Buscar" fica desabilitado pra uma busca só de espaços) mais a rota "Busca" adicionada à lista de
-  navegação existente em `navigation.spec.ts` - passaram limpos isolados (9/9, 54,9s).
+  gatilhos de sincronia). 2 novos testes E2E reais em `tests/e2e/search.spec.ts` (busca via UI
+  mostra o estado "nenhum resultado" esperado - a única forma de confirmar que o pipeline de IPC
+  chega até a UI de ponta a ponta nesta fase -, e o botão "Buscar" fica desabilitado pra uma busca
+  só de espaços) mais a rota "Busca" adicionada à lista de navegação existente em
+  `navigation.spec.ts` - passaram limpos isolados (9/9, 54,9s).
+
+**Refinamento (mesmo incremento, resolvendo uma pendência registrada logo depois de ser
+registrada)**: destaque do trecho encontrado via `snippet()` do FTS5.
+
+- **`snippet(transcript_segments_fts, 0, ...)` precisa do NOME REAL da tabela virtual, nunca do
+  alias usado no `FROM`/`JOIN`** — gotcha do SQLite/FTS5 descoberto ao rodar o teste real pela
+  primeira vez: `snippet(fts, ...)` (usando o alias `fts` do `FROM transcript_segments_fts fts`,
+  que funciona normalmente em `WHERE ... MATCH` e em `fts.rowid`) falha com
+  `SqliteError: no such column: fts`, porque as funções auxiliares especiais do FTS5
+  (`snippet()`/`highlight()`/`bm25()`) exigem o nome real da tabela, não um alias - reproduzido
+  isoladamente com `better-sqlite3` puro antes do fix, comentário registrado no topo de
+  `search.repository.ts` pra não repetir o erro em código futuro que use essas funções.
+- **Marcadores de controle (`\x01`/`\x02`), não tags HTML, delimitam o termo destacado no
+  `snippet()`** — `SearchService.parseSnippet` (função pura) divide o trecho recortado em
+  `{ text, highlighted }[]`; a UI (`SearchPage.tsx`) decide como desenhar (`<mark>` em volta de
+  cada parte `highlighted: true`) via JSX normal, nunca `dangerouslySetInnerHTML` - o banco nunca
+  tem a oportunidade de injetar HTML arbitrário no DOM, mesmo que um transcript futuro (AI-002)
+  viesse com texto malicioso de um provedor de IA comprometido.
+- Testado via 5 novos testes de `parseSnippet` isolado (sem marcador, um termo destacado,
+  múltiplos termos, string vazia, marcador de abertura sem fechamento correspondente nunca lança)
+  e uma asserção adicional no teste de busca exata existente, confirmando contra o `snippet()`
+  REAL do FTS5 (não um mock) que o termo buscado chega marcado `highlighted: true` e o resto do
+  trecho como texto normal. **434 testes, 37 arquivos**.
 
 ## Estrutura de diretórios
 
@@ -2455,8 +2478,11 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   atualização de `migrate.test.ts` pras 3 tabelas/3 índices novos, e **busca full-text local
   (SEARCH-001)** (`search.service.test.ts` - `buildFtsMatchQuery` isolado e `SearchService` de
   ponta a ponta contra um banco real semeado via `TranscriptRepository.createWithSegments` -, e a
-  atualização de `migrate.test.ts` pra 16 tabelas/3 gatilhos novos de sincronia do FTS5).
-  **429 testes, 37 arquivos.**
+  atualização de `migrate.test.ts` pra 16 tabelas/3 gatilhos novos de sincronia do FTS5), e
+  **destaque de trecho na busca** (`parseSnippet` isolado - sem marcador, um termo destacado,
+  múltiplos termos, string vazia, marcador desbalanceado nunca lança -, mais uma asserção contra o
+  `snippet()` REAL do FTS5 confirmando o termo buscado marcado `highlighted: true`).
+  **434 testes, 37 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2801,9 +2827,6 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - **Busca não tem paginação nem ordenação por relevância exposta na UI** - `SearchRepository`
   ordena por `rank` (relevância nativa do FTS5) e limita a 50 resultados fixos
   (`DEFAULT_LIMIT`), mas a UI não mostra "N de M resultados" nem oferece carregar mais.
-- **Busca não destaca o trecho que casou com a query no resultado** (sem `snippet()`/`highlight()`
-  do FTS5) - mostra o texto do segmento inteiro; um resultado com um segmento longo não deixa
-  óbvio qual parte bateu com a busca.
 - **Resultado de busca não pula direto pro instante do vídeo/áudio** - o link do resultado leva só
   pra Biblioteca (`/library`), não pra um player já posicionado em `startMs`; a Biblioteca ainda
   não tem um player embutido pra receber esse deep-link (ver pendência anterior sobre a Biblioteca
@@ -2880,8 +2903,8 @@ planejada a partir daqui:
    fase própria no roadmap - ver "Pendências conhecidas" para a lista completa acumulada (ex.:
    `shape: 'circle'` continua uma aproximação retangular tanto no preview quanto no export desde
    EXP-004b; `SIDE_BY_SIDE` continua fixo em 50/50; marcadores ganharam título/nota + visualização
-   na Biblioteca, mas ainda não têm edição/exclusão; busca ainda não destaca o trecho encontrado
-   nem pula direto pro instante no player).
+   na Biblioteca, mas ainda não têm edição/exclusão; busca já destaca o termo encontrado no
+   resultado, mas ainda não pula direto pro instante no player nem tem paginação).
 3. Fases 6/8/9 (meeting intelligence, nuvem, integrações) e as sub-fases 2/3 de "Pesquisa"
    (embeddings/busca semântica, perguntas sobre múltiplas reuniões - ambas dependentes de um
    provedor de IA externo, mesmo gate de AI-002) - o restante do trabalho pós-MVP, cada um exigindo

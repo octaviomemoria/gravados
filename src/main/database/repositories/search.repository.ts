@@ -1,6 +1,20 @@
 import { sql } from 'drizzle-orm'
 import type { AppDatabase } from '../client'
 
+/** Marcadores de controle (nunca aparecem em texto real digitado/transcrito) que o FTS5
+ * `snippet()` insere ao redor de cada termo que casou com a busca - `SearchService.parseSnippet`
+ * os usa pra dividir o trecho em partes destacadas/normais sem nunca expor HTML bruto do banco
+ * pro renderer (ver comentário completo em `search.service.ts`). */
+export const SNIPPET_OPEN_MARKER = ''
+export const SNIPPET_CLOSE_MARKER = ''
+const SNIPPET_MAX_TOKENS = 32
+
+// Gotcha do SQLite/FTS5: as funcoes auxiliares especiais (snippet(), highlight(), bm25())
+// exigem o NOME REAL da tabela virtual como primeiro argumento, nunca o alias usado no
+// FROM/JOIN (`fts` abaixo) - referenciar snippet(fts, ...) falha com `no such column: fts`,
+// mesmo o WHERE ... MATCH e os JOINs em fts.rowid funcionando normalmente com o alias.
+// Confirmado via reproducao isolada com better-sqlite3 puro antes de aplicar o fix.
+
 /** Uma linha crua devolvida pela junção `transcript_segments_fts` → `transcript_segments` →
  * `transcripts` → `projects` - os nomes das colunas vêm exatamente dos aliases SQL abaixo (`AS`),
  * `better-sqlite3` devolve as chaves do jeito que a query pediu. */
@@ -13,6 +27,9 @@ export interface SearchHitRow {
   endMs: number
   speaker: string | null
   text: string
+  /** Trecho recortado ao redor do primeiro trecho relevante (via `snippet()` do FTS5), com os
+   * termos que casaram envolvidos por `SNIPPET_OPEN_MARKER`/`SNIPPET_CLOSE_MARKER`. */
+  snippet: string
 }
 
 /**
@@ -38,7 +55,8 @@ export class SearchRepository {
             ts.start_ms AS startMs,
             ts.end_ms AS endMs,
             ts.speaker AS speaker,
-            ts.text AS text
+            ts.text AS text,
+            snippet(transcript_segments_fts, 0, ${SNIPPET_OPEN_MARKER}, ${SNIPPET_CLOSE_MARKER}, '...', ${SNIPPET_MAX_TOKENS}) AS snippet
           FROM transcript_segments_fts fts
           JOIN transcript_segments ts ON ts.rowid = fts.rowid
           JOIN transcripts t ON t.id = ts.transcript_id
@@ -56,7 +74,8 @@ export class SearchRepository {
             ts.start_ms AS startMs,
             ts.end_ms AS endMs,
             ts.speaker AS speaker,
-            ts.text AS text
+            ts.text AS text,
+            snippet(transcript_segments_fts, 0, ${SNIPPET_OPEN_MARKER}, ${SNIPPET_CLOSE_MARKER}, '...', ${SNIPPET_MAX_TOKENS}) AS snippet
           FROM transcript_segments_fts fts
           JOIN transcript_segments ts ON ts.rowid = fts.rowid
           JOIN transcripts t ON t.id = ts.transcript_id

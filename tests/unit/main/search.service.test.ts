@@ -1,9 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { createTestDatabase } from '../../fixtures/tmp-db'
-import { ProjectRepository, TranscriptRepository, SearchRepository } from '../../../src/main/database/repositories'
+import {
+  ProjectRepository,
+  TranscriptRepository,
+  SearchRepository,
+  SNIPPET_OPEN_MARKER,
+  SNIPPET_CLOSE_MARKER
+} from '../../../src/main/database/repositories'
 import { buildTranscriptEntities } from '../../../src/main/services/transcription.service'
-import { SearchService, buildFtsMatchQuery } from '../../../src/main/services/search.service'
+import { SearchService, buildFtsMatchQuery, parseSnippet } from '../../../src/main/services/search.service'
 import type { DatabaseClient } from '../../../src/main/database/client'
 
 /**
@@ -33,6 +39,45 @@ describe('buildFtsMatchQuery', () => {
 
   it('never lets FTS5 boolean operator keywords be interpreted as operators (quoted as literal text)', () => {
     expect(buildFtsMatchQuery('AND NOT')).toBe('"AND"* "NOT"*')
+  })
+})
+
+describe('parseSnippet', () => {
+  it('returns a single non-highlighted part when there is no marker at all', () => {
+    expect(parseSnippet('texto sem nenhum destaque')).toEqual([
+      { text: 'texto sem nenhum destaque', highlighted: false }
+    ])
+  })
+
+  it('splits a snippet with one highlighted term into three parts', () => {
+    const raw = `antes ${SNIPPET_OPEN_MARKER}prazo${SNIPPET_CLOSE_MARKER} depois`
+    expect(parseSnippet(raw)).toEqual([
+      { text: 'antes ', highlighted: false },
+      { text: 'prazo', highlighted: true },
+      { text: ' depois', highlighted: false }
+    ])
+  })
+
+  it('handles multiple highlighted terms in the same snippet', () => {
+    const raw = `${SNIPPET_OPEN_MARKER}prazo${SNIPPET_CLOSE_MARKER} de ${SNIPPET_OPEN_MARKER}entrega${SNIPPET_CLOSE_MARKER}`
+    expect(parseSnippet(raw)).toEqual([
+      { text: 'prazo', highlighted: true },
+      { text: ' de ', highlighted: false },
+      { text: 'entrega', highlighted: true }
+    ])
+  })
+
+  it('treats an empty string as a single empty non-highlighted part (no parts at all)', () => {
+    expect(parseSnippet('')).toEqual([])
+  })
+
+  it('never throws on an unbalanced open marker without a matching close marker', () => {
+    const raw = `texto ${SNIPPET_OPEN_MARKER}sem fechamento`
+    expect(() => parseSnippet(raw)).not.toThrow()
+    expect(parseSnippet(raw)).toEqual([
+      { text: 'texto ', highlighted: false },
+      { text: 'sem fechamento', highlighted: false }
+    ])
   })
 })
 
@@ -94,6 +139,13 @@ describe('SearchService', () => {
     expect(hits[0]!.text).toBe('vamos revisar o prazo de entrega')
     expect(hits[0]!.projectId).toBe(project.id)
     expect(hits[0]!.projectTitle).toBe('Reuniao de sprint')
+
+    // snippetParts vem do snippet() real do FTS5 (nao um mock) - confirma que o termo buscado
+    // chega marcado como `highlighted: true`, e o resto do trecho como texto normal.
+    const highlighted = hits[0]!.snippetParts.filter((part) => part.highlighted)
+    expect(highlighted.map((part) => part.text.toLowerCase())).toEqual(['prazo'])
+    const fullSnippetText = hits[0]!.snippetParts.map((part) => part.text).join('')
+    expect(fullSnippetText).toBe('vamos revisar o prazo de entrega')
   })
 
   it('matches by prefix (typing "reuni" matches "reuniao")', () => {

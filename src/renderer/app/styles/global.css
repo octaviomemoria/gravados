@@ -366,6 +366,15 @@ body {
   font-size: 0.85rem;
 }
 
+/* Refinamento pos-SEARCH-001 - termo(s) que casaram com a busca, destacados via
+   `SearchService.parseSnippet` (dado estruturado, nunca HTML bruto). */
+.search-results__text mark {
+  background: var(--ms-color-warning);
+  color: var(--ms-color-surface);
+  border-radius: 2px;
+  padding: 0 0.15em;
+}
+
 .setup-group {
   margin-bottom: var(--ms-space-8);
 }
