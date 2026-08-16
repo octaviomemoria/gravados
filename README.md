@@ -1669,6 +1669,40 @@ depois), nunca por reunião transcrita.
   documentada extensivamente neste README (`getByRole('status')` sem "REC" a tempo, RAM livre
   real confirmada em ~2,5GB/16GB no momento), nunca dentro do código deste incremento.
 
+### Player mínimo na Biblioteca + deep-link de busca (Fase 2/Fase 7)
+
+Refinamento seguinte a AI-002-LOCAL - agora que transcrições reais existem e a busca (SEARCH-001)
+encontra resultados de verdade, faltava fechar o laço: clicar num resultado e OUVIR o trecho.
+Resolve duas pendências registradas ao mesmo tempo ("resultado de busca não pula pro instante" e
+"`getProjectDetails` não expõe segmentos individualmente").
+
+- **`ProjectDetailsTrack` ganha `segments: {relativePath, startedAtMs, durationMs}[]`** (só
+  segmentos FINALIZADOS, ordenados por `seqIndex`) - o suficiente pra montar uma URL de player
+  (`buildMeetingMediaUrl`) sem precisar de um projeto de EDIÇÃO (que já tinha essa informação via
+  `getTimeline`, mas exige um `editProjectId` que a Biblioteca não tem).
+- **`pickPreviewTrack` (compartilhada com o editor desde EDIT-003/EXP-001) virou genérica**
+  (`<T extends { type: TimelineTrack['type'] }>`, antes fixada em `TimelineTrack[]`) - a Biblioteca
+  reusa a MESMA prioridade tela>câmera>primeira disponível sobre `ProjectDetailsTrack[]`, um
+  formato de objeto diferente, sem duplicar a lógica de escolha.
+- **Player MINIMO, deliberadamente sem sincronizar múltiplas trilhas nem concatenar múltiplos
+  segmentos de uma trilha rotacionada** - mesmo espírito da primeiríssima versão do preview do
+  editor (antes da sincronização multi-track chegar em EDIT-003 parte 2): só o PRIMEIRO segmento
+  finalizado da trilha escolhida. Suficiente pra "ouvir o trecho" que a busca aponta, desde que o
+  instante caia dentro desse primeiro segmento - limitação conhecida, registrada em "Pendências
+  conhecidas".
+- **Deep-link via query string** (`/library?projectId=&startMs=`, gerado por `SearchPage.tsx`) -
+  `LibraryPage` lê os parâmetros UMA VEZ na montagem (`useState` com inicializador, não um
+  `useEffect` reagindo a toda mudança de `searchParams`) - navegar pra longe e voltar sem esses
+  parâmetros não deveria reabrir o último projeto visto. Expande o projeto automaticamente e
+  posiciona o player (`currentTime`) assim que os metadados carregam (`onLoadedMetadata`).
+- Testado via `project.service.test.ts` (2 novos testes - segmentos finalizados aparecem
+  corretamente, um segmento ainda ABERTO nunca aparece nessa lista) e `preview-layout.test.ts` (1
+  novo teste confirmando `pickPreviewTrack` funciona sobre um objeto com forma diferente de
+  `TimelineTrack`). **457 testes, 39 arquivos**. 1 novo teste E2E (`library.spec.ts`) simulando o
+  deep-link exato que `SearchPage.tsx` gera (via `window.location.hash`, `HashRouter`) - confirma
+  expansão automática + player visível, sem precisar de uma busca/transcrição real de ponta a
+  ponta (já cobertas separadamente) - passou limpo isolado (20,0s).
+
 ## Estrutura de diretórios
 
 ```text
@@ -2804,9 +2838,10 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - Renomear só edita `title`; `notes` segue sem UI dedicada (já registrado acima). Não há
   validação de título duplicado entre projetos - dois projetos podem ter o mesmo título sem
   colisão (mesmo raciocínio já registrado na decisão sobre pastas nomeadas por UUID).
-- `getProjectDetails` não expõe a lista de segmentos individualmente (só o resumo por trilha:
-  contagem + bytes totais) - suficiente para o MVP, mas insuficiente para uma futura timeline de
-  edição, que precisará dos segmentos um a um.
+- `getProjectDetails` expõe os segmentos FINALIZADOS de cada trilha (`relativePath`/`startedAtMs`/
+  `durationMs`, refinamento pós-AI-002-LOCAL - resolveu a pendência anterior o suficiente pro
+  player mínimo da Biblioteca), mas ainda não o `id`/`byteSize`/`mimeType` de cada um nem os
+  segmentos NÃO finalizados (útil pra uma futura timeline de edição mais detalhada que a atual).
 - Projeto de edição ainda não tem renomear nem excluir (só a Biblioteca tem essas ações, para
   gravações - não para projetos de edição). Corte/split/remover-intervalo (EDIT-004/005/006),
   desfazer/refazer (EDIT-007), ganho/mudo (EDIT-008), fade in/out (EDIT-009), visibilidade/
@@ -2903,10 +2938,16 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 - **Busca não tem paginação nem ordenação por relevância exposta na UI** - `SearchRepository`
   ordena por `rank` (relevância nativa do FTS5) e limita a 50 resultados fixos
   (`DEFAULT_LIMIT`), mas a UI não mostra "N de M resultados" nem oferece carregar mais.
-- **Resultado de busca não pula direto pro instante do vídeo/áudio** - o link do resultado leva só
-  pra Biblioteca (`/library`), não pra um player já posicionado em `startMs`; a Biblioteca ainda
-  não tem um player embutido pra receber esse deep-link (ver pendência anterior sobre a Biblioteca
-  não ter tela de detalhes com player).
+- **Deep-link de busca só posiciona corretamente dentro do PRIMEIRO segmento finalizado da trilha
+  principal** (refinamento pós-AI-002-LOCAL) - o player mínimo da Biblioteca não concatena
+  múltiplos segmentos de uma trilha rotacionada nem sincroniza múltiplas trilhas; um resultado de
+  busca cujo `startMs` cai além da duração do primeiro segmento (gravação longa com rotação por
+  tempo/tamanho) não é alcançável ainda - exigiria a mesma sincronização multi-segmento/multi-trilha
+  que o editor já tem (EDIT-003 parte 2), portada pra Biblioteca.
+- **Player mínimo da Biblioteca não tem controle de layout PiP/lado-a-lado** - sempre mostra só a
+  trilha "principal" (tela>câmera>primeira disponível), nunca a composição completa que o editor
+  mostra; suficiente pra "ouvir o trecho", não pra revisar a gravação como um todo (use "Editar"
+  pra isso).
 - **Transcrição local (`WHISPER_LOCAL`) não tem indicador de progresso do DOWNLOAD do modelo** -
   a UI só mostra "Transcrevendo" (job `RUNNING`) do início ao fim; na primeira transcrição com um
   modelo novo (~150MB-1,5GB), isso pode levar minutos numa conexão lenta sem nenhum feedback mais

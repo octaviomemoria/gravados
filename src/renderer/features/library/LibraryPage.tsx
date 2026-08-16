@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '../../components/EmptyState'
 import { Button } from '../../components/Button'
 import { formatFileSize } from './format-file-size'
 import { formatElapsed } from '../recording/format-elapsed'
 import { TRACK_TYPE_LABELS } from './track-type-labels'
+import { pickPreviewTrack, isVideoTrackType } from '@shared/media/preview-layout'
+import { buildMeetingMediaUrl } from '@shared/constants/media-protocol'
 import type { ProjectResponse, ProjectDetailsResponse } from '@shared/schemas/project.schema'
 import type { MarkerResponse } from '@shared/schemas/markers.schema'
 import type { TranscriptionJobResponse } from '@shared/schemas/transcription.schema'
@@ -35,9 +37,40 @@ const TRANSCRIPTION_STATUS_LABELS: Record<TranscriptionJobResponse['status'], st
   CANCELED: 'Cancelada'
 }
 
+/**
+ * Refinamento pos-AI-002-LOCAL - player MINIMO dos detalhes expandidos: so o PRIMEIRO segmento
+ * finalizado da trilha "principal" (mesma prioridade tela>câmera>primeira disponível de
+ * `pickPreviewTrack`, já usada no editor desde a Fase 3). Não sincroniza múltiplas trilhas nem
+ * concatena múltiplos segmentos de uma trilha rotacionada - mesmo espírito da primeira versão do
+ * preview do editor (EDIT-003, antes da sincronização multi-track); suficiente pra "ouvir o
+ * trecho" que um resultado de busca aponta, desde que o instante caia dentro do primeiro
+ * segmento. Retorna `null` quando nenhuma trilha tem segmento finalizado algum.
+ */
+function pickPreviewSource(
+  tracks: ProjectDetailsResponse['tracks']
+): { relativePath: string; isVideo: boolean } | null {
+  const tracksWithSegments = tracks.filter((track) => track.segments.length > 0)
+  const track = pickPreviewTrack(tracksWithSegments)
+  if (!track) return null
+  return { relativePath: track.segments[0]!.relativePath, isVideo: isVideoTrackType(track.type) }
+}
+
 /** RF-017: lista de reunioes. Consulta real via IPC (`library.list`, alias de `project.list`). */
 export function LibraryPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  // Refinamento pos-AI-002-LOCAL - deep-link de um resultado de busca (`SearchPage.tsx`):
+  // `?projectId=...&startMs=...` expande automaticamente aquele projeto e posiciona o player no
+  // instante exato. Lido uma unica vez na montagem (`useState` inicializado por funcao, nao um
+  // `useEffect` disparando em toda mudanca de searchParams) - navegar embora e voltar pra
+  // Biblioteca sem esses parametros nao deveria reabrir o ultimo projeto visto.
+  const [deepLinkProjectId] = useState(() => searchParams.get('projectId'))
+  const [deepLinkStartMs] = useState(() => {
+    const raw = searchParams.get('startMs')
+    const parsed = raw === null ? NaN : Number.parseInt(raw, 10)
+    return Number.isFinite(parsed) ? parsed : null
+  })
+  const playerRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null)
   const [projects, setProjects] = useState<ProjectResponse[] | null>(null)
   const [error, setError] = useState(false)
   // Id do projeto cujo "Abrir pasta" acabou de falhar (pasta movida/apagada por fora do app) -
@@ -108,6 +141,16 @@ export function LibraryPage() {
       cancelled = true
     }
   }, [])
+
+  // Refinamento pos-AI-002-LOCAL - expande automaticamente o projeto do deep-link assim que a
+  // lista carrega (precisa da lista carregada so pra `handleToggleDetails` funcionar igual a um
+  // clique manual - a funcao nao depende da lista em si, so do `projectId`).
+  useEffect(() => {
+    if (deepLinkProjectId && projects) {
+      void handleToggleDetails(deepLinkProjectId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- so na primeira vez que `projects` deixa de ser null.
+  }, [projects !== null])
 
   // AI-001 - enquanto o job de transcricao estiver QUEUED/RUNNING, consulta
   // `transcription.getStatus` a cada 1s, mesmo padrao ja usado pra progresso de exportacao em
@@ -413,6 +456,45 @@ export function LibraryPage() {
                           ))}
                         </ul>
                       )}
+                      {/* Refinamento pos-AI-002-LOCAL - player minimo (primeiro segmento da
+                          trilha principal, ver `pickPreviewSource`); se um resultado de busca
+                          trouxe pra ca (`?projectId=&startMs=`), posiciona automaticamente no
+                          instante assim que os metadados carregam. */}
+                      {(() => {
+                        const source = pickPreviewSource(details.tracks)
+                        if (!source) return null
+                        const src = buildMeetingMediaUrl(project.id, source.relativePath)
+                        const handleLoadedMetadata = () => {
+                          if (
+                            deepLinkProjectId === project.id &&
+                            deepLinkStartMs !== null &&
+                            playerRef.current
+                          ) {
+                            playerRef.current.currentTime = deepLinkStartMs / 1000
+                          }
+                        }
+                        return source.isVideo ? (
+                          <video
+                            ref={(el) => {
+                              playerRef.current = el
+                            }}
+                            className="library-list__player"
+                            src={src}
+                            controls
+                            onLoadedMetadata={handleLoadedMetadata}
+                          />
+                        ) : (
+                          <audio
+                            ref={(el) => {
+                              playerRef.current = el
+                            }}
+                            className="library-list__player"
+                            src={src}
+                            controls
+                            onLoadedMetadata={handleLoadedMetadata}
+                          />
+                        )
+                      })()}
                       {/* RF-016 - `markers` so aparece depois de resolvido (null enquanto a busca
                           de `markers.list` esta em voo) - sem indicador de carregamento proprio,
                           discreto o bastante pra nao competir com o "Carregando detalhes..." de

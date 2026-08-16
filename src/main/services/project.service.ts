@@ -67,11 +67,19 @@ export class ProjectService {
 
     const tracks = this.trackRepository.listByProject(id).map((track) => {
       const segments = this.segmentRepository.listByTrack(track.id)
+      const finalizedSegments = segments
+        .filter((segment) => segment.finalized)
+        .sort((a, b) => a.seqIndex - b.seqIndex)
       return {
         id: track.id,
         type: track.type,
         segmentCount: segments.length,
-        totalBytes: segments.reduce((sum, segment) => sum + segment.byteSize, 0)
+        totalBytes: segments.reduce((sum, segment) => sum + segment.byteSize, 0),
+        segments: finalizedSegments.map((segment) => ({
+          relativePath: segment.relativePath,
+          startedAtMs: segment.startedAtMs,
+          durationMs: segment.durationMs
+        }))
       }
     })
     const totalBytes = tracks.reduce((sum, track) => sum + track.totalBytes, 0)

@@ -14,11 +14,12 @@ function formatTimestamp(ms: number): string {
  * SEARCH-001 (Fase 7 — Knowledge). Busca full-text 100% local sobre transcricoes ja concluidas
  * (via `search.transcripts`, FTS5). Sem debounce/polling - dispara so no submit do formulario
  * (mesmo espirito de qualquer outra tela deste app: um clique, uma chamada, um resultado), ja que
- * FTS5 e rapido o bastante pra nao precisar de busca-enquanto-digita. Ate AI-002 (integracao real
- * de transcricao) estar implementada, todo resultado sera sempre vazio - um estado normal, nao um
- * bug, refletido no texto do `EmptyState`. Cada resultado renderiza `hit.snippetParts` (nao
- * `hit.text` inteiro) - dado ja estruturado pelo `SearchService.parseSnippet` em partes
- * destacadas/normais, nunca HTML bruto do banco (sem `dangerouslySetInnerHTML` em lugar nenhum).
+ * FTS5 e rapido o bastante pra nao precisar de busca-enquanto-digita. Cada resultado renderiza
+ * `hit.snippetParts` (nao `hit.text` inteiro) - dado ja estruturado pelo
+ * `SearchService.parseSnippet` em partes destacadas/normais, nunca HTML bruto do banco (sem
+ * `dangerouslySetInnerHTML` em lugar nenhum). O link do titulo do projeto leva pra Biblioteca com
+ * `?projectId=&startMs=` (refinamento pos-AI-002-LOCAL) - `LibraryPage` expande aquele projeto e
+ * posiciona o player minimo no instante exato assim que os metadados carregam.
  */
 export function SearchPage() {
   const [query, setQuery] = useState('')
@@ -67,7 +68,9 @@ export function SearchPage() {
           {hits.map((hit) => (
             <li key={hit.segmentId}>
               <div className="search-results__meta">
-                <Link to={`/library`}>{hit.projectTitle}</Link>
+                <Link to={`/library?projectId=${hit.projectId}&startMs=${hit.startMs}`}>
+                  {hit.projectTitle}
+                </Link>
                 <span> - {formatTimestamp(hit.startMs)}</span>
                 {hit.speaker && <span> - {hit.speaker}</span>}
               </div>

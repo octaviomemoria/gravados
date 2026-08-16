@@ -43,6 +43,15 @@ describe('pickPreviewTrack', () => {
   it('returns null when there are no tracks at all', () => {
     expect(pickPreviewTrack([])).toBeNull()
   })
+
+  // Refinamento pos-AI-002-LOCAL - `pickPreviewTrack` passou a ser generica (`T extends { type }`)
+  // pra a Biblioteca poder reusa-la sobre `ProjectDetailsTrack[]` (gravacao crua, sem projeto de
+  // edicao) - mesma prioridade tela>câmera>primeira disponível, so com uma forma de objeto
+  // diferente de `TimelineTrack`.
+  it('works with a differently-shaped object that only has a "type" field (e.g. ProjectDetailsTrack)', () => {
+    const rawTracks = [{ type: 'MICROPHONE' as const, id: 'a' }, { type: 'SCREEN' as const, id: 'b' }]
+    expect(pickPreviewTrack(rawTracks)?.id).toBe('b')
+  })
 })
 
 describe('isVideoTrackType', () => {

@@ -203,4 +203,51 @@ test.describe('library (details, rename, delete)', () => {
     const status = listItem.locator('.library-list__transcription-status')
     await expect(status).toContainText('Concluida', { timeout: POLL_TIMEOUT_MS })
   })
+
+  /**
+   * Refinamento pos-AI-002-LOCAL - deep-link de um resultado de busca (`SearchPage.tsx`,
+   * `?projectId=&startMs=`) direto pra Biblioteca: expande automaticamente o projeto certo e
+   * mostra o player minimo (`pickPreviewSource`, primeiro segmento da trilha principal). Navega
+   * via `window.location.hash` (HashRouter, `App.tsx`) simulando exatamente o link que
+   * `SearchPage.tsx` gera, sem precisar de uma transcricao/busca real - o alvo deste teste e a
+   * Biblioteca reagir ao deep-link, ja coberto separadamente por `search.spec.ts`.
+   */
+  test('auto-expands and renders a player when navigated to via a search deep-link', async () => {
+    test.info().setTimeout(LIBRARY_TEST_TIMEOUT_MS)
+    const title = `Reuniao de teste E2E - deep-link ${Date.now()}`
+
+    await openRecordingSetup(appWindow)
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+    await appWindow.getByLabel('Titulo da reuniao').fill(title)
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const { id: projectId, rootPath } = await getActiveProjectPaths(appWindow)
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+    await expect
+      .poll(() => fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de audio ser persistido em disco'
+      })
+      .toBe(true)
+
+    await appWindow.getByRole('button', { name: 'Parar' }).click()
+    await expect(appWindow.getByRole('button', { name: 'Iniciar gravacao' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    await appWindow.evaluate((id) => {
+      window.location.hash = `#/library?projectId=${id}&startMs=500`
+    }, projectId)
+
+    const listItem = appWindow.locator('.library-list__item').filter({ hasText: title })
+    await expect(listItem).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    // Expandiu SOZINHO, sem clicar "Detalhes" - o proprio deep-link disparou.
+    await expect(listItem.getByText('Microfone:', { exact: false })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(listItem.locator('.library-list__player')).toBeVisible()
+  })
 })

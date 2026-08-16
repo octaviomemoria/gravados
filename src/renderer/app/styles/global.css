@@ -309,6 +309,19 @@ body {
   padding-left: var(--ms-space-4);
 }
 
+/* Refinamento pos-AI-002-LOCAL - player minimo (primeiro segmento da trilha principal) nos
+   detalhes expandidos da Biblioteca. */
+.library-list__player {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  margin: var(--ms-space-3) 0;
+}
+
+video.library-list__player {
+  max-height: 270px;
+}
+
 /* RF-016 - lista de marcadores nos detalhes expandidos da Biblioteca, mesmo tratamento visual da
    lista de trilhas. */
 .library-list__markers {

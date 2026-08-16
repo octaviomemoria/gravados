@@ -60,6 +60,18 @@ export const DeleteProjectRequestSchema = z.object({ id: IdSchema })
 export type DeleteProjectRequest = z.infer<typeof DeleteProjectRequestSchema>
 export const DeleteProjectResponseSchema = z.object({ deleted: z.boolean() })
 
+/** Refinamento pos-AI-002-LOCAL - segmento FINALIZADO de uma trilha, exposto pra Biblioteca poder
+ * montar um player mínimo (`buildMeetingMediaUrl(projectId, relativePath)`) sem precisar de um
+ * projeto de edição (que é o único lugar que já tinha essa informação, via `getTimeline`).
+ * Resolve a pendência registrada "getProjectDetails não expõe a lista de segmentos
+ * individualmente". */
+export const ProjectDetailsSegmentSchema = z.object({
+  relativePath: z.string(),
+  startedAtMs: z.number().int().nonnegative(),
+  durationMs: z.number().int().nonnegative().nullable()
+})
+export type ProjectDetailsSegment = z.infer<typeof ProjectDetailsSegmentSchema>
+
 /**
  * LIB-002: resumo por trilha (tipo, quantos segmentos, bytes totais) agregado DIRETO do banco
  * (`segments.byteSize`) - nunca escaneando o disco de novo, já que o próprio banco já mantém o
@@ -69,7 +81,8 @@ export const ProjectDetailsTrackSchema = z.object({
   id: IdSchema,
   type: z.enum(TRACK_TYPES),
   segmentCount: z.number().int().nonnegative(),
-  totalBytes: z.number().int().nonnegative()
+  totalBytes: z.number().int().nonnegative(),
+  segments: z.array(ProjectDetailsSegmentSchema)
 })
 export type ProjectDetailsTrack = z.infer<typeof ProjectDetailsTrackSchema>
 

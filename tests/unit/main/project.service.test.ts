@@ -87,6 +87,27 @@ describe('ProjectService', () => {
       const camera = result.tracks.find((track) => track.type === 'CAMERA')
       expect(mic).toMatchObject({ segmentCount: 1, totalBytes: 3 })
       expect(camera).toMatchObject({ segmentCount: 1, totalBytes: 5 })
+      // Refinamento pos-AI-002-LOCAL - `segments` expõe o suficiente pra Biblioteca montar uma URL
+      // de player (`buildMeetingMediaUrl`) sem precisar de um projeto de edição.
+      expect(mic!.segments).toHaveLength(1)
+      expect(mic!.segments[0]!.relativePath).toMatch(/microphone.*\.webm$/)
+      expect(mic!.segments[0]!.startedAtMs).toBeGreaterThan(0)
+    })
+
+    it('only includes FINALIZED segments in the per-track segments list', async () => {
+      const project = await service.createProject('Reuniao com segmento aberto')
+      const { tracks } = await manager.start(project.id, ['MICROPHONE'])
+      const micTrackId = findTrack(tracks, 'MICROPHONE')
+      // Um chunk sozinho, sem `stop()`, deixa o segmento aberto (nunca finalizado) - nao deveria
+      // aparecer na lista usada pra montar um player (arquivo ainda em escrita).
+      await manager.appendChunk(micTrackId, 1, 0, 'audio/webm', new Uint8Array([1, 2, 3]))
+
+      const result = service.getProjectDetails(project.id)
+      const mic = result.tracks.find((track) => track.type === 'MICROPHONE')
+      expect(mic!.segmentCount).toBe(1)
+      expect(mic!.segments).toEqual([])
+
+      await manager.stop(project.id)
     })
   })
 

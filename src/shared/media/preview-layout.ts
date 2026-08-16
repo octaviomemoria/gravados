@@ -16,8 +16,14 @@ const VIDEO_TRACK_TYPES: ReadonlyArray<TimelineTrack['type']> = ['SCREEN', 'CAME
  * que o preview ja usa, senao o vídeo exportado poderia mostrar um arranjo DIFERENTE do que o
  * usuário viu no editor (um bug de confiança, nao so cosmético). Reusar a mesma função pura dos
  * dois lados garante que preview e exportação NUNCA divergem por construção.
+ *
+ * Genérica (`T extends { type: TimelineTrack['type'] }`, não fixada em `TimelineTrack[]`) desde o
+ * refinamento pós-AI-002-LOCAL - a Biblioteca reusa a MESMA prioridade tela>câmera>primeira
+ * disponível pro player mínimo dos detalhes expandidos, mas só tem `ProjectDetailsTrack[]`
+ * (gravação crua, sem projeto de edição) - nunca duplicar esta lógica pra um segundo tipo de
+ * trilha.
  */
-export function pickPreviewTrack(tracks: TimelineTrack[]): TimelineTrack | null {
+export function pickPreviewTrack<T extends { type: TimelineTrack['type'] }>(tracks: T[]): T | null {
   for (const type of VIDEO_TRACK_TYPES) {
     const track = tracks.find((candidate) => candidate.type === type)
     if (track) return track
