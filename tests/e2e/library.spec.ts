@@ -9,7 +9,10 @@ const MAIN_ENTRY = resolve(APP_ROOT, 'out/main/index.js')
 const BUILD_MISSING_MESSAGE = 'Build ausente - rode "pnpm build" antes de "pnpm test:e2e".'
 const POLL_TIMEOUT_MS = 40_000
 const SELECT_TIMEOUT_MS = 25_000
-const LIBRARY_TEST_TIMEOUT_MS = 90_000
+// Refinamento pós-LIB-PLAYER (edição/exclusão de marcadores) - o primeiro teste deste arquivo
+// ganhou passos reais adicionais (editar marcador, salvar, excluir marcador com confirmação),
+// alongando o tempo total; 90s ficou apertado demais mesmo sob carga normal de máquina.
+const LIBRARY_TEST_TIMEOUT_MS = 150_000
 
 function fileHasBytes(path: string): boolean {
   return existsSync(path) && statSync(path).size > 0
@@ -130,6 +133,29 @@ test.describe('library (details, rename, delete)', () => {
     // uma tela de verdade consome o resultado (antes so era exercitado por teste via `evaluate`).
     await expect(listItem.getByText('Ponto chave', { exact: false })).toBeVisible()
     await expect(listItem.getByText('Revisar depois', { exact: false })).toBeVisible()
+
+    // --- Editar marcador (refinamento pós-LIB-PLAYER, resolve a pendência "marcadores não têm
+    // edição/exclusão depois de criados"). Edita título/nota inline, confirma que o texto antigo
+    // sumiu e o novo aparece.
+    await listItem.getByRole('button', { name: 'Editar marcador' }).click()
+    const markerTitleInput = listItem.getByLabel('Titulo do marcador')
+    const markerNoteInput = listItem.getByLabel('Nota do marcador')
+    await markerTitleInput.fill('Ponto revisado')
+    await markerNoteInput.fill('Ja revisado')
+    await listItem.getByRole('button', { name: 'Salvar' }).click()
+    await expect(listItem.getByText('Ponto revisado', { exact: false })).toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(listItem.getByText('Ja revisado', { exact: false })).toBeVisible()
+    await expect(listItem.getByText('Ponto chave', { exact: false })).not.toBeVisible()
+
+    // --- Excluir marcador: exige confirmacao explicita, mesmo padrao de excluir um projeto.
+    await listItem.getByRole('button', { name: 'Excluir marcador' }).click()
+    await listItem.getByRole('button', { name: 'Sim, excluir marcador' }).click()
+    await expect(listItem.getByText('Ponto revisado', { exact: false })).not.toBeVisible({
+      timeout: POLL_TIMEOUT_MS
+    })
+    await expect(listItem.getByText('Nenhum marcador nesta gravacao', { exact: false })).toBeVisible()
 
     // --- Renomear (LIB-004). Uma vez em modo de edicao, o titulo original deixa de aparecer como
     // TEXTO no DOM (vira o `value` de um `<input>`, que `hasText` nao enxerga) - entao os

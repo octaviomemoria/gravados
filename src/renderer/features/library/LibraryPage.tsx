@@ -95,6 +95,16 @@ export function LibraryPage() {
   // detalhes de aparecer (ver `handleToggleDetails`) - sao dados independentes.
   const [markers, setMarkers] = useState<MarkerResponse[] | null>(null)
 
+  // Refinamento pós-LIB-PLAYER - edição/exclusão de marcadores, mesmo padrão já usado pra
+  // renomear/excluir um projeto (edição inline + confirmação explícita antes de excluir).
+  const [editingMarkerId, setEditingMarkerId] = useState<string | null>(null)
+  const [markerEditTitle, setMarkerEditTitle] = useState('')
+  const [markerEditNote, setMarkerEditNote] = useState('')
+  const [markerSavingId, setMarkerSavingId] = useState<string | null>(null)
+  const [markerErrorId, setMarkerErrorId] = useState<string | null>(null)
+  const [confirmDeleteMarkerId, setConfirmDeleteMarkerId] = useState<string | null>(null)
+  const [markerDeletingId, setMarkerDeletingId] = useState<string | null>(null)
+
   // AI-001 (Fase 5 - Transcrição) - mesmo padrao "sob demanda ao expandir" de `markers`/`details`.
   // `transcriptionJob` e sempre o mais RECENTE (a lista ja vem ordenada por `createdAt` desc,
   // `TranscriptionJobRepository.listByProject`) - nunca mais de um "em voo" por vez nesta UI.
@@ -234,6 +244,53 @@ export function LibraryPage() {
       setTranscriptionJob(jobs[0] ?? null)
     } catch {
       setTranscriptionJob(null)
+    }
+  }
+
+  function handleStartMarkerEdit(marker: MarkerResponse): void {
+    setMarkerErrorId(null)
+    setEditingMarkerId(marker.id)
+    setMarkerEditTitle(marker.title ?? '')
+    setMarkerEditNote(marker.note ?? '')
+  }
+
+  function handleCancelMarkerEdit(): void {
+    setEditingMarkerId(null)
+    setMarkerEditTitle('')
+    setMarkerEditNote('')
+  }
+
+  /** Refinamento pós-LIB-PLAYER - campo vazio salva como `null` (limpa), nao como string vazia
+   * (o schema `UpdateMarkerRequestSchema` rejeita string vazia via `.min(1)`, mesma regra ja
+   * usada na criacao em `AddMarkerRequestSchema`). */
+  async function handleSaveMarkerEdit(markerId: string): Promise<void> {
+    setMarkerErrorId(null)
+    setMarkerSavingId(markerId)
+    try {
+      const updated = await window.meetingStudio.markers.update(markerId, {
+        title: markerEditTitle.trim() === '' ? null : markerEditTitle.trim(),
+        note: markerEditNote.trim() === '' ? null : markerEditNote.trim()
+      })
+      setMarkers((current) => current?.map((m) => (m.id === markerId ? updated : m)) ?? null)
+      setEditingMarkerId(null)
+    } catch {
+      setMarkerErrorId(markerId)
+    } finally {
+      setMarkerSavingId(null)
+    }
+  }
+
+  async function handleDeleteMarker(markerId: string): Promise<void> {
+    setMarkerErrorId(null)
+    setMarkerDeletingId(markerId)
+    try {
+      await window.meetingStudio.markers.delete(markerId)
+      setMarkers((current) => current?.filter((m) => m.id !== markerId) ?? null)
+      setConfirmDeleteMarkerId(null)
+    } catch {
+      setMarkerErrorId(markerId)
+    } finally {
+      setMarkerDeletingId(null)
     }
   }
 
@@ -506,13 +563,68 @@ export function LibraryPage() {
                             <p>Nenhum marcador nesta gravacao.</p>
                           ) : (
                             <ul className="library-list__markers">
-                              {markers.map((marker) => (
-                                <li key={marker.id}>
-                                  {formatElapsed(marker.timestampMs)}
-                                  {marker.title && <strong> — {marker.title}</strong>}
-                                  {marker.note && <span className="library-list__marker-note"> {marker.note}</span>}
-                                </li>
-                              ))}
+                              {markers.map((marker) =>
+                                editingMarkerId === marker.id ? (
+                                  <li key={marker.id} className="library-list__marker-edit">
+                                    <input
+                                      aria-label="Titulo do marcador"
+                                      value={markerEditTitle}
+                                      onChange={(event) => setMarkerEditTitle(event.target.value)}
+                                      placeholder="Titulo (opcional)"
+                                    />
+                                    <input
+                                      aria-label="Nota do marcador"
+                                      value={markerEditNote}
+                                      onChange={(event) => setMarkerEditNote(event.target.value)}
+                                      placeholder="Nota (opcional)"
+                                    />
+                                    <Button
+                                      variant="secondary"
+                                      disabled={markerSavingId === marker.id}
+                                      onClick={() => void handleSaveMarkerEdit(marker.id)}
+                                    >
+                                      Salvar
+                                    </Button>
+                                    <Button variant="secondary" onClick={handleCancelMarkerEdit}>
+                                      Cancelar
+                                    </Button>
+                                    {markerErrorId === marker.id && (
+                                      <p className="library-list__error">Nao foi possivel salvar o marcador.</p>
+                                    )}
+                                  </li>
+                                ) : (
+                                  <li key={marker.id}>
+                                    {formatElapsed(marker.timestampMs)}
+                                    {marker.title && <strong> — {marker.title}</strong>}
+                                    {marker.note && <span className="library-list__marker-note"> {marker.note}</span>}
+                                    <Button variant="secondary" onClick={() => handleStartMarkerEdit(marker)}>
+                                      Editar marcador
+                                    </Button>
+                                    {confirmDeleteMarkerId === marker.id ? (
+                                      <span className="library-list__delete-confirm">
+                                        <span>Excluir marcador?</span>
+                                        <Button
+                                          variant="secondary"
+                                          disabled={markerDeletingId === marker.id}
+                                          onClick={() => void handleDeleteMarker(marker.id)}
+                                        >
+                                          {markerDeletingId === marker.id ? 'Excluindo...' : 'Sim, excluir marcador'}
+                                        </Button>
+                                        <Button variant="secondary" onClick={() => setConfirmDeleteMarkerId(null)}>
+                                          Cancelar
+                                        </Button>
+                                      </span>
+                                    ) : (
+                                      <Button variant="secondary" onClick={() => setConfirmDeleteMarkerId(marker.id)}>
+                                        Excluir marcador
+                                      </Button>
+                                    )}
+                                    {markerErrorId === marker.id && (
+                                      <p className="library-list__error">Nao foi possivel excluir o marcador.</p>
+                                    )}
+                                  </li>
+                                )
+                              )}
                             </ul>
                           )}
                         </>

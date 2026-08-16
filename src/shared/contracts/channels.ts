@@ -28,7 +28,9 @@ export const IPC_CHANNELS = {
     getState: 'recording.getState'
   },
   markers: {
-    list: 'markers.list'
+    list: 'markers.list',
+    update: 'markers.update',
+    delete: 'markers.delete'
   },
   recovery: {
     repair: 'recovery.repair'

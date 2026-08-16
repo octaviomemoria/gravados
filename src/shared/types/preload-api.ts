@@ -88,6 +88,11 @@ export interface RecordingApi {
 export interface MarkersApi {
   /** RF-016 - marcadores de um projeto, ordenados por `timestampMs`. Nao depende de sessao ativa. */
   list: (projectId: string) => Promise<MarkerResponse[]>
+  /** Refinamento pós-LIB-PLAYER - edita título/nota de um marcador já criado. Campos omitidos do
+   * `patch` ficam inalterados; `null` explícito limpa o campo. Nunca depende de sessão ativa. */
+  update: (id: string, patch: { title?: string | null; note?: string | null }) => Promise<MarkerResponse>
+  /** Exclusão permanente - `deleted: false` (sem lançar) quando o marcador já não existe mais. */
+  delete: (id: string) => Promise<{ deleted: boolean }>
 }
 
 export interface RecoveryApi {

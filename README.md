@@ -1703,6 +1703,36 @@ Resolve duas pendências registradas ao mesmo tempo ("resultado de busca não pu
   expansão automática + player visível, sem precisar de uma busca/transcrição real de ponta a
   ponta (já cobertas separadamente) - passou limpo isolado (20,0s).
 
+### Edição e exclusão de marcadores (Fase 1)
+
+Resolve a última pendência de marcadores registrada desde o refinamento de título/nota: um
+marcador criado durante a gravação era imutável depois disso.
+
+- **`markers.update`/`markers.delete` vivem no mesmo domínio de `markers.list`
+  (`markers.handlers.ts`), nunca em `recording.*`** - editar/excluir um marcador não depende de
+  sessão de gravação ativa, mesmo raciocínio já registrado pra `list`.
+- **`title`/`note` aceitam `null` explícito (limpar o campo), distinto de omitido (não alterar)**
+  - `UpdateMarkerRequestSchema` usa `.nullable().optional()` nos dois campos; a UI sempre envia os
+  dois (nunca omite), convertendo campo vazio em `null` antes de enviar - `MarkerRepository.update`
+  só toca os campos presentes no patch.
+- **Achado real ao rodar o primeiro teste**: `drizzle-orm`'s `.set({})` lança `Error: No values to
+  set` pra um UPDATE sem nenhum campo - `MarkerRepository.update` agora trata um patch vazio como
+  no-op explícito ANTES de chegar ao query builder, nunca deixando esse erro escapar (mesmo que a
+  UI hoje nunca envie um patch vazio de propósito - defensivo pra qualquer chamador futuro).
+- **Botões da Biblioteca renomeados pra "Editar marcador"/"Excluir marcador"** (não só "Editar"/
+  "Excluir") - evita colisão de nome acessível com os botões equivalentes do PRÓPRIO projeto
+  (`Editar`/`Excluir` já existentes, ver LIB-004/006), que convivem na mesma área expandida de
+  detalhes.
+- Testado via `marker.repository.test.ts` (6 testes novos - update parcial de cada campo
+  independente, `null` explícito limpa, patch vazio não quebra, delete não afeta outros marcadores
+  do mesmo projeto) e 5 novos testes de schema (`markers.schema` - patch parcial, `null` aceito,
+  string vazia rejeitada - use `null` pra limpar, id inválido rejeitado). **468 testes, 40
+  arquivos**. O teste E2E existente de detalhes/renomear/excluir (`library.spec.ts`) ganhou os
+  passos de editar+excluir um marcador no meio do fluxo já existente - passou limpo isolado
+  (14,2s) após a primeira tentativa esbarrar no tempo total maior (mais passos reais de UI
+  encadeados) sob a mesma classe de lentidão de máquina já documentada extensivamente neste
+  README; `LIBRARY_TEST_TIMEOUT_MS` aumentado de 90s pra 150s de folga.
+
 ## Estrutura de diretórios
 
 ```text
@@ -2595,8 +2625,10 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   timestamps do Whisper pra `TranscribedSegment`, progresso/cache/propagação de erro do pipeline
   injetado -, e `transcription.service.test.ts` reescrito com extração de áudio REAL via
   `ffmpeg-static` + provedor FALSO injetado: `COMPLETED` com transcript persistido de verdade,
-  `FAILED` com a mensagem exata do provedor, `FAILED` quando a própria extração falha).
-  **455 testes, 39 arquivos.**
+  `FAILED` com a mensagem exata do provedor, `FAILED` quando a própria extração falha), e
+  **edição/exclusão de marcadores** (`marker.repository.test.ts` - update parcial por campo,
+  `null` explícito limpa, patch vazio nunca quebra, delete não afeta outros marcadores).
+  **468 testes, 40 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2771,19 +2803,16 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
 
 - Empacotamento (`electron-builder`) e nuvem/colaboração — fora do escopo do MVP por desenho (ver
   `11_ROADMAP_BACKLOG.md`, Fases 8-9).
-- **Transcrição (AI-001) ainda não transcreve nada de verdade** — `transcription.start` sempre
-  enfileira, mas o job sempre termina `FAILED` (nenhum `TranscriptionProvider` real conectado em
-  lugar nenhum). AI-002 (próximo incremento planejado) entrega a integração real, o consentimento
-  explícito exigido por `09_SECURITY_PRIVACY_COMPLIANCE.md` §11, o armazenamento seguro da chave
-  de API (`safeStorage`) e o pipeline de mixagem de áudio que alimenta o provedor.
+- **Transcrição via `OPENAI` segue sem implementação** (`WHISPER_LOCAL`, o provedor padrão de
+  fato, transcreve de verdade desde o refinamento pós-SEARCH-001 - ver
+  [Transcrição real: Whisper 100% local](#transcrição-real-whisper-100-local-fase-5)) - AI-002
+  (a alternativa PAGA, aguardando o usuário) entregaria a integração real com a OpenAI, o
+  consentimento explícito exigido por `09_SECURITY_PRIVACY_COMPLIANCE.md` §11 e o armazenamento
+  seguro da chave de API (`safeStorage`).
 - Monitor de espaço em disco não tem indicador visual de "espaço OK" explícito, só o texto de
   espaço livre sempre visível e o banner de aviso quando baixo (refinamento futuro cosmético, não
   bloqueante). Correção do bug do `check-disk-space` (ver decisão #39) foi um benefício colateral
   para o indicador pré-existente da Home, que estava silenciosamente quebrado desde a Fase 0.
-- **Marcadores não têm edição/exclusão depois de criados** — título/nota (refinamento pós-MVP) e
-  visualização na Biblioteca já funcionam, mas um marcador é imutável após o clique; corrigir um
-  título digitado errado exigiria um novo canal IPC (`markers.update`/`.delete`, nenhum dos dois
-  existe ainda) - fora do escopo desse refinamento, que reusou só os dois canais já existentes.
 - Segmentação por TEMPO não é exercitada em E2E (só a via testes unitários sintéticos, que não
   dependem de tempo real) — `timeSegmentationMinutes` é um inteiro em minutos (mínimo 1) no
   schema, sem caminho para forçar uma rotação em segundos num teste sem mudar o schema só por

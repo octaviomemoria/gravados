@@ -26,3 +26,25 @@ export type MarkerResponse = z.infer<typeof MarkerResponseSchema>
 export const ListMarkersRequestSchema = z.object({ projectId: IdSchema })
 export type ListMarkersRequest = z.infer<typeof ListMarkersRequestSchema>
 export const ListMarkersResponseSchema = z.array(MarkerResponseSchema)
+
+/**
+ * Refinamento pós-LIB-PLAYER - resolve a pendência registrada "marcadores não têm edição/exclusão
+ * depois de criados". Vive no mesmo domínio de `markers.list` (`markers.handlers.ts`), não em
+ * `recording.*` - editar/excluir um marcador nunca depende de uma sessão de gravação ativa
+ * (diferente de `recording.addMarker`), funciona tanto durante quanto muito depois da gravação
+ * ter terminado. `title`/`note` aceitam `null` explícito (limpar o campo, distinto de "não
+ * alterar" - `undefined`/campo ausente) - mesma convenção de "PATCH parcial" já usada por
+ * `SetTrackGain`/`SetTrackFade` no editor, adaptada aqui pra dois campos opcionais em vez de
+ * substituir o registro inteiro.
+ */
+export const UpdateMarkerRequestSchema = z.object({
+  id: IdSchema,
+  title: z.string().min(1).max(200).nullable().optional(),
+  note: z.string().min(1).max(2000).nullable().optional()
+})
+export type UpdateMarkerRequest = z.infer<typeof UpdateMarkerRequestSchema>
+export const UpdateMarkerResponseSchema = MarkerResponseSchema
+
+export const DeleteMarkerRequestSchema = z.object({ id: IdSchema })
+export type DeleteMarkerRequest = z.infer<typeof DeleteMarkerRequestSchema>
+export const DeleteMarkerResponseSchema = z.object({ deleted: z.boolean() })

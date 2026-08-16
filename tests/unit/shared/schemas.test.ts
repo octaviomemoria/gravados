@@ -12,6 +12,7 @@ import {
   TranscriptResponseSchema
 } from '../../../src/shared/schemas/transcription.schema'
 import { GetDiskSpaceRequestSchema } from '../../../src/shared/schemas/system.schema'
+import { UpdateMarkerRequestSchema, DeleteMarkerRequestSchema } from '../../../src/shared/schemas/markers.schema'
 
 describe('project.schema', () => {
   it('accepts a valid create request', () => {
@@ -191,5 +192,37 @@ describe('transcription.schema', () => {
 describe('system.schema', () => {
   it('allows an omitted path', () => {
     expect(GetDiskSpaceRequestSchema.safeParse({}).success).toBe(true)
+  })
+})
+
+describe('markers.schema', () => {
+  const markerId = '11111111-1111-4111-8111-111111111111'
+
+  it('accepts an update request with only title, only note, both, or neither', () => {
+    expect(UpdateMarkerRequestSchema.safeParse({ id: markerId }).success).toBe(true)
+    expect(UpdateMarkerRequestSchema.safeParse({ id: markerId, title: 'Novo titulo' }).success).toBe(true)
+    expect(UpdateMarkerRequestSchema.safeParse({ id: markerId, note: 'Nova nota' }).success).toBe(true)
+    expect(
+      UpdateMarkerRequestSchema.safeParse({ id: markerId, title: 'T', note: 'N' }).success
+    ).toBe(true)
+  })
+
+  it('accepts null explicitly for title/note (clears the field)', () => {
+    const result = UpdateMarkerRequestSchema.safeParse({ id: markerId, title: null, note: null })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects an empty string for title/note (use null to clear, not "")', () => {
+    expect(UpdateMarkerRequestSchema.safeParse({ id: markerId, title: '' }).success).toBe(false)
+    expect(UpdateMarkerRequestSchema.safeParse({ id: markerId, note: '' }).success).toBe(false)
+  })
+
+  it('rejects an update request with an invalid id', () => {
+    expect(UpdateMarkerRequestSchema.safeParse({ id: 'not-a-uuid' }).success).toBe(false)
+  })
+
+  it('accepts a valid delete request and rejects an invalid id', () => {
+    expect(DeleteMarkerRequestSchema.safeParse({ id: markerId }).success).toBe(true)
+    expect(DeleteMarkerRequestSchema.safeParse({ id: 'not-a-uuid' }).success).toBe(false)
   })
 })
