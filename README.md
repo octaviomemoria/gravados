@@ -1733,6 +1733,38 @@ marcador criado durante a gravação era imutável depois disso.
   encadeados) sob a mesma classe de lentidão de máquina já documentada extensivamente neste
   README; `LIBRARY_TEST_TIMEOUT_MS` aumentado de 90s pra 150s de folga.
 
+### Progresso de download do modelo Whisper (Fase 5)
+
+Resolve a pendência registrada logo após o refinamento `WHISPER_LOCAL`: na primeira transcrição
+com um tamanho de modelo novo (~150MB-1,5GB), a UI ficava parada em "Transcrevendo" do início ao
+fim, sem nenhum feedback sobre o download em andamento.
+
+- **`pipeline()` do `@huggingface/transformers` já expõe um `progress_callback`** - não foi
+  preciso escrever nenhuma lógica de download própria, só conectar o que já existia.
+  `loadRealWhisperPipeline` passa um `progress_callback` que filtra especificamente o evento
+  `status: 'progress_total'` (agrega TODOS os arquivos do repositório - pesos, tokenizer, config -
+  num único percentual 0-100), preferido a `status: 'progress'` (que cobre um arquivo por vez e
+  voltaria pra 0% a cada arquivo novo, uma barra que pareceria "regredir").
+- **`WhisperPipelineFactory` ganhou um segundo parâmetro opcional** (`onDownloadProgress`) -
+  compatível com a assinatura anterior (testes que não passam esse argumento continuam válidos,
+  já que é opcional), documentado no próprio tipo que só dispara quando há algo pra baixar de fato
+  (um modelo já cacheado em disco nunca emite `progress_total`).
+- **Mapeado pra fatia `[20, 40)` do `onProgress` já existente em `WhisperLocalProvider.transcribe`**
+  - a mesma escala 0-100 do job (`transcription_jobs.progress`, já persistida e exposta desde
+    AI-001) só ganhou granularidade nessa faixa, que antes pulava direto de 20% pra 40% durante
+    o carregamento do pipeline. Leitura do áudio (0-20%) e a transcrição em si (40-90%) não
+    mudaram.
+- **Só dispara na PRIMEIRA transcrição com um modelo novo** - `pipelineCache` (já existente)
+  garante que a segunda chamada em diante reusa o pipeline já carregado e pula direto pra 40% sem
+  eventos intermediários, mesmo comportamento de antes deste refinamento.
+- **UI**: `LibraryPage` mostra `(N%)` ao lado do rótulo "Transcrevendo" enquanto o job está
+  `RUNNING` - mesmo padrão já usado pro progresso de exportação em `EditorProjectPage`. O
+  comentário desatualizado que dizia "o job sempre termina FAILED nesta fase" (pré-`WHISPER_LOCAL`)
+  foi removido do JSX, já não era verdade desde o refinamento anterior.
+- Testado via 2 novos testes em `whisper-local-provider.test.ts` (progresso do callback de
+  download mapeado pra `[20, 40]`; a segunda chamada com o mesmo modelo não re-arma o callback,
+  reusando o pipeline cacheado).
+
 ## Estrutura de diretórios
 
 ```text
@@ -2627,8 +2659,11 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   `ffmpeg-static` + provedor FALSO injetado: `COMPLETED` com transcript persistido de verdade,
   `FAILED` com a mensagem exata do provedor, `FAILED` quando a própria extração falha), e
   **edição/exclusão de marcadores** (`marker.repository.test.ts` - update parcial por campo,
-  `null` explícito limpa, patch vazio nunca quebra, delete não afeta outros marcadores).
-  **468 testes, 40 arquivos.**
+  `null` explícito limpa, patch vazio nunca quebra, delete não afeta outros marcadores), e
+  **progresso de download do modelo Whisper** (2 novos casos em `whisper-local-provider.test.ts` -
+  callback de download mapeado pra fatia `[20, 40]` do progresso geral, segunda chamada com o
+  mesmo modelo não re-arma o callback).
+  **470 testes, 40 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2977,12 +3012,10 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   trilha "principal" (tela>câmera>primeira disponível), nunca a composição completa que o editor
   mostra; suficiente pra "ouvir o trecho", não pra revisar a gravação como um todo (use "Editar"
   pra isso).
-- **Transcrição local (`WHISPER_LOCAL`) não tem indicador de progresso do DOWNLOAD do modelo** -
-  a UI só mostra "Transcrevendo" (job `RUNNING`) do início ao fim; na primeira transcrição com um
-  modelo novo (~150MB-1,5GB), isso pode levar minutos numa conexão lenta sem nenhum feedback mais
-  granular ("baixando X de Y MB") - o usuário só vê o mesmo texto parado. `pipeline()` do
-  `@huggingface/transformers` expõe um `progress_callback` que daria esse detalhe, não conectado
-  ainda.
+- **O percentual de progresso durante o download do modelo (WHISPER-PROGRESS) é uma agregação de
+  bytes de TODOS os arquivos do repositório, não uma estimativa de tempo restante** - a UI mostra
+  `(N%)`, não "baixando X de Y MB" nem "faltam N minutos"; suficiente pra confirmar que algo está
+  de fato acontecendo, mas menos detalhado que um indicador de download nativo do navegador.
 - **Sem identificação de falante (diarização) na transcrição local** - `speaker` sempre `null` em
   todo segmento produzido por `WHISPER_LOCAL` (o Whisper puro não faz diarização - exigiria um
   modelo separado, ex. `pyannote`, fora do escopo deste refinamento); o campo já existe no schema

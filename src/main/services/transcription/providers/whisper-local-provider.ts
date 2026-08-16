@@ -27,8 +27,15 @@ export type WhisperTranscribeFn = (
 /** Cria (ou devolve, se ja carregado) a funcao de transcricao real pro modelo pedido - a UNICA
  * peca deste provedor que fala com `@huggingface/transformers`, isolada atras de um tipo simples
  * (`WhisperTranscribeFn`) pra que os testes possam injetar uma versao falsa sem baixar nenhum
- * modelo real nem depender de rede. */
-export type WhisperPipelineFactory = (repoId: string) => Promise<WhisperTranscribeFn>
+ * modelo real nem depender de rede.
+ *
+ * `onDownloadProgress` (0-100) e opcional e so dispara enquanto pesos estao sendo baixados da rede
+ * (refinamento pos-AI-002-LOCAL, ver `loadRealWhisperPipeline`) - um modelo ja cacheado em disco
+ * nunca o chama, porque `pipeline()` nao emite eventos `progress` quando nao ha nada pra baixar. */
+export type WhisperPipelineFactory = (
+  repoId: string,
+  onDownloadProgress?: (percent: number) => void
+) => Promise<WhisperTranscribeFn>
 
 /** Mapeia o tamanho de modelo exposto na UI (Configuracoes) pro repositorio ONNX real no
  * Hugging Face Hub (conversao oficial da propria organizacao Xenova/HF, mesma usada pelo
@@ -40,9 +47,20 @@ const WHISPER_MODEL_REPO_IDS: Record<WhisperModelId, string> = {
   medium: 'Xenova/whisper-medium'
 }
 
-async function loadRealWhisperPipeline(repoId: string): Promise<WhisperTranscribeFn> {
+async function loadRealWhisperPipeline(
+  repoId: string,
+  onDownloadProgress?: (percent: number) => void
+): Promise<WhisperTranscribeFn> {
   const { pipeline } = await import('@huggingface/transformers')
-  const transcriber = await pipeline('automatic-speech-recognition', repoId)
+  const transcriber = await pipeline('automatic-speech-recognition', repoId, {
+    // `progress_total` agrega TODOS os arquivos do repositorio (pesos + tokenizer + config) num
+    // unico percentual 0-100 - preferido a `progress` (que so cobre UM arquivo por vez e voltaria
+    // pra 0% a cada novo arquivo, produzindo uma barra que parece "regredir"). So dispara quando ha
+    // algo pra baixar de fato; um modelo ja cacheado em `env.cacheDir` nunca emite este evento.
+    progress_callback: (info) => {
+      if (info.status === 'progress_total') onDownloadProgress?.(Math.round(info.progress))
+    }
+  })
   return (samples, options) =>
     transcriber(samples, options) as unknown as Promise<WhisperTranscribeResult>
 }
@@ -163,7 +181,14 @@ export class WhisperLocalProvider implements TranscriptionProvider {
     const repoId = WHISPER_MODEL_REPO_IDS[modelId]
     let transcriberPromise = this.pipelineCache.get(repoId)
     if (!transcriberPromise) {
-      transcriberPromise = this.pipelineFactory(repoId)
+      // Mapeia o percentual de DOWNLOAD (0-100) pra faixa [20, 40) do progresso geral do job -
+      // reservada pro carregamento do pipeline (leitura do audio ja usou ate 20, transcrever em si
+      // usa de 40 a 90 abaixo). So dispara na PRIMEIRA transcricao com um modelo novo (ver
+      // `loadRealWhisperPipeline`) - trocas de modelo subsequentes reusam `pipelineCache` e pulam
+      // direto pra 40 sem eventos intermediarios, o mesmo comportamento de antes deste refinamento.
+      transcriberPromise = this.pipelineFactory(repoId, (downloadPercent) => {
+        onProgress(20 + Math.round((downloadPercent / 100) * 20))
+      })
       this.pipelineCache.set(repoId, transcriberPromise)
     }
     const transcriber = await transcriberPromise

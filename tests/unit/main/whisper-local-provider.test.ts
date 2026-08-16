@@ -146,6 +146,45 @@ describe('WhisperLocalProvider', () => {
     expect(factoryCallCount).toBe(1)
   })
 
+  it('maps the factory download-progress callback into the [20, 40] slice of overall progress', async () => {
+    const provider = new WhisperLocalProvider(
+      () => 'base',
+      async (_repoId, onDownloadProgress) => {
+        onDownloadProgress?.(0)
+        onDownloadProgress?.(50)
+        onDownloadProgress?.(100)
+        return async () => ({ text: '', chunks: [] })
+      }
+    )
+    const filePath = await writeTestWav(16000, [0, 0])
+    const progressUpdates: number[] = []
+    await provider.transcribe({ audioPath: filePath }, (percent) => progressUpdates.push(percent))
+
+    // 20 (leitura do audio ja concluida) + a fatia de download mapeada pra [20, 40).
+    expect(progressUpdates).toContain(20)
+    expect(progressUpdates).toContain(30)
+    expect(progressUpdates).toContain(40)
+  })
+
+  it('does not invoke the factory a second time on a cached model (no duplicate download-progress wiring)', async () => {
+    let factoryCallCount = 0
+    const provider = new WhisperLocalProvider(
+      () => 'base',
+      async (_repoId, onDownloadProgress) => {
+        factoryCallCount++
+        onDownloadProgress?.(100)
+        return async () => ({ text: '', chunks: [] })
+      }
+    )
+    const filePath = await writeTestWav(16000, [0, 0])
+    await provider.transcribe({ audioPath: filePath }, () => {})
+    await provider.transcribe({ audioPath: filePath }, () => {})
+    // A segunda chamada reusa `pipelineCache` (ver teste seguinte) - o callback de download da
+    // PRIMEIRA chamada nunca e re-armado pra segunda, comportamento esperado documentado no tipo
+    // `WhisperPipelineFactory`.
+    expect(factoryCallCount).toBe(1)
+  })
+
   it('caches the pipeline across two calls with the same model (loads the model only once)', async () => {
     let factoryCallCount = 0
     const provider = new WhisperLocalProvider(

@@ -629,10 +629,6 @@ export function LibraryPage() {
                           )}
                         </>
                       )}
-                      {/* AI-001 (Fase 5) - `transcription.start` sempre enfileira, mas o job
-                          sempre termina `FAILED` nesta fase (nenhum provedor real conectado
-                          ainda, ver README "Próximo passo") - a mensagem de erro exibida aqui e
-                          esperada, nao um bug. */}
                       <h4>Transcrição</h4>
                       <Button
                         variant="secondary"
@@ -650,6 +646,11 @@ export function LibraryPage() {
                       {transcriptionJob && (
                         <p className="library-list__transcription-status" role="status">
                           {TRANSCRIPTION_STATUS_LABELS[transcriptionJob.status]}
+                          {/* WHISPER-PROGRESS - percentual granular durante RUNNING; 20-40% cobre
+                              o download do modelo na primeira transcricao com um tamanho novo
+                              (ver WhisperLocalProvider.transcribe), o resto e leitura/transcricao
+                              em si - sem essa distincao visivel aqui, so o numero. */}
+                          {transcriptionJob.status === 'RUNNING' && ` (${transcriptionJob.progress}%)`}
                           {transcriptionJob.status === 'FAILED' &&
                             transcriptionJob.error &&
                             ` - ${transcriptionJob.error}`}
