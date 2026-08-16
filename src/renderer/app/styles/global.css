@@ -318,6 +318,54 @@ body {
   margin: var(--ms-space-2) 0 0;
 }
 
+/* SEARCH-001 - formulario de busca (input + botao) e lista de resultados, mesmo tratamento
+   visual de cartao ja usado em `.library-list`/`.export-list`. */
+.search-form {
+  display: flex;
+  gap: var(--ms-space-3);
+  margin-bottom: var(--ms-space-4);
+}
+
+.search-form__input {
+  flex: 1 1 auto;
+  padding: var(--ms-space-2) var(--ms-space-3);
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-color-border);
+  background: var(--ms-color-surface);
+  color: var(--ms-color-text);
+  font-size: 0.95rem;
+}
+
+.search-results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ms-space-2);
+}
+
+.search-results li {
+  background: var(--ms-color-surface);
+  border: 1px solid var(--ms-color-border);
+  border-radius: var(--ms-radius-sm);
+  padding: var(--ms-space-3);
+}
+
+.search-results__meta {
+  font-size: 0.8rem;
+  color: var(--ms-color-text-muted);
+}
+
+.search-results__text {
+  margin: var(--ms-space-2) 0 0;
+}
+
+.search-results__error {
+  color: var(--ms-color-danger);
+  font-size: 0.85rem;
+}
+
 .setup-group {
   margin-bottom: var(--ms-space-8);
 }
@@ -812,4 +860,61 @@ body {
   background: var(--ms-color-danger);
   pointer-events: none;
   z-index: 1;
+}
+
+/* SEARCH-001 - busca full-text local (Fase 7). */
+.search-page__hint {
+  color: var(--ms-color-text-muted);
+  margin: 0 0 var(--ms-space-3);
+}
+
+.search-page__input {
+  width: 100%;
+  max-width: 32rem;
+  padding: var(--ms-space-2) var(--ms-space-3);
+  border: 1px solid var(--ms-color-border);
+  border-radius: var(--ms-radius-sm);
+  background: var(--ms-color-surface);
+  color: var(--ms-color-text);
+  font-size: 1rem;
+  margin-bottom: var(--ms-space-3);
+}
+
+.search-page__status {
+  color: var(--ms-color-text-muted);
+}
+
+.search-page__results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ms-space-2);
+}
+
+.search-page__result {
+  background: var(--ms-color-surface);
+  border: 1px solid var(--ms-color-border);
+  border-radius: var(--ms-radius-sm);
+  padding: var(--ms-space-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ms-space-2);
+}
+
+.search-page__result-project {
+  font-weight: 600;
+}
+
+.search-page__result-timestamp,
+.search-page__result-speaker {
+  color: var(--ms-color-text-muted);
+  font-size: 0.85rem;
+}
+
+.search-page__result-text {
+  flex-basis: 100%;
+  margin: var(--ms-space-1) 0 0;
 }

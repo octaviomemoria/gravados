@@ -29,6 +29,7 @@ test.describe('navigation', () => {
     { label: 'Biblioteca', heading: 'Biblioteca' },
     { label: 'Projetos', heading: 'Projetos' },
     { label: 'Exportacoes', heading: 'Exportacoes' },
+    { label: 'Busca', heading: 'Busca' },
     { label: 'Configuracoes', heading: 'Configuracoes' },
     { label: 'Home', heading: 'Meeting Studio' }
   ]

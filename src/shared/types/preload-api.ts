@@ -38,6 +38,7 @@ import type {
   TranscriptionJobResponse,
   TranscriptResponse
 } from '../schemas/transcription.schema'
+import type { SearchHitResponse } from '../schemas/search.schema'
 import type { ScreenSource } from '../schemas/devices.schema'
 import type { RecordingState } from './recording-state'
 
@@ -182,6 +183,15 @@ export interface TranscriptionApi {
   getTranscript: (projectId: string) => Promise<TranscriptResponse | null>
 }
 
+/**
+ * SEARCH-001 (Fase 7 — Knowledge). `projectId` omitido busca em todos os projetos - o caso de uso
+ * principal ("memória corporativa pesquisável"); passado, restringe a um projeto so (uso futuro
+ * pela Biblioteca). Nunca lanca so por nao achar nada - devolve array vazio.
+ */
+export interface SearchApi {
+  transcripts: (query: string, projectId?: string) => Promise<SearchHitResponse[]>
+}
+
 export interface SystemApi {
   getAppInfo: () => Promise<{ name: string; version: string; platform: string }>
   getDiskSpace: (path?: string) => Promise<{ freeBytes: number; totalBytes: number; path: string }>
@@ -202,6 +212,7 @@ export interface MeetingStudioApi {
   editor: EditorApi
   export: ExportApi
   transcription: TranscriptionApi
+  search: SearchApi
   system: SystemApi
   devices: DevicesApi
 }

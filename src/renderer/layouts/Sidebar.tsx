@@ -1,13 +1,15 @@
 import { NavLink } from 'react-router-dom'
 import { APP_NAME, APP_TAGLINE } from '@shared/constants/app-info'
 
-/** 08_UX_FLOWS.md secao 1: Home, Nova gravacao, Biblioteca, Projetos de edicao, Exportacoes, Configuracoes. */
+/** 08_UX_FLOWS.md secao 1: Home, Nova gravacao, Biblioteca, Projetos de edicao, Exportacoes,
+ * Busca (SEARCH-001, Fase 7), Configuracoes. */
 const NAV_ITEMS: ReadonlyArray<{ to: string; label: string; end?: boolean }> = [
   { to: '/', label: 'Home', end: true },
   { to: '/recording', label: 'Nova gravacao' },
   { to: '/library', label: 'Biblioteca' },
   { to: '/editor', label: 'Projetos' },
   { to: '/exports', label: 'Exportacoes' },
+  { to: '/search', label: 'Busca' },
   { to: '/settings', label: 'Configuracoes' }
 ]
 

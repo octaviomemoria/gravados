@@ -1505,6 +1505,74 @@ arriscado/custoso adiado explicitamente).
   RAM livre real confirmada (~800MB → ~415MB de 16GB durante a validação), nunca dentro do código
   deste incremento.
 
+### Busca full-text: FTS5 local (Fase 7)
+
+Trigésimo terceiro incremento - SEARCH-001, primeiro incremento da **Fase 7 — Knowledge**
+(`11_ROADMAP_BACKLOG.md`, "Pesquisa"). A doc separa explicitamente três sub-fases dentro de
+"Pesquisa": Fase 1 "Full-text search local", Fase 2 "Embeddings e busca semântica" e Fase 3
+"Perguntas sobre múltiplas reuniões" - só a primeira não depende de nenhum provedor externo (sem
+custo, sem envio de dados, sem o gate de consentimento do `09_SECURITY_PRIVACY_COMPLIANCE.md`
+§11 que bloqueia AI-002), então é a única com que este roadmap avança autonomamente por ora -
+mesma linha divisória já registrada entre AI-001 (livre) e AI-002 (precisa do usuário).
+
+- **SQLite FTS5, tabela de "conteúdo externo"** (`transcript_segments_fts`, migração escrita à
+  mão em `0003_search_fts.sql`) — `CREATE VIRTUAL TABLE ... USING fts5(text, content=
+  'transcript_segments', content_rowid='rowid')` guarda só o índice invertido, nunca uma cópia do
+  texto (que já vive em `transcript_segments.text`); o `rowid` implícito da tabela real (toda
+  tabela SQLite tem um, mesmo com PK `TEXT` declarada, a menos que seja `WITHOUT ROWID`) é a ponte
+  entre os dois lados de qualquer resultado de busca. Três gatilhos SQL (`AFTER INSERT/DELETE/
+  UPDATE`) mantêm o índice em sincronia automaticamente NO NÍVEL DO BANCO - qualquer inserção
+  futura em `transcript_segments`, mesmo por um caminho de código que esqueça de atualizar o
+  índice manualmente, nunca deixa o FTS desatualizado.
+- **Migração escrita à mão, não gerada por `drizzle-kit generate`** — o Drizzle não modela tabelas
+  virtuais FTS5 no schema TypeScript (`main/database/schema/*.ts`), então esta tabela e os três
+  gatilhos nunca aparecem lá, só na migração SQL crua. Continua "versionada e revisada" (a
+  exigência real de `migrate.ts` pra mudança de schema), só não "gerada" - mesmo raciocínio hoje
+  documentado como padrão legítimo para o que o Drizzle não consegue expressar. Gotcha registrado:
+  um `--> statement-breakpoint` (o marcador que o migrador do drizzle-orm usa pra dividir um
+  arquivo `.sql` em statements individuais) colocado ANTES do primeiro statement real, isolando um
+  bloco só de comentário, faz o migrador tentar executar esse bloco como se fosse SQL - erro
+  `RangeError: The supplied SQL string contains no statements`. Comentários de cabeçalho precisam
+  ficar no MESMO chunk do primeiro statement real, nunca isolados atrás do próprio breakpoint.
+- **`SearchRepository` é o único repositório deste app usando SQL bruto** (`sql` template tag do
+  `drizzle-orm`, `db.all(sql\`...\`)`) — o Drizzle não tem suporte de query-builder pra `MATCH`
+  nem tabelas virtuais FTS5, então a junção `transcript_segments_fts` → `transcript_segments`
+  (texto/timestamps reais, via `rowid`) → `transcripts` (provider/model) → `projects` (título,
+  pro resultado exibir de onde veio) precisa ser escrita à mão. Mantém a mesma assinatura de
+  construtor de todo outro repositório (só `AppDatabase`) - a raiz SQL crua fica só internamente.
+- **`buildFtsMatchQuery` (função pura) nunca repassa o texto digitado pelo usuário direto pro
+  `MATCH`** — tokeniza por espaço em branco, escapa aspas duplas internas dobrando-as (`"` →
+  `""`), e envolve cada token como uma frase literal com prefixo (`"token"*`), unidos por espaço
+  (o operador booleano padrão do FTS5 entre termos soltos é AND). Previne dois problemas ao mesmo
+  tempo: erro de sintaxe FTS5 se o usuário digitar uma aspas solta ou operadores como `AND`/`NOT`/
+  `NEAR` sem querer usá-los como tal (tudo vira texto literal), e dá um comportamento de "prefixo"
+  natural de graça (digitar "reuni" já casa "reunião"). Retorna `null` (não lança, não gera uma
+  consulta vazia) pra uma busca vazia/só espaços - `SearchService` decide então nem tocar o banco.
+- **Um único canal IPC** (`search.transcripts`, leitura pura e síncrona - sem job assíncrono, FTS5
+  é rápido o bastante pra rodar direto na thread do handler, mesmo padrão de qualquer outra
+  consulta simples deste app) — `projectId` opcional restringe a busca a UM projeto (uso futuro,
+  ex.: busca dentro da Biblioteca); omitido busca em TODAS as reuniões, o caso de uso principal
+  descrito em `01_PRODUCT_VISION_PRD.md` ("memória corporativa pesquisável").
+- **Nova tela "/search" + item "Busca" na navegação principal**, formulário simples (um campo +
+  botão, sem busca-enquanto-digita/debounce - FTS5 é rápido o bastante pra não precisar) - dispara
+  `search.transcripts` só no submit, mostra cada resultado com projeto/timestamp/falante (quando
+  presente)/trecho do texto. Como AI-002 (transcrição real) ainda não existe, nenhuma busca real
+  encontra nada nesta fase - um estado normal e esperado (mesmo espírito da UI de transcrição em
+  AI-001, que trata "Falhou" como resultado normal, não bug), refletido no texto do estado vazio.
+- Testado via 13 testes reais em `search.service.test.ts` (`buildFtsMatchQuery` isolado - tokens
+  simples/múltiplos/aspas escapadas/palavras-chave de operador FTS5 nunca interpretadas como
+  operador -, e `SearchService` de ponta a ponta contra um banco real, semeando transcrições
+  diretamente via `TranscriptRepository.createWithSegments` já que nenhum caminho de UI cria
+  transcritos reais nesta fase: busca exata, busca por prefixo, AND implícito entre múltiplos
+  termos, nunca quebra com aspas/operadores no texto de busca, escopo por `projectId`, campo
+  `speaker` presente/ausente), e a atualização de `migrate.test.ts` (16 tabelas - 11 originais +
+  `transcript_segments_fts` + 4 tabelas-sombra internas do FTS5 -, novo teste confirmando os três
+  gatilhos de sincronia). **429 testes, 37 arquivos**. 2 novos testes E2E reais em
+  `tests/e2e/search.spec.ts` (busca via UI mostra o estado "nenhum resultado" esperado - a única
+  forma de confirmar que o pipeline de IPC chega até a UI de ponta a ponta nesta fase -, e o botão
+  "Buscar" fica desabilitado pra uma busca só de espaços) mais a rota "Busca" adicionada à lista de
+  navegação existente em `navigation.spec.ts` - passaram limpos isolados (9/9, 54,9s).
+
 ## Estrutura de diretórios
 
 ```text
@@ -2384,8 +2452,11 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   que o job SEMPRE termina `FAILED` com a mensagem exata de "nenhum provedor configurado",
   `listJobs`/`getStatus`, `getTranscript` lendo o mais recente com segmentos ordenados por
   `startMs` -, `buildTranscriptEntities` isolado, e schema `transcription.schema.ts`), e a
-  atualização de `migrate.test.ts` pras 3 tabelas/3 índices novos.
-  **415 testes, 37 arquivos.**
+  atualização de `migrate.test.ts` pras 3 tabelas/3 índices novos, e **busca full-text local
+  (SEARCH-001)** (`search.service.test.ts` - `buildFtsMatchQuery` isolado e `SearchService` de
+  ponta a ponta contra um banco real semeado via `TranscriptRepository.createWithSegments` -, e a
+  atualização de `migrate.test.ts` pra 16 tabelas/3 gatilhos novos de sincronia do FTS5).
+  **429 testes, 37 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2549,6 +2620,12 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   `editor (camera transform)` confirmou que nada quebrou - a única falha foi a mesma classe de
   flakiness de bootstrap já documentada (`getByRole('status')` sem "REC" a tempo), recuperada no
   retry, nunca dentro de código tocado por este incremento.
+  `tests/e2e/search.spec.ts` (SEARCH-001, arquivo novo) cobre a busca de ponta a ponta: navega
+  pra "/search" pela sidebar, digita uma query, clica "Buscar" e confirma o estado "nenhum
+  resultado" (o único desfecho possível hoje - nenhum caminho de UI cria transcritos reais
+  enquanto AI-002 não existe), mais um segundo teste confirmando que o botão fica desabilitado pra
+  uma busca só de espaços; a rota "Busca" também foi adicionada à lista existente de
+  `navigation.spec.ts`. Passou limpo isolado (9/9 entre os dois arquivos, 54,9s, sem retry).
 
 ## Pendências conhecidas
 
@@ -2717,6 +2794,20 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   em runtime** - confirmado presente no `ffmpeg-static` instalado via `ffmpeg -version`, mas um
   binário diferente (fork futuro) sem esse codec só falharia no `stderr` do processo (propagado
   como `job.error`), nunca numa checagem antecipada; ver decisão registrada #125.
+- **Busca (SEARCH-001) não encontra nada de verdade ainda** - o índice FTS5 e todo o pipeline
+  funcionam corretamente (provados por 13 testes reais semeando dados diretamente pelo
+  repositório), mas nenhum caminho de UI popula `transcript_segments` enquanto AI-002 não existir;
+  toda busca real hoje retorna "nenhum resultado", um estado esperado, não um bug.
+- **Busca não tem paginação nem ordenação por relevância exposta na UI** - `SearchRepository`
+  ordena por `rank` (relevância nativa do FTS5) e limita a 50 resultados fixos
+  (`DEFAULT_LIMIT`), mas a UI não mostra "N de M resultados" nem oferece carregar mais.
+- **Busca não destaca o trecho que casou com a query no resultado** (sem `snippet()`/`highlight()`
+  do FTS5) - mostra o texto do segmento inteiro; um resultado com um segmento longo não deixa
+  óbvio qual parte bateu com a busca.
+- **Resultado de busca não pula direto pro instante do vídeo/áudio** - o link do resultado leva só
+  pra Biblioteca (`/library`), não pra um player já posicionado em `startMs`; a Biblioteca ainda
+  não tem um player embutido pra receber esse deep-link (ver pendência anterior sobre a Biblioteca
+  não ter tela de detalhes com player).
 
 ## Próximo passo
 
@@ -2764,25 +2855,34 @@ entregue, não um item do roadmap em si. A **Fase 5 — Transcrição** começou
 completa de provedor - schema/repositórios/job assíncrono/canais IPC/UI mínima na Biblioteca,
 `transcription.start` sempre enfileira com sucesso mas o job sempre termina `FAILED` porque
 nenhum provedor real está conectado ainda) funciona de ponta a ponta - ver
-[Transcrição: abstração de provedor](#transcrição-abstração-de-provedor-fase-5).
+[Transcrição: abstração de provedor](#transcrição-abstração-de-provedor-fase-5). A **Fase 7 —
+Knowledge** começou: SEARCH-001 (busca full-text 100% local via SQLite FTS5 - índice de conteúdo
+externo, três gatilhos de sincronia, `buildFtsMatchQuery` segura contra sintaxe FTS5, tela "/search"
+na navegação principal) funciona de ponta a ponta, mesmo sem nenhum transcript real pra encontrar
+ainda (depende de AI-002) - ver
+[Busca full-text: FTS5 local](#busca-full-text-fts5-local-fase-7).
 
 Desenvolvimento segue de forma incremental e contínua, cada incremento validado
 (lint/typecheck/testes/build/E2E) e documentado neste README antes do próximo começar. Ordem
 planejada a partir daqui:
 
-1. **AI-002** (próximo incremento planejado) - a integração real com um provedor de transcrição
-   (OpenAI, conforme `11_ROADMAP_BACKLOG.md`), que exige três coisas fora do escopo de uma decisão
-   técnica livre pra delegar autonomamente: (a) o usuário fornecer sua própria chave de API (custo
-   real, por conta do usuário); (b) um consentimento explícito exibido ANTES do primeiro envio de
-   áudio a um serviço externo, exigido por `09_SECURITY_PRIVACY_COMPLIANCE.md` §11; (c) uma
-   decisão do usuário sobre usar um recurso que envia dados (potencialmente confidenciais) pra
+1. **AI-002** (segue bloqueado, aguardando o usuário) - a integração real com um provedor de
+   transcrição (OpenAI, conforme `11_ROADMAP_BACKLOG.md`), que exige três coisas fora do escopo de
+   uma decisão técnica livre pra delegar autonomamente: (a) o usuário fornecer sua própria chave de
+   API (custo real, por conta do usuário); (b) um consentimento explícito exibido ANTES do primeiro
+   envio de áudio a um serviço externo, exigido por `09_SECURITY_PRIVACY_COMPLIANCE.md` §11; (c)
+   uma decisão do usuário sobre usar um recurso que envia dados (potencialmente confidenciais) pra
    fora da máquina, num app que se descreve como "local-first" - por isso este incremento fica
    para quando o usuário confirmar que quer prosseguir, ao contrário de todo o resto deste roadmap.
-2. Refinamentos menores ainda pendentes dentro do escopo já entregue do MVP, sem fase própria no
-   roadmap - ver "Pendências conhecidas" para a lista completa acumulada ao longo das quatro fases
-   (ex.: `shape: 'circle'` continua uma aproximação retangular tanto no preview quanto no export
-   desde EXP-004b; `SIDE_BY_SIDE` continua fixo em 50/50; marcadores ganharam título/nota +
-   visualização na Biblioteca, mas ainda não têm edição/exclusão).
-3. Fases 6-9 (meeting intelligence, busca semântica, nuvem, integrações) - o restante do trabalho
-   pós-MVP, cada uma exigindo um replanejamento próprio (arquitetura, dependências novas, escopo)
-   quando chegar a vez, dado o tamanho e a natureza distinta de cada uma.
+   Enquanto isso não acontece, a busca (SEARCH-001) continua funcionalmente completa mas sem nada
+   de verdade pra encontrar.
+2. Refinamentos menores ainda pendentes dentro do escopo já entregue do MVP + Fase 5 + Fase 7, sem
+   fase própria no roadmap - ver "Pendências conhecidas" para a lista completa acumulada (ex.:
+   `shape: 'circle'` continua uma aproximação retangular tanto no preview quanto no export desde
+   EXP-004b; `SIDE_BY_SIDE` continua fixo em 50/50; marcadores ganharam título/nota + visualização
+   na Biblioteca, mas ainda não têm edição/exclusão; busca ainda não destaca o trecho encontrado
+   nem pula direto pro instante no player).
+3. Fases 6/8/9 (meeting intelligence, nuvem, integrações) e as sub-fases 2/3 de "Pesquisa"
+   (embeddings/busca semântica, perguntas sobre múltiplas reuniões - ambas dependentes de um
+   provedor de IA externo, mesmo gate de AI-002) - o restante do trabalho pós-MVP, cada um exigindo
+   um replanejamento próprio (arquitetura, dependências novas, escopo) quando chegar a vez.

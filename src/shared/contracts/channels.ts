@@ -59,6 +59,9 @@ export const IPC_CHANNELS = {
     getStatus: 'transcription.getStatus',
     getTranscript: 'transcription.getTranscript'
   },
+  search: {
+    transcripts: 'search.transcripts'
+  },
   system: {
     getAppInfo: 'system.getAppInfo',
     getDiskSpace: 'system.getDiskSpace'

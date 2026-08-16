@@ -11,13 +11,18 @@ describe('migrations', () => {
     client = undefined
   })
 
-  it('creates all 11 tables documented in 06_DATA_MODEL.md (8 originais + 3 de AI-001, Fase 5)', () => {
+  it('creates all 11 tabelas de dominio documentadas em 06_DATA_MODEL.md (8 originais + 3 de AI-001, Fase 5)', () => {
     client = createTestDatabase()
     const rows = client.sqlite
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
       .all() as Array<{ name: string }>
     const names = rows.map((row) => row.name).filter((name) => name !== '__drizzle_migrations')
 
+    // SEARCH-001 - `transcript_segments_fts` (tabela virtual FTS5, escrita a mao em
+    // `0003_search_fts.sql`, nunca modelada em `schema/*.ts`) mais suas 4 tabelas-sombra internas
+    // (`_config`/`_data`/`_docsize`/`_idx`, geradas automaticamente pelo proprio SQLite pra
+    // qualquer FTS5 de "conteudo externo") - nao sao "tabelas de dominio", mas aparecem aqui como
+    // qualquer tabela real.
     expect(names.sort()).toEqual(
       [
         'edit_operations',
@@ -29,6 +34,11 @@ describe('migrations', () => {
         'settings',
         'tracks',
         'transcript_segments',
+        'transcript_segments_fts',
+        'transcript_segments_fts_config',
+        'transcript_segments_fts_data',
+        'transcript_segments_fts_docsize',
+        'transcript_segments_fts_idx',
         'transcription_jobs',
         'transcripts'
       ].sort()
@@ -67,5 +77,17 @@ describe('migrations', () => {
   it('is idempotent - running migrations twice against the same db does not throw', () => {
     client = createTestDatabase()
     expect(() => runMigrations(client!.db, MIGRATIONS_FOLDER)).not.toThrow()
+  })
+
+  it('SEARCH-001: creates the three sync triggers that keep transcript_segments_fts in sync', () => {
+    client = createTestDatabase()
+    const rows = client.sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
+      .all() as Array<{ name: string }>
+    expect(rows.map((row) => row.name)).toEqual([
+      'transcript_segments_ad',
+      'transcript_segments_ai',
+      'transcript_segments_au'
+    ])
   })
 })

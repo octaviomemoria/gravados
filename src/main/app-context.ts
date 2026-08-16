@@ -9,6 +9,7 @@ import {
   ExportJobRepository,
   TranscriptionJobRepository,
   TranscriptRepository,
+  SearchRepository,
   SettingsRepository
 } from './database/repositories'
 import { ProjectService } from './services/project.service'
@@ -16,6 +17,7 @@ import { RecoveryService } from './services/recovery.service'
 import { EditorService } from './services/editor.service'
 import { ExportService } from './services/export.service'
 import { TranscriptionService } from './services/transcription.service'
+import { SearchService } from './services/search.service'
 import { SettingsService, buildDefaultSettings } from './services/settings.service'
 import { JobRunner } from './jobs/job-runner'
 import { ExportJobStore, type ExportJobPayload, type ExportJobResult } from './jobs/export-job-store'
@@ -38,6 +40,7 @@ export interface AppContext {
   exportJobRepository: ExportJobRepository
   transcriptionJobRepository: TranscriptionJobRepository
   transcriptRepository: TranscriptRepository
+  searchRepository: SearchRepository
   settingsRepository: SettingsRepository
   markerRepository: MarkerRepository
   editProjectRepository: EditProjectRepository
@@ -47,6 +50,7 @@ export interface AppContext {
   editorService: EditorService
   exportService: ExportService
   transcriptionService: TranscriptionService
+  searchService: SearchService
   settingsService: SettingsService
   exportJobRunner: JobRunner<ExportJobPayload, ExportJobResult>
   transcriptionJobRunner: JobRunner<TranscriptionJobPayload, TranscriptionJobResult>
@@ -71,6 +75,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
   const exportJobRepository = new ExportJobRepository(databaseClient.db)
   const transcriptionJobRepository = new TranscriptionJobRepository(databaseClient.db)
   const transcriptRepository = new TranscriptRepository(databaseClient.db)
+  const searchRepository = new SearchRepository(databaseClient.db)
   const settingsRepository = new SettingsRepository(databaseClient.db)
 
   const projectService = new ProjectService(
@@ -122,6 +127,9 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     transcriptionJobRepository,
     transcriptRepository
   )
+  // SEARCH-001 - busca full-text 100% local (FTS5), sem dependencia de AI-002/provedor externo -
+  // ver `search.service.ts` pro raciocinio completo.
+  const searchService = new SearchService(searchRepository)
   const recordingStateMachine = new RecordingStateMachine()
   const recordingSessionManager = new RecordingSessionManager(
     projectRepository,
@@ -138,6 +146,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     exportJobRepository,
     transcriptionJobRepository,
     transcriptRepository,
+    searchRepository,
     settingsRepository,
     markerRepository,
     editProjectRepository,
@@ -147,6 +156,7 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     editorService,
     exportService,
     transcriptionService,
+    searchService,
     settingsService,
     exportJobRunner,
     transcriptionJobRunner,

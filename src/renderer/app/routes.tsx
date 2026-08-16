@@ -5,6 +5,7 @@ import { LibraryPage } from '../features/library/LibraryPage'
 import { EditorListPage } from '../features/editor/EditorListPage'
 import { EditorProjectPage } from '../features/editor/EditorProjectPage'
 import { ExportsPage } from '../features/exports/ExportsPage'
+import { SearchPage } from '../features/search/SearchPage'
 import { SettingsPage } from '../features/settings/SettingsPage'
 
 export function AppRoutes() {
@@ -16,6 +17,7 @@ export function AppRoutes() {
       <Route path="/editor" element={<EditorListPage />} />
       <Route path="/editor/:id" element={<EditorProjectPage />} />
       <Route path="/exports" element={<ExportsPage />} />
+      <Route path="/search" element={<SearchPage />} />
       <Route path="/settings" element={<SettingsPage />} />
     </Routes>
   )
