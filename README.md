@@ -1596,6 +1596,79 @@ registrada)**: destaque do trecho encontrado via `snippet()` do FTS5.
   REAL do FTS5 (não um mock) que o termo buscado chega marcado `highlighted: true` e o resto do
   trecho como texto normal. **434 testes, 37 arquivos**.
 
+### Transcrição real: Whisper 100% local (Fase 5)
+
+Terceiro refinamento pos-SEARCH-001 - pedido explícito do usuário ("alguma alternativa mais
+barata ou grátis pra transcrição?"), respondido com a alternativa que melhor se encaixa no
+desenho deste app: rodar o Whisper (o mesmo modelo por trás da API paga da OpenAI) **direto na
+máquina do usuário**, via `@huggingface/transformers` (ONNX Runtime) - zero custo por minuto,
+zero envio de áudio a qualquer serviço externo. Diferente de `OPENAI` (AI-002, que continua
+bloqueada aguardando o usuário - custo real + consentimento de envio de dados exigido por
+`09_SECURITY_PRIVACY_COMPLIANCE.md` §11), `WHISPER_LOCAL` não passa pelo mesmo gate: a única
+chamada de rede é a PRIMEIRA vez que um tamanho de modelo é usado (baixa os pesos, cacheados
+depois), nunca por reunião transcrita.
+
+- **Três tamanhos de modelo (`base`/`small`/`medium`), escolhidos pelo usuário em
+  Configurações** - nenhum "certo" universal: `base` (~150MB) é o padrão, mais rápido numa
+  máquina sem GPU dedicada; `small`/`medium` trocam velocidade/tamanho de download por mais
+  precisão. Baixado sob demanda (cache em `userData/whisper-models`, nunca na pasta de
+  gravações - um modelo de IA não é "conteúdo de uma reunião") - trocar o modelo em Configurações
+  não baixa nada até a PRÓXIMA transcrição rodar de verdade.
+- **Extração de áudio bruto é NOVA, não reaproveita `buildAudioFfmpegArgs` (EXP-005)** -
+  `buildAudioFfmpegArgs` mixa a partir de um `RenderPlan` já COMPILADO de um projeto de EDIÇÃO;
+  transcrição opera sobre a GRAVAÇÃO BRUTA (`projectId`, nunca um `editProjectId`), então
+  `buildTranscriptionAudioExtractionArgs` (`transcription-audio-extraction.ts`) trabalha direto
+  sobre `TrackEntity`/`SegmentEntity`: concatena os segmentos de cada trilha MICROFONE/áudio do
+  sistema (rotação por tempo/tamanho gera múltiplos arquivos por trilha, mesma lógica de sempre),
+  mixa via `amix` quando há mais de uma trilha, resample pra 16kHz mono PCM16 - exatamente o que
+  o Whisper espera nativamente (16kHz é a taxa fixa do treino original; qualquer outra taxa só
+  degradaria a precisão à toa).
+- **Gotcha real do SQLite/FTS5 encontrado e documentado durante a busca (nada a ver com
+  transcrição em si, mas descoberto na mesma sessão)** - já registrado na decisão anterior.
+- **`@huggingface/transformers` não consegue decodificar um arquivo de áudio a partir de um
+  CAMINHO no processo main do Electron** - erro real reproduzido antes de escrever
+  `WhisperLocalProvider`: `Unable to load audio from path/URL since AudioContext is not
+  available` (a API Web Audio só existe num processo RENDERER, nunca no main, que é puro Node).
+  Resolvido com um parser de WAV PCM16 escrito à mão (`readWavPcm16Mono`) - suficiente porque
+  este app sempre controla o formato de saída da extração (nunca um decoder WAV genérico),
+  convertendo pra `Float32Array` antes de entregar ao pipeline.
+- **`WhisperLocalProvider` recebe o pipeline de inferência via injeção (`WhisperPipelineFactory`),
+  nunca chama `@huggingface/transformers` direto no corpo do método** - a MESMA técnica já usada
+  em `ffmpegBinaryOverrides` (`ExportService`)/`export.service.test.ts`: em produção,
+  `app-context.ts` injeta a chamada real (`pipeline('automatic-speech-recognition', repoId)`); em
+  teste, um pipeline FALSO (sem rede, sem modelo real) - baixar um modelo de verdade numa suíte
+  automatizada seria uma categoria de flakiness nova (dependência de rede) nunca antes presente
+  neste projeto, deliberadamente mantida fora dela.
+- **Pipeline cacheado por modelo** (`Map<repoId, Promise<...>>` dentro do provedor) - a segunda
+  transcrição com o mesmo tamanho de modelo não recarrega os pesos do disco.
+- **`env.cacheDir` configurado uma única vez em `app-context.ts`**, antes de qualquer transcrição
+  poder rodar - `getWhisperModelsCacheDir()` (`app-paths.ts`, o ÚNICO lugar que lê
+  `app.getPath(...)`, mesmo padrão já estabelecido) isola o cache em `userData`.
+- **Teste E2E de transcrição (`library.spec.ts`) precisou de um provedor falso próprio via
+  variável de ambiente** (`MEETING_STUDIO_E2E_FAKE_TRANSCRIPTION=1`, mesmo espírito de
+  `MEETING_STUDIO_E2E_FAKE_MEDIA` já usado pra câmera/microfone) - clicar "Transcrever" de
+  verdade baixaria um modelo real da internet a cada execução da suíte, a mesma dependência de
+  rede que os testes unitários também evitam; com o override, o resto do pipeline (extração de
+  áudio REAL via ffmpeg contra a gravação de verdade, IPC, persistência, UI) roda sem nenhum
+  mock, só a chamada final ao modelo é substituída por um resultado instantâneo.
+- Testado via `transcription-audio-extraction.test.ts` (8 testes estruturais puros - concat de
+  segmentos da mesma trilha, `amix` entre trilhas diferentes, trilha vazia ignorada, dedupe de
+  input, directory traversal rejeitado) e `whisper-local-provider.test.ts` (11 testes -
+  `readWavPcm16Mono` decodifica PCM16 mono/estéreo com downmix, erro claro pra arquivo não-WAV;
+  `mapWhisperChunksToSegments` mapeia timestamps em segundos pra ms, cobre o último chunk com
+  timestamp final `null`, descarta texto vazio; `WhisperLocalProvider.transcribe` com pipeline
+  injetado - progresso crescente até 100, cache de pipeline entre duas chamadas, erro do pipeline
+  nunca é engolido). `transcription.service.test.ts` reescrito de ponta a ponta - extração de
+  áudio REAL (segmento MICROFONE sintético via `ffmpeg-static`, mesma técnica de
+  `export.service.test.ts`) + provedor FALSO injetado: job termina `COMPLETED` com transcript
+  persistido de verdade, `FAILED` com a mensagem exata quando o provedor falha, `FAILED` quando a
+  própria extração falha (caminho de ffmpeg quebrado). **455 testes, 39 arquivos**. 1 teste E2E
+  atualizado em `library.spec.ts` (antes confirmava a falha esperada "sem provedor" de AI-001;
+  agora confirma `COMPLETED` de ponta a ponta com o provedor falso via env var) - passou limpo
+  isolado (52,7s); uma segunda execução bateu na mesma classe de flakiness de bootstrap já
+  documentada extensivamente neste README (`getByRole('status')` sem "REC" a tempo, RAM livre
+  real confirmada em ~2,5GB/16GB no momento), nunca dentro do código deste incremento.
+
 ## Estrutura de diretórios
 
 ```text
@@ -2481,8 +2554,15 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   atualização de `migrate.test.ts` pra 16 tabelas/3 gatilhos novos de sincronia do FTS5), e
   **destaque de trecho na busca** (`parseSnippet` isolado - sem marcador, um termo destacado,
   múltiplos termos, string vazia, marcador desbalanceado nunca lança -, mais uma asserção contra o
-  `snippet()` REAL do FTS5 confirmando o termo buscado marcado `highlighted: true`).
-  **434 testes, 37 arquivos.**
+  `snippet()` REAL do FTS5 confirmando o termo buscado marcado `highlighted: true`), e
+  **transcrição local via Whisper** (`transcription-audio-extraction.test.ts` - concat de
+  segmentos da mesma trilha, `amix` entre trilhas diferentes, dedupe de input, directory traversal
+  rejeitado -, `whisper-local-provider.test.ts` - parser WAV PCM16 mono/estéreo, mapeamento de
+  timestamps do Whisper pra `TranscribedSegment`, progresso/cache/propagação de erro do pipeline
+  injetado -, e `transcription.service.test.ts` reescrito com extração de áudio REAL via
+  `ffmpeg-static` + provedor FALSO injetado: `COMPLETED` com transcript persistido de verdade,
+  `FAILED` com a mensagem exata do provedor, `FAILED` quando a própria extração falha).
+  **455 testes, 39 arquivos.**
 - **Playwright** (`tests/e2e/`): abertura do app + título + sidebar + zero erros de console + banco
   criado em `userData` (`app-launch.spec.ts`); navegação por todas as rotas da sidebar
   (`navigation.spec.ts`); **gravação real de microfone + câmera**, **tela + microfone**, **áudio
@@ -2820,10 +2900,6 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   em runtime** - confirmado presente no `ffmpeg-static` instalado via `ffmpeg -version`, mas um
   binário diferente (fork futuro) sem esse codec só falharia no `stderr` do processo (propagado
   como `job.error`), nunca numa checagem antecipada; ver decisão registrada #125.
-- **Busca (SEARCH-001) não encontra nada de verdade ainda** - o índice FTS5 e todo o pipeline
-  funcionam corretamente (provados por 13 testes reais semeando dados diretamente pelo
-  repositório), mas nenhum caminho de UI popula `transcript_segments` enquanto AI-002 não existir;
-  toda busca real hoje retorna "nenhum resultado", um estado esperado, não um bug.
 - **Busca não tem paginação nem ordenação por relevância exposta na UI** - `SearchRepository`
   ordena por `rank` (relevância nativa do FTS5) e limita a 50 resultados fixos
   (`DEFAULT_LIMIT`), mas a UI não mostra "N de M resultados" nem oferece carregar mais.
@@ -2831,6 +2907,29 @@ escolhida e registrada aqui, conforme instrução do prompt inicial.
   pra Biblioteca (`/library`), não pra um player já posicionado em `startMs`; a Biblioteca ainda
   não tem um player embutido pra receber esse deep-link (ver pendência anterior sobre a Biblioteca
   não ter tela de detalhes com player).
+- **Transcrição local (`WHISPER_LOCAL`) não tem indicador de progresso do DOWNLOAD do modelo** -
+  a UI só mostra "Transcrevendo" (job `RUNNING`) do início ao fim; na primeira transcrição com um
+  modelo novo (~150MB-1,5GB), isso pode levar minutos numa conexão lenta sem nenhum feedback mais
+  granular ("baixando X de Y MB") - o usuário só vê o mesmo texto parado. `pipeline()` do
+  `@huggingface/transformers` expõe um `progress_callback` que daria esse detalhe, não conectado
+  ainda.
+- **Sem identificação de falante (diarização) na transcrição local** - `speaker` sempre `null` em
+  todo segmento produzido por `WHISPER_LOCAL` (o Whisper puro não faz diarização - exigiria um
+  modelo separado, ex. `pyannote`, fora do escopo deste refinamento); o campo já existe no schema
+  desde AI-001 pra um provedor futuro que o preencha.
+- **Transcrição local sempre usa CPU, nunca GPU** - `@huggingface/transformers`/ONNX Runtime
+  suportam aceleração por GPU (WebGPU/CUDA) em outros contextos, mas a configuração usada aqui
+  (processo main do Electron, execução local) roda inferência só em CPU; numa máquina sem GPU
+  dedicada isso é irrelevante, mas deixa desempenho na mesa em máquinas com GPU disponível -
+  refinamento futuro, não bloqueante.
+- **Trocar de modelo em Configurações durante uma transcrição já em andamento não a afeta** -
+  `getModelId()` é lido só no INÍCIO de cada transcrição (`WhisperLocalProvider.transcribe`); uma
+  troca no meio de um job em `RUNNING` só vale a partir da PRÓXIMA transcrição, comportamento
+  correto mas não documentado na UI.
+- **Um modelo baixado nunca é removido automaticamente** - trocar de `base` pra `medium` e voltar
+  pra `base` mantém os dois cacheados em `userData/whisper-models` (nenhum limite de espaço, nenhuma
+  limpeza); com os três tamanhos testados ao longo do tempo, isso pode chegar a ~2GB em disco sem
+  nenhuma UI pra ver ou limpar o cache.
 
 ## Próximo passo
 
@@ -2874,38 +2973,42 @@ na `EditorProjectPage` - ver
 EXP-009, o roadmap desta fase está completo e o **Marco MVP** (`11_ROADMAP_BACKLOG.md`) foi
 atingido: as quatro fases do MVP (Recording Core, Recovery + Library, Editor MVP, Export) estão
 todas completas e testadas de ponta a ponta - EXP-004b é um refinamento dentro desse escopo já
-entregue, não um item do roadmap em si. A **Fase 5 — Transcrição** começou: AI-001 (abstração
-completa de provedor - schema/repositórios/job assíncrono/canais IPC/UI mínima na Biblioteca,
-`transcription.start` sempre enfileira com sucesso mas o job sempre termina `FAILED` porque
-nenhum provedor real está conectado ainda) funciona de ponta a ponta - ver
-[Transcrição: abstração de provedor](#transcrição-abstração-de-provedor-fase-5). A **Fase 7 —
-Knowledge** começou: SEARCH-001 (busca full-text 100% local via SQLite FTS5 - índice de conteúdo
-externo, três gatilhos de sincronia, `buildFtsMatchQuery` segura contra sintaxe FTS5, tela "/search"
-na navegação principal) funciona de ponta a ponta, mesmo sem nenhum transcript real pra encontrar
-ainda (depende de AI-002) - ver
+entregue, não um item do roadmap em si. A **Fase 5 — Transcrição** está funcionalmente completa
+com um provedor 100% local: AI-001 entregou a abstração (schema/repositórios/job assíncrono/canais
+IPC/UI na Biblioteca); um refinamento pós-SEARCH-001 conectou `WHISPER_LOCAL` de verdade (Whisper
+via `@huggingface/transformers`, ONNX, três tamanhos de modelo à escolha do usuário em
+Configurações, zero custo, zero envio de áudio a qualquer serviço externo) - `transcription.start`
+transcreve de ponta a ponta, produz um transcript real e consultável. `OPENAI` (a alternativa paga
+citada no roadmap original) segue bloqueada aguardando o usuário - ver
+[Transcrição: abstração de provedor](#transcrição-abstração-de-provedor-fase-5) e
+[Transcrição real: Whisper 100% local](#transcrição-real-whisper-100-local-fase-5). A **Fase 7 —
+Knowledge** começou: SEARCH-001 (busca full-text 100% local via SQLite FTS5) funciona de ponta a
+ponta e agora tem transcripts reais pra encontrar (produzidos pelo Whisper local) - ver
 [Busca full-text: FTS5 local](#busca-full-text-fts5-local-fase-7).
 
 Desenvolvimento segue de forma incremental e contínua, cada incremento validado
 (lint/typecheck/testes/build/E2E) e documentado neste README antes do próximo começar. Ordem
 planejada a partir daqui:
 
-1. **AI-002** (segue bloqueado, aguardando o usuário) - a integração real com um provedor de
-   transcrição (OpenAI, conforme `11_ROADMAP_BACKLOG.md`), que exige três coisas fora do escopo de
-   uma decisão técnica livre pra delegar autonomamente: (a) o usuário fornecer sua própria chave de
-   API (custo real, por conta do usuário); (b) um consentimento explícito exibido ANTES do primeiro
+1. **AI-002 - OpenAI** (segue bloqueada, aguardando o usuário) - a alternativa PAGA de provedor de
+   transcrição (conforme `11_ROADMAP_BACKLOG.md`), que exige três coisas fora do escopo de uma
+   decisão técnica livre pra delegar autonomamente: (a) o usuário fornecer sua própria chave de API
+   (custo real, por conta do usuário); (b) um consentimento explícito exibido ANTES do primeiro
    envio de áudio a um serviço externo, exigido por `09_SECURITY_PRIVACY_COMPLIANCE.md` §11; (c)
    uma decisão do usuário sobre usar um recurso que envia dados (potencialmente confidenciais) pra
    fora da máquina, num app que se descreve como "local-first" - por isso este incremento fica
    para quando o usuário confirmar que quer prosseguir, ao contrário de todo o resto deste roadmap.
-   Enquanto isso não acontece, a busca (SEARCH-001) continua funcionalmente completa mas sem nada
-   de verdade pra encontrar.
+   `WHISPER_LOCAL` já cobre o caso de uso principal (transcrição real, sem custo) enquanto isso não
+   acontece.
 2. Refinamentos menores ainda pendentes dentro do escopo já entregue do MVP + Fase 5 + Fase 7, sem
    fase própria no roadmap - ver "Pendências conhecidas" para a lista completa acumulada (ex.:
    `shape: 'circle'` continua uma aproximação retangular tanto no preview quanto no export desde
    EXP-004b; `SIDE_BY_SIDE` continua fixo em 50/50; marcadores ganharam título/nota + visualização
    na Biblioteca, mas ainda não têm edição/exclusão; busca já destaca o termo encontrado no
-   resultado, mas ainda não pula direto pro instante no player nem tem paginação).
+   resultado, mas ainda não pula direto pro instante no player nem tem paginação; transcrição local
+   não mostra progresso do download do modelo nem faz diarização de falantes).
 3. Fases 6/8/9 (meeting intelligence, nuvem, integrações) e as sub-fases 2/3 de "Pesquisa"
    (embeddings/busca semântica, perguntas sobre múltiplas reuniões - ambas dependentes de um
-   provedor de IA externo, mesmo gate de AI-002) - o restante do trabalho pós-MVP, cada um exigindo
+   provedor de IA externo pago, mesmo gate de AI-002/OpenAI) - o restante do trabalho pós-MVP, cada
+   um exigindo
    um replanejamento próprio (arquitetura, dependências novas, escopo) quando chegar a vez.

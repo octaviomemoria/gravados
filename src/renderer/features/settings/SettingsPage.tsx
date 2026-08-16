@@ -2,8 +2,17 @@ import { useEffect, useState } from 'react'
 import { ThemeToggle } from '../../components/ThemeToggle'
 import {
   RecordingPresetsSettingsSchema,
-  type RecordingPresetsSettings
+  TranscriptionSettingsSchema,
+  type RecordingPresetsSettings,
+  type TranscriptionSettings,
+  type WhisperModelId
 } from '@shared/schemas/settings.schema'
+
+const WHISPER_MODEL_OPTIONS: ReadonlyArray<{ id: WhisperModelId; label: string; hint: string }> = [
+  { id: 'base', label: 'Base (~150MB)', hint: 'Mais rapido - bom equilibrio numa maquina sem GPU dedicada.' },
+  { id: 'small', label: 'Small (~500MB)', hint: 'Mais preciso que Base, mais lento pra transcrever.' },
+  { id: 'medium', label: 'Medium (~1,5GB)', hint: 'O mais preciso, tambem o mais lento e o maior download.' }
+]
 
 /** Converte o valor de um `<input type="number">` para o par nullable usado pelo schema. */
 function parseOptionalPositiveInt(raw: string): number | null {
@@ -26,6 +35,7 @@ function parseRequiredPositiveInt(raw: string, fallback: number): number {
 export function SettingsPage() {
   const [libraryRoot, setLibraryRoot] = useState<string | null>(null)
   const [recordingPresets, setRecordingPresets] = useState<RecordingPresetsSettings | null>(null)
+  const [transcriptionSettings, setTranscriptionSettings] = useState<TranscriptionSettings | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -58,6 +68,33 @@ export function SettingsPage() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    window.meetingStudio.settings
+      .get('transcription')
+      .then((raw) => {
+        if (!cancelled) setTranscriptionSettings(TranscriptionSettingsSchema.parse(raw))
+      })
+      .catch(() => {
+        if (!cancelled) setTranscriptionSettings(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  async function patchTranscriptionSettings(patch: Partial<TranscriptionSettings>): Promise<void> {
+    if (!transcriptionSettings) return
+    const next = { ...transcriptionSettings, ...patch }
+    setTranscriptionSettings(next)
+    try {
+      const saved = await window.meetingStudio.settings.update('transcription', next)
+      setTranscriptionSettings(TranscriptionSettingsSchema.parse(saved))
+    } catch (error) {
+      console.error('Falha ao salvar preferencias de transcricao', error)
+    }
+  }
 
   async function patchRecordingPresets(patch: Partial<RecordingPresetsSettings>): Promise<void> {
     if (!recordingPresets) return
@@ -175,6 +212,34 @@ export function SettingsPage() {
                 }
               />
             </label>
+          </div>
+        )}
+      </section>
+
+      <section className="settings-section">
+        <h2>Transcricao</h2>
+        <p className="settings-section__hint">
+          Transcricao roda 100% no seu computador (Whisper local) - nenhum audio sai da maquina.
+          Modelos maiores sao mais precisos, mas maiores pra baixar (uma unica vez, na primeira
+          transcricao apos trocar) e mais lentos numa maquina sem placa de video dedicada.
+        </p>
+        {!transcriptionSettings && <p className="empty-state">Carregando...</p>}
+        {transcriptionSettings && (
+          <div className="settings-field-group">
+            {WHISPER_MODEL_OPTIONS.map((option) => (
+              <label key={option.id} className="settings-field settings-field--radio">
+                <span>
+                  <input
+                    type="radio"
+                    name="whisper-model"
+                    checked={transcriptionSettings.modelId === option.id}
+                    onChange={() => void patchTranscriptionSettings({ modelId: option.id })}
+                  />
+                  {option.label}
+                </span>
+                <span className="settings-section__hint">{option.hint}</span>
+              </label>
+            ))}
           </div>
         )}
       </section>

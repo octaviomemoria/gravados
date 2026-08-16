@@ -201,6 +201,16 @@ body {
   font-size: 0.85rem;
 }
 
+/* Refinamento pos-SEARCH-001 - selecao de modelo Whisper (Configuracoes > Transcricao), uma
+   opcao por linha em vez do input numerico padrao de `.settings-field`. */
+.settings-field--radio {
+  min-width: 220px;
+}
+
+.settings-field--radio input[type='radio'] {
+  margin-right: var(--ms-space-2);
+}
+
 .settings-field input {
   width: 160px;
   padding: var(--ms-space-2) var(--ms-space-3);

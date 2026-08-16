@@ -18,6 +18,15 @@ export function getDefaultLibraryRootPath(): string {
   return defaultLibraryRootPath(app.getPath('documents'))
 }
 
+/** Refinamento pos-SEARCH-001 (transcricao local) - onde `@huggingface/transformers` cacheia os
+ * pesos ONNX do modelo Whisper escolhido (`env.cacheDir`, `app-context.ts`). Deliberadamente em
+ * `userData` (dados do APLICATIVO), nunca dentro da pasta de gravacoes do usuario (`documents/...`)
+ * - um modelo de IA nao e "conteudo de uma reuniao", e trocar de pasta de biblioteca no futuro nao
+ * deveria re-baixar 150MB-1,5GB por engano. */
+export function getWhisperModelsCacheDir(): string {
+  return join(app.getPath('userData'), 'whisper-models')
+}
+
 /**
  * Em dev/build (`!app.isPackaged`) as migrations sao lidas diretamente do codigo-fonte. O branch
  * empacotado existe para compatibilidade futura, mas nao e exercitado nesta fase - empacotamento

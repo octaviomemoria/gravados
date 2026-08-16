@@ -17,6 +17,9 @@ import { RecoveryService } from './services/recovery.service'
 import { EditorService } from './services/editor.service'
 import { ExportService } from './services/export.service'
 import { TranscriptionService } from './services/transcription.service'
+import { WhisperLocalProvider } from './services/transcription/providers/whisper-local-provider'
+import type { TranscriptionProvider } from './services/transcription/transcription-provider'
+import { env as transformersEnv } from '@huggingface/transformers'
 import { SearchService } from './services/search.service'
 import { SettingsService, buildDefaultSettings } from './services/settings.service'
 import { JobRunner } from './jobs/job-runner'
@@ -61,10 +64,27 @@ export interface AppContext {
 export interface CreateAppContextOptions {
   databaseClient: DatabaseClient
   libraryRootPath: string
+  /** Refinamento pos-SEARCH-001 - onde `@huggingface/transformers` cacheia os pesos do modelo
+   * Whisper escolhido (`getWhisperModelsCacheDir()`, `app-paths.ts`). Opcional pra nao acoplar
+   * testes de integracao (que montam este contexto sem Electron real) a `app.getPath` - quando
+   * omitido, a biblioteca usa seu proprio cache padrao (irrelevante em teste, que sempre injeta um
+   * `pipelineFactory` falso e nunca baixa nada de verdade).
+   */
+  whisperModelsCacheDir?: string
+  /** Somente para os testes E2E (`MEETING_STUDIO_E2E_FAKE_TRANSCRIPTION=1`, setado so por
+   * `tests/e2e/library.spec.ts`): substitui `WhisperLocalProvider` real por um provedor falso
+   * (sem rede, resultado instantaneo) - mesmo raciocinio ja usado por
+   * `MEETING_STUDIO_E2E_FAKE_MEDIA` pra camera/microfone. Sem isso, clicar "Transcrever" na UI
+   * baixaria um modelo real da internet (~150MB+) toda vez que a suite E2E rodasse - uma
+   * dependencia de rede/tempo que este projeto mantem deliberadamente fora de qualquer teste
+   * automatizado (ver decisao registrada no README). O pipeline real (extracao de audio +
+   * orquestracao do provedor) ja tem cobertura completa e deterministica em
+   * `transcription.service.test.ts`, que injeta o mesmo tipo de provedor falso diretamente. */
+  transcriptionProviderOverride?: TranscriptionProvider
 }
 
 export function createAppContext(options: CreateAppContextOptions): AppContext {
-  const { databaseClient, libraryRootPath } = options
+  const { databaseClient, libraryRootPath, whisperModelsCacheDir, transcriptionProviderOverride } = options
 
   const projectRepository = new ProjectRepository(databaseClient.db)
   const trackRepository = new TrackRepository(databaseClient.db)
@@ -115,17 +135,25 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
   const transcriptionJobRunner = new JobRunner<TranscriptionJobPayload, TranscriptionJobResult>(
     new TranscriptionJobStore(transcriptionJobRepository)
   )
-  // AI-001 - nenhuma implementacao real de `TranscriptionProvider` e injetada em lugar nenhum
-  // ainda nesta fase, ver comentario em `transcription.service.ts` e
-  // `transcription/transcription-provider.ts`. `transcription.start` sempre enfileira com
-  // sucesso, mas o job sempre termina `FAILED` com uma mensagem clara - AI-002 (incremento futuro)
-  // e quem conecta um provedor de verdade.
+  // Refinamento pos-SEARCH-001 - modelo cacheado FORA da pasta de gravacoes (ver comentario em
+  // `getWhisperModelsCacheDir`); configurado uma unica vez aqui, antes de qualquer transcricao
+  // poder rodar. Omitido (testes de integracao que montam este contexto sem Electron real) cai no
+  // cache padrao da propria biblioteca - irrelevante em teste, que sempre injeta um
+  // `pipelineFactory` falso e nunca baixa nada de verdade.
+  if (whisperModelsCacheDir) {
+    transformersEnv.cacheDir = whisperModelsCacheDir
+  }
+  const whisperLocalProvider: TranscriptionProvider =
+    transcriptionProviderOverride ??
+    new WhisperLocalProvider(() => settingsService.get('transcription').modelId)
   const transcriptionService = new TranscriptionService(
     projectRepository,
     trackRepository,
+    segmentRepository,
     transcriptionJobRunner,
     transcriptionJobRepository,
-    transcriptRepository
+    transcriptRepository,
+    whisperLocalProvider
   )
   // SEARCH-001 - busca full-text 100% local (FTS5), sem dependencia de AI-002/provedor externo -
   // ver `search.service.ts` pro raciocinio completo.

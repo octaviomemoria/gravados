@@ -35,17 +35,34 @@ export const ExportPresetsSettingsSchema = z.object({
 })
 export type ExportPresetsSettings = z.infer<typeof ExportPresetsSettingsSchema>
 
+/**
+ * Refinamento pos-SEARCH-001 (transcricao local via Whisper/ONNX, `WHISPER_LOCAL` em
+ * `transcription.schema.ts`). Tres tamanhos de modelo disponiveis - o usuario escolhe o trade-off
+ * entre velocidade/tamanho de download e precisao, nenhum padrao "certo" universal (maquinas sem
+ * GPU dedicada sofrem mais com `medium`). Baixado sob demanda na primeira transcricao apos a
+ * troca (cache em `userData/whisper-models`, nunca no repositorio do projeto) - trocar de modelo
+ * aqui NAO redownload nada ate a proxima transcricao de fato rodar.
+ */
+export const WhisperModelIdSchema = z.enum(['base', 'small', 'medium'])
+export type WhisperModelId = z.infer<typeof WhisperModelIdSchema>
+
+export const TranscriptionSettingsSchema = z.object({
+  modelId: WhisperModelIdSchema
+})
+export type TranscriptionSettings = z.infer<typeof TranscriptionSettingsSchema>
+
 export const SETTINGS_CATEGORY_SCHEMAS = {
   app: AppSettingsSchema,
   recordingPresets: RecordingPresetsSettingsSchema,
-  exportPresets: ExportPresetsSettingsSchema
+  exportPresets: ExportPresetsSettingsSchema,
+  transcription: TranscriptionSettingsSchema
 } as const
 
 export const SETTINGS_CATEGORIES = Object.keys(SETTINGS_CATEGORY_SCHEMAS) as Array<
   keyof typeof SETTINGS_CATEGORY_SCHEMAS
 >
 
-export const SettingsCategorySchema = z.enum(['app', 'recordingPresets', 'exportPresets'])
+export const SettingsCategorySchema = z.enum(['app', 'recordingPresets', 'exportPresets', 'transcription'])
 export type SettingsCategory = z.infer<typeof SettingsCategorySchema>
 
 export const GetSettingsRequestSchema = z.object({ category: SettingsCategorySchema })

@@ -4,7 +4,8 @@ import {
   type SettingsCategory,
   type AppSettings,
   type RecordingPresetsSettings,
-  type ExportPresetsSettings
+  type ExportPresetsSettings,
+  type TranscriptionSettings
 } from '../../shared/schemas/settings.schema'
 import { ValidationError } from '../../shared/types/domain-errors'
 
@@ -12,6 +13,7 @@ export interface SettingsDefaults {
   app: AppSettings
   recordingPresets: RecordingPresetsSettings
   exportPresets: ExportPresetsSettings
+  transcription: TranscriptionSettings
 }
 
 /** RF-041: valores iniciais inertes - nao conectados a nenhuma funcionalidade real nesta fase. */
@@ -32,6 +34,12 @@ export function buildDefaultSettings(defaultLibraryRootPath: string): SettingsDe
       defaultContainer: 'MP4',
       defaultResolution: '1080p',
       defaultAudioFormat: 'M4A'
+    },
+    transcription: {
+      // 'base' - melhor equilibrio pra uma maquina comum sem GPU dedicada (download menor,
+      // transcricao razoavelmente rapida em CPU); 'small'/'medium' ficam disponiveis pra quem
+      // prioriza precisao sobre velocidade/tamanho do instalador.
+      modelId: 'base'
     }
   }
 }

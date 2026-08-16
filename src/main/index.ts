@@ -8,7 +8,8 @@ import { acquireSingleInstanceLock, registerLifecycleHandlers } from './app-life
 import {
   getDatabaseFilePath,
   getDefaultLibraryRootPath,
-  getMigrationsFolderPath
+  getMigrationsFolderPath,
+  getWhisperModelsCacheDir
 } from './services/app-paths'
 import { configureLogger, createScopedLogger, type LogLevel } from './services/logger'
 import {
@@ -16,6 +17,7 @@ import {
   registerMeetingMediaProtocolHandler
 } from './media/media-protocol'
 import { APP_ID } from '../shared/constants/app-info'
+import type { TranscriptionProvider } from './services/transcription/transcription-provider'
 
 const logger = createScopedLogger('main')
 const VALID_LOG_LEVELS: readonly LogLevel[] = ['error', 'warn', 'info', 'verbose', 'debug', 'silly']
@@ -37,6 +39,21 @@ function resolveLogLevel(): LogLevel {
 if (process.env.MEETING_STUDIO_E2E_FAKE_MEDIA === '1') {
   app.commandLine.appendSwitch('use-fake-device-for-media-stream')
   app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
+}
+
+/** Somente para o teste E2E de transcricao (`tests/e2e/library.spec.ts`,
+ * `MEETING_STUDIO_E2E_FAKE_TRANSCRIPTION=1`): substitui `WhisperLocalProvider` real por um
+ * resultado instantaneo, sem rede - clicar "Transcrever" de verdade baixaria um modelo real
+ * (~150MB+) na primeira execucao, uma dependencia que a suite automatizada nunca deve exigir (ver
+ * comentario completo em `app-context.ts`, `transcriptionProviderOverride`). */
+function buildFakeTranscriptionProviderForE2E(): TranscriptionProvider {
+  return {
+    id: 'WHISPER_LOCAL',
+    async transcribe(_request, onProgress) {
+      onProgress(100)
+      return { model: 'fake-e2e-model', language: null, segments: [{ startMs: 0, endMs: 1000, text: 'teste e2e' }] }
+    }
+  }
 }
 
 let appContext: AppContext | undefined
@@ -70,7 +87,12 @@ async function bootstrap(): Promise<void> {
 
   appContext = createAppContext({
     databaseClient,
-    libraryRootPath: getDefaultLibraryRootPath()
+    libraryRootPath: getDefaultLibraryRootPath(),
+    whisperModelsCacheDir: getWhisperModelsCacheDir(),
+    transcriptionProviderOverride:
+      process.env.MEETING_STUDIO_E2E_FAKE_TRANSCRIPTION === '1'
+        ? buildFakeTranscriptionProviderForE2E()
+        : undefined
   })
 
   // EDIT-003: registrado so agora, com o ProjectRepository real disponivel - o esquema em si ja

@@ -87,6 +87,41 @@ export function runFfprobeProcess(
   })
 }
 
+/** Refinamento pos-SEARCH-001 - resultado de rodar o FFmpeg ate o fim SEM acompanhar progresso
+ * (a saida que importa e o ARQUIVO gerado, nunca stdout/stderr - so capturados pra diagnostico de
+ * erro). Deliberadamente uma terceira funcao pequena, nao um parametro a mais em
+ * `runFfmpegProcess` - a mesma razao ja registrada pra `runFfprobeProcess` nao reaproveitar aquele
+ * wrapper: alternar entre "acompanha progresso incremental" e "so espera terminar" numa unica
+ * funcao seria mais confuso que tres funcoes diretas. */
+export interface FfmpegCompletionResult {
+  exitCode: number | null
+  stderr: string
+}
+
+/**
+ * Extracao de audio bruto pra transcricao local (Whisper/ONNX, `WhisperLocalProvider`) - tipicamente
+ * poucos segundos mesmo pra uma reuniao de 1h (so remux/resample, sem encode de video), entao
+ * progresso incremental nao compensa a complexidade extra que `runFfmpegProcess` (com `-progress
+ * pipe:1`) exigiria; o job assincrono ja reporta progresso em ETAPAS mais grosseiras (extração,
+ * carregamento do modelo, transcrição) via `TranscriptionProvider.transcribe`'s `onProgress`.
+ */
+export function runFfmpegToCompletion(
+  binaryPath: string,
+  args: readonly string[]
+): Promise<FfmpegCompletionResult> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(binaryPath, [...args], { windowsHide: true })
+    let stderr = ''
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf-8')
+    })
+    child.on('error', reject)
+    child.on('close', (exitCode) => {
+      resolvePromise({ exitCode, stderr })
+    })
+  })
+}
+
 /** EXP-009 - resultado de validar a saida do ffprobe contra o arquivo exportado. `durationMs`
  * presente so quando `valid: true` - um arquivo invalido nunca tem uma duracao confiavel pra
  * reportar. */

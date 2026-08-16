@@ -15,10 +15,12 @@ import { IdSchema, IsoDateTimeSchema } from './common.schema'
  * livre pra delegar.
  */
 
-/** So `OPENAI` por enquanto (unico provedor citado no roadmap, AI-002) - um union de 1 membro em
- * vez de `z.string()` livre pra já deixar o formato certo pronto pro dia em que um segundo
- * provedor for adicionado, sem quebrar compatibilidade de dado já persistido. */
-export const TranscriptionProviderIdSchema = z.enum(['OPENAI'])
+/** `OPENAI` continua sem implementação real (bloqueado esperando o usuário - custo + envio de
+ * áudio a um serviço externo, ver comentário acima). `WHISPER_LOCAL` (refinamento pós-SEARCH-001)
+ * é o provedor padrão de fato: roda 100% na máquina do usuário via `@huggingface/transformers`
+ * (Whisper convertido pra ONNX), sem chamada de rede por reunião (só no primeiro download do
+ * modelo escolhido) e sem custo - por isso não passa pelo mesmo gate de consentimento/API key. */
+export const TranscriptionProviderIdSchema = z.enum(['OPENAI', 'WHISPER_LOCAL'])
 export type TranscriptionProviderId = z.infer<typeof TranscriptionProviderIdSchema>
 
 export const TranscriptionJobStatusSchema = z.enum(JOB_STATUSES)

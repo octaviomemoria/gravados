@@ -65,8 +65,13 @@ describe('settings.schema', () => {
     )
   })
 
-  it('exposes exactly the three MVP settings categories', () => {
-    expect(Object.keys(SETTINGS_CATEGORY_SCHEMAS)).toEqual(['app', 'recordingPresets', 'exportPresets'])
+  it('exposes exactly the four settings categories', () => {
+    expect(Object.keys(SETTINGS_CATEGORY_SCHEMAS)).toEqual([
+      'app',
+      'recordingPresets',
+      'exportPresets',
+      'transcription'
+    ])
   })
 })
 
@@ -133,7 +138,7 @@ describe('transcription.schema', () => {
     expect(StartTranscriptionRequestSchema.safeParse({ projectId: 'not-a-uuid' }).success).toBe(false)
   })
 
-  it('rejects a provider other than OPENAI (unico membro do enum nesta fase, AI-001)', () => {
+  it('rejects a provider outside the enum (OPENAI/WHISPER_LOCAL)', () => {
     const result = TranscriptResponseSchema.safeParse({
       id: projectId,
       projectId,
@@ -144,6 +149,19 @@ describe('transcription.schema', () => {
       segments: []
     })
     expect(result.success).toBe(false)
+  })
+
+  it('accepts WHISPER_LOCAL as a valid provider', () => {
+    const result = TranscriptResponseSchema.safeParse({
+      id: projectId,
+      projectId,
+      provider: 'WHISPER_LOCAL',
+      model: 'Xenova/whisper-base',
+      language: 'pt',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      segments: []
+    })
+    expect(result.success).toBe(true)
   })
 
   it('accepts a full transcript with segments', () => {

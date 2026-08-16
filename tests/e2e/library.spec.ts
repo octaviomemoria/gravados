@@ -21,6 +21,7 @@ async function launchApp(): Promise<{ app: ElectronApplication; window: Page }> 
     env: {
       ...process.env,
       MEETING_STUDIO_E2E_FAKE_MEDIA: '1',
+      MEETING_STUDIO_E2E_FAKE_TRANSCRIPTION: '1',
       MEETING_STUDIO_LOG_LEVEL: 'error'
     }
   })
@@ -154,14 +155,17 @@ test.describe('library (details, rename, delete)', () => {
   })
 
   /**
-   * AI-001 (trigesimo segundo incremento - Fase 5 "Transcrição", primeiro incremento pos-Marco
-   * MVP). `transcription.start` sempre enfileira com sucesso pela UI de ponta a ponta (mesmo
-   * pipeline real de IPC/job que EXP-003/004 provou pra exportação), mas o job SEMPRE termina
-   * `FAILED` nesta fase - nenhum `TranscriptionProvider` real esta conectado ainda (ver README
-   * "Próximo passo"). Confirma que esse estado "esperado" chega corretamente ate a UI, nao trava
-   * nem mostra um erro de rede/parsing genuino.
+   * AI-001 entregou o pipeline (IPC/job/UI); refinamento pos-SEARCH-001 conectou `WHISPER_LOCAL`
+   * de verdade (Whisper local via `@huggingface/transformers`). Rodar um modelo Whisper REAL
+   * baixaria ~150MB+ da internet na primeira execucao - uma dependencia de rede/tempo que este
+   * projeto mantem deliberadamente fora da suite automatizada (decisao registrada no README).
+   * `MEETING_STUDIO_E2E_FAKE_TRANSCRIPTION=1` (setado em `launchApp`) substitui o provedor real por
+   * um resultado instantaneo - o resto do pipeline (extracao de audio REAL via ffmpeg contra o
+   * arquivo gravado de verdade, IPC, persistencia, UI) roda sem nenhum mock. O provedor real em si
+   * (chamada real ao `@huggingface/transformers`) ja tem cobertura completa e determinística em
+   * `transcription.service.test.ts`/`whisper-local-provider.test.ts` (pipeline injetado, sem rede).
    */
-  test('starts a transcription via the UI and shows the expected "no provider yet" failure', async () => {
+  test('starts a transcription via the UI and completes with the fake E2E provider (real audio extraction)', async () => {
     test.info().setTimeout(LIBRARY_TEST_TIMEOUT_MS)
     const title = `Reuniao de teste E2E - transcricao ${Date.now()}`
 
@@ -197,7 +201,6 @@ test.describe('library (details, rename, delete)', () => {
 
     await listItem.getByRole('button', { name: 'Transcrever' }).click()
     const status = listItem.locator('.library-list__transcription-status')
-    await expect(status).toContainText('Falhou', { timeout: POLL_TIMEOUT_MS })
-    await expect(status).toContainText('Nenhum provedor de transcricao configurado')
+    await expect(status).toContainText('Concluida', { timeout: POLL_TIMEOUT_MS })
   })
 })
