@@ -3073,10 +3073,10 @@ planejada a partir daqui:
 2. Refinamentos menores ainda pendentes dentro do escopo já entregue do MVP + Fase 5 + Fase 7, sem
    fase própria no roadmap - ver "Pendências conhecidas" para a lista completa acumulada (ex.:
    `shape: 'circle'` continua uma aproximação retangular tanto no preview quanto no export desde
-   EXP-004b; `SIDE_BY_SIDE` continua fixo em 50/50; marcadores ganharam título/nota + visualização
-   na Biblioteca, mas ainda não têm edição/exclusão; busca já destaca o termo encontrado no
-   resultado, mas ainda não pula direto pro instante no player nem tem paginação; transcrição local
-   não mostra progresso do download do modelo nem faz diarização de falantes).
+   EXP-004b; `SIDE_BY_SIDE` continua fixo em 50/50; marcadores agora têm edição/exclusão além de
+   título/nota + visualização na Biblioteca (MARKERS-EDIT); busca já destaca o termo encontrado no
+   resultado e pula direto pro instante no player (LIB-PLAYER), mas ainda não tem paginação;
+   transcrição local não mostra progresso do download do modelo nem faz diarização de falantes).
 3. Fases 6/8/9 (meeting intelligence, nuvem, integrações) e as sub-fases 2/3 de "Pesquisa"
    (embeddings/busca semântica, perguntas sobre múltiplas reuniões - ambas dependentes de um
    provedor de IA externo pago, mesmo gate de AI-002/OpenAI) - o restante do trabalho pós-MVP, cada
