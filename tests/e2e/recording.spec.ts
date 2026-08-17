@@ -533,6 +533,87 @@ test.describe('recording (pause/resume)', () => {
 })
 
 /**
+ * Refinamento pos-MVP (bug real relatado pelo usuario testando o app: "se sairmos da tela
+ * enquanto gravando, a gravacao e interrompida"). Cobre o cenario exato do relato: navegar pra
+ * OUTRA tela (Biblioteca) enquanto uma gravacao esta ativa nunca mais deveria parar a captura -
+ * o arquivo continua crescendo, e uma barra de status persistente (`RecordingStatusBar`, montada
+ * no `AppShell`) fica visivel com REC + Pausar/Parar em qualquer tela. So microfone, mesmo
+ * raciocinio ja registrado nos describes de pausar/retomar/marcadores acima.
+ */
+test.describe('recording (survives navigation)', () => {
+  test.skip(!existsSync(MAIN_ENTRY), BUILD_MISSING_MESSAGE)
+  test.describe.configure({ retries: 2 })
+
+  let electronApp: ElectronApplication
+  let appWindow: Page
+
+  test.beforeAll(async () => {
+    ;({ app: electronApp, window: appWindow } = await launchApp())
+  })
+
+  test.afterAll(async () => {
+    await electronApp.close()
+  })
+
+  test('keeps recording after navigating to another screen, shows a persistent status bar, and can be stopped from there', async () => {
+    test.info().setTimeout(RECORDING_TEST_TIMEOUT_MS)
+    await openRecordingSetup(appWindow)
+
+    const micSelect = appWindow.getByLabel('Microfone', { exact: true })
+    await expect(micSelect).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await micSelect.selectOption({ index: 1 })
+
+    await appWindow.getByLabel('Titulo da reuniao').fill('Reuniao de teste E2E - sobrevive a navegacao')
+    await appWindow.getByRole('button', { name: 'Iniciar gravacao' }).click()
+    await expect(appWindow.getByRole('status')).toContainText('REC', { timeout: 10_000 })
+
+    const { rootPath } = await getActiveProjectPaths(appWindow)
+    const microphonePath = join(rootPath, 'source', 'microphone', 'microphone_000001.webm')
+
+    await expect
+      .poll(() => fileHasBytes(microphonePath), {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando primeiro chunk de audio ser persistido em disco'
+      })
+      .toBe(true)
+    const sizeBeforeNavigating = fileByteSize(microphonePath)
+
+    // O ponto central deste teste: sair da tela de gravacao NUNCA deveria interromper a captura.
+    await appWindow
+      .getByRole('navigation', { name: 'Navegacao principal' })
+      .getByRole('link', { name: 'Biblioteca' })
+      .click()
+    await expect(appWindow.getByRole('heading', { name: 'Biblioteca' })).toBeVisible({
+      timeout: SELECT_TIMEOUT_MS
+    })
+
+    // A barra de status persistente (RecordingStatusBar, montada no AppShell) precisa aparecer
+    // aqui - fora da tela "/recording" - com REC e o botao Parar.
+    const statusBar = appWindow.locator('.recording-status-bar')
+    await expect(statusBar).toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+    await expect(statusBar).toContainText('REC')
+
+    // O arquivo continua crescendo enquanto a Biblioteca esta em primeiro plano - prova real de
+    // que a captura nao foi interrompida (nao so que o estado da UI nao mudou).
+    await expect
+      .poll(() => fileByteSize(microphonePath) > sizeBeforeNavigating, {
+        timeout: POLL_TIMEOUT_MS,
+        message: 'aguardando o arquivo continuar crescendo com a Biblioteca em primeiro plano'
+      })
+      .toBe(true)
+
+    // Parar A PARTIR da barra de status (nao voltando pra tela de gravacao) - prova que os
+    // controles funcionam de qualquer lugar, nao so que a captura sobrevive passivamente.
+    await statusBar.getByRole('button', { name: 'Parar' }).click()
+    await expect(statusBar).not.toBeVisible({ timeout: SELECT_TIMEOUT_MS })
+
+    const finalized = await getActiveProjectPaths(appWindow)
+    expect(finalized.status).toBe('COMPLETED')
+    expect(fileHasBytes(microphonePath)).toBe(true)
+  })
+})
+
+/**
  * RF-016 (oitavo incremento - marcadores). So microfone, mesmo raciocinio do describe de
  * pausar/retomar acima: adicionar um marcador nao depende de qual fonte esta sendo gravada, so da
  * sessao/maquina de estados - nao ha motivo pra pagar o custo de uma fonte mais pesada (camera/

@@ -1858,6 +1858,42 @@ VALOR em si, que pode ser dado sensível do usuário). Sem mudança de comportam
 (a resposta IPC/mensagem amigável na UI continuam as mesmas) - só torna o PRÓXIMO caso parecido
 diagnosticável direto pelo `main.log`, sem precisar reproduzir às cegas.
 
+### Gravação sobrevive à navegação + barra de status persistente (Fase 1)
+
+Bug real relatado pelo usuário testando o app: sair da tela "Nova gravação" enquanto uma gravação
+estava ativa interrompia a captura. Causa raiz mecânica: `useDeviceStream` sempre para as tracks
+do `MediaStream` no cleanup do seu `useEffect`, e tanto ele quanto `useRecordingSession` (que
+mantém os `MediaRecorder`s ativos) eram instanciados DENTRO de `RecordingSetupPage` - navegar pra
+outra rota desmontava o componente, o que parava as tracks no meio da gravação e derrubava os
+`MediaRecorder`s que ainda escreviam a partir delas.
+
+- **Correção estrutural, não um workaround**: todo o pipeline de captura (seleção de
+  dispositivos, streams de preview de câmera/microfone, `useRecordingSession`) foi extraído para
+  `RecordingSessionProvider` (`features/recording/RecordingSessionProvider.tsx`), montado UMA
+  ÚNICA VEZ em `App.tsx` como irmão de `<AppRoutes/>` dentro do `<HashRouter>` - nunca filho da
+  árvore de rotas, então nunca desmonta com a navegação. `RecordingSetupPage` virou um consumidor
+  fino desse contexto (mesmo JSX de antes, só troca hooks locais por `useRecordingSessionContext()`).
+- **`RecordingSessionContext` (Context object, hook, tipos) vive num arquivo separado**
+  (`recording-session-context.ts`) do componente Provider - exigido pela regra de lint
+  `react-refresh/only-export-components` (um arquivo que exporta componente E hook/contexto quebra
+  o Fast Refresh).
+- **`RecordingStatusBar`, novo componente montado no `AppShell`** (também nunca desmonta com a
+  navegação): mostra REC/PAUSADO + tempo decorrido + botões Pausar/Retomar/Parar em QUALQUER tela
+  enquanto houver uma sessão ativa - o usuário pode navegar livremente pra Biblioteca/Configurações/
+  etc. sem perder a gravação, e ainda controla ela de lá. Escondida deliberadamente na própria tela
+  "/recording" (`RecordingControls` já mostra os mesmos controles com mais detalhe ali - uma
+  segunda barra seria ruído duplicado).
+- Testado via um novo cenário E2E dedicado (`recording.spec.ts`, describe "recording (survives
+  navigation)"): inicia gravação de microfone, navega pra Biblioteca, confirma que a barra de
+  status aparece e que o arquivo continua crescendo em bytes com a Biblioteca em primeiro plano, e
+  que "Parar" funciona a partir de lá (projeto finaliza `COMPLETED`).
+- Efeito colateral verificado, não assumido: como o Provider agora chama `getUserMedia`/
+  `devices.listScreens` incondicionalmente em TODO boot do app (antes só ao abrir "/recording"),
+  as suítes E2E que não passam `MEETING_STUDIO_E2E_FAKE_MEDIA` (`app-launch.spec.ts`,
+  `navigation.spec.ts`, `search.spec.ts`) foram checadas à parte - continuam passando sem alteração
+  (ambos os hooks de dispositivo já tratavam falha via `try`/`catch` silencioso, sem
+  `console.error`, mesmo antes desta mudança).
+
 ## Estrutura de diretórios
 
 ```text

@@ -1,54 +1,44 @@
-import { useState } from 'react'
 import { EmptyState } from '../../components/EmptyState'
 import { CameraPreview } from './CameraPreview'
 import { LevelMeter } from './LevelMeter'
 import { RecordingControls } from './RecordingControls'
-import { useMediaDevices } from './useMediaDevices'
-import { useDeviceStream } from './useDeviceStream'
-import { useAudioLevel } from './useAudioLevel'
-import { useScreenSources } from './useScreenSources'
-import { useRecordingSession } from './useRecordingSession'
+import { useRecordingSessionContext } from './recording-session-context'
 
 /**
  * RF-002/RF-003/RF-004/RF-005/RF-006/RF-007/RF-008/RF-009/RF-010/RF-016/RF-043 + MVP-AC-001.
  * Escopo deliberado (Fase 1): captura real de tela, camera, microfone E audio do sistema,
  * simultaneas e independentes, com segmentacao por tempo/tamanho, pausar/retomar e marcadores
- * (ver README "Decisoes de arquitetura"). Qualidade/layout ficam para depois.
+ * (ver README "Decisoes de arquitetura").
+ *
+ * Refinamento pos-MVP: este componente e so a UI de SETUP (escolher fontes + controles) - o
+ * estado real da sessao (streams, `MediaRecorder`s, refs) vive em `RecordingSessionProvider`,
+ * montado uma unica vez em `App.tsx`, fora da arvore de rotas - navegar pra outra tela NUNCA
+ * mais interrompe uma gravacao em andamento (ver comentario completo la).
  */
 export function RecordingSetupPage() {
-  const { cameras, microphones, permissionDenied, loading: devicesLoading } = useMediaDevices()
-  const { sources: screenSources, error: screenSourcesError } = useScreenSources()
-
-  const [selectedScreenId, setSelectedScreenId] = useState<string | null>(null)
-  const [selectedCameraId, setSelectedCameraId] = useState<string | null>(null)
-  const [selectedMicId, setSelectedMicId] = useState<string | null>(null)
-  const [systemAudioEnabled, setSystemAudioEnabled] = useState(false)
-
-  const { stream: cameraStream, error: cameraError } = useDeviceStream(
-    selectedCameraId ? { video: { deviceId: { exact: selectedCameraId } } } : null
-  )
-  const { stream: micStream, error: micError } = useDeviceStream(
-    selectedMicId ? { audio: { deviceId: { exact: selectedMicId } } } : null
-  )
-  const micLevel = useAudioLevel(micStream)
-  // RF-005: a API do Chromium exige uma fonte de video do tipo tela (nunca janela) emparelhada
-  // com a captura de audio loopback (ver `acquireSystemAudioStream`) - independente de qual tela
-  // o usuario escolheu gravar como video (`selectedScreenId`, pode ate ser nenhuma).
-  const systemAudioCarrierSourceId =
-    systemAudioEnabled ? (screenSources?.find((source) => source.kind === 'screen')?.id ?? null) : null
-  const recordingSession = useRecordingSession({
-    microphone: micStream,
-    camera: cameraStream,
-    screenSourceId: selectedScreenId,
-    systemAudioCarrierSourceId
-  })
-  // `paused` inclusa deliberadamente - a selecao de fontes fica travada durante toda a sessao
-  // ativa (gravando OU pausada), so libera de novo apos `stop()` (RF-010: pausar nao permite
-  // trocar fonte no meio, so suspende/retoma as trilhas ja escolhidas).
-  const isRecording =
-    recordingSession.status === 'recording' ||
-    recordingSession.status === 'paused' ||
-    recordingSession.status === 'stopping'
+  const {
+    cameras,
+    microphones,
+    permissionDenied,
+    devicesLoading,
+    screenSources,
+    screenSourcesError,
+    selectedScreenId,
+    setSelectedScreenId,
+    selectedCameraId,
+    setSelectedCameraId,
+    selectedMicId,
+    setSelectedMicId,
+    systemAudioEnabled,
+    setSystemAudioEnabled,
+    systemAudioCarrierSourceId,
+    cameraStream,
+    cameraError,
+    micError,
+    micLevel,
+    recordingSession,
+    isRecording
+  } = useRecordingSessionContext()
 
   return (
     <div className="feature-page">

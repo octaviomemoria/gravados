@@ -634,6 +634,36 @@ video.library-list__player {
   color: var(--ms-color-text-muted);
 }
 
+/* Refinamento pos-MVP - barra fixa (RecordingStatusBar) visivel em qualquer tela enquanto uma
+   gravacao estiver ativa, exceto na propria "/recording" (que ja mostra os mesmos controles via
+   RecordingControls). Reusa `.recording-indicator__dot` (mesmo ponto pulsante REC/PAUSADO). */
+.recording-status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--ms-space-3);
+  padding: var(--ms-space-2) var(--ms-space-3);
+  margin-bottom: var(--ms-space-4);
+  border-radius: var(--ms-radius-sm);
+  background: var(--ms-color-bg);
+  border: 1px solid var(--ms-color-border);
+}
+
+.recording-status-bar__label {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.recording-status-bar__error {
+  color: var(--ms-color-danger);
+  font-size: 0.85rem;
+}
+
+.recording-status-bar__actions {
+  display: flex;
+  gap: var(--ms-space-2);
+  margin-left: auto;
+}
+
 /* RF-042 - aviso de espaco em disco baixo (nao bloqueia a gravacao, so chama atencao). */
 .disk-space-warning {
   margin-top: var(--ms-space-2);
