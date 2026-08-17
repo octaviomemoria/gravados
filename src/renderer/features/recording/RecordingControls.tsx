@@ -15,6 +15,9 @@ export interface RecordingControlsProps {
   /** RF-042 - `null` ate a primeira leitura do monitor de espaco em disco. */
   diskSpaceStatus: DiskSpaceStatus | null
   freeDiskBytes: number | null
+  /** Refinamento pos-RF-005 - `true` quando o usuario pediu audio do sistema mas a captura falhou
+   * nesta plataforma (degradacao graciosa - a gravacao continua sem essa trilha). */
+  systemAudioUnavailable: boolean
   onStart: (title: string) => void
   onStop: () => void
   onPause: () => void
@@ -38,6 +41,7 @@ export function RecordingControls({
   markerCount,
   diskSpaceStatus,
   freeDiskBytes,
+  systemAudioUnavailable,
   onStart,
   onStop,
   onPause,
@@ -107,6 +111,17 @@ export function RecordingControls({
       {isActive && diskSpaceStatus === 'warning' && (
         <p className="disk-space-warning" role="alert">
           Aviso: espaco em disco baixo. Libere espaco para evitar que a gravacao seja interrompida.
+        </p>
+      )}
+
+      {/* Refinamento pos-RF-005 - audio do sistema foi PEDIDO (checkbox marcado em
+          RecordingSetupPage) mas a captura falhou nesta plataforma; a gravacao das demais fontes
+          segue normalmente, mas antes disso o usuario nao tinha nenhuma forma de saber que essa
+          trilha especifica ficou de fora. */}
+      {isActive && systemAudioUnavailable && (
+        <p className="disk-space-warning" role="alert">
+          Audio do sistema nao esta disponivel nesta plataforma - a gravacao continua sem essa
+          trilha.
         </p>
       )}
 

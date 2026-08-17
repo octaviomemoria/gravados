@@ -2941,6 +2941,32 @@ baixo.
   "Espaco critico" conforme o espaço livre cruza os limiares, e o caso defensivo de `settings`
   indisponível).
 
+### Aviso de áudio do sistema indisponível (Fase 1)
+
+Resolve a pendência registrada desde a captura de áudio do sistema (RF-005): a degradação
+graciosa já existia (uma falha nessa trilha específica nunca interrompe a gravação das demais),
+mas o usuário não tinha nenhuma forma de SABER que a trilha que ele pediu ficou de fora - só
+descobriria depois, ao notar a ausência do áudio do sistema no arquivo final.
+
+- **`RecordingSessionState` ganha `systemAudioUnavailable: boolean`** - setado no MESMO catch que
+  já existia (`acquireSystemAudioStream` falhando), nunca uma verificação nova de suporte de
+  plataforma. `false` (nunca `null`) tanto quando áudio do sistema não foi pedido quanto quando foi
+  capturado com sucesso - só vira `true` no caminho de falha real.
+- **`setState` nesse ponto do fluxo precisou virar merge via `prev`, não mais um objeto literal
+  completo** - o objeto `status: 'recording'` que roda logo depois (sucesso do `recording.start`)
+  usava um literal completo que teria APAGADO o `systemAudioUnavailable: true` setado durante o
+  loop de aquisição de streams, se não fosse ajustado pra `(prev) => ({ ...prev, ... })` - achado
+  real ao revisar o fluxo, não só uma adição mecânica de campo.
+- **`RecordingControls` mostra um aviso** (mesmo estilo do banner de espaço em disco baixo) quando
+  `systemAudioUnavailable` é `true` durante uma sessão ativa.
+- **Não cobre o caso "sem nenhuma fonte de tela disponível"** (ver "Pendências conhecidas") -
+  cenário estruturalmente diferente (a trilha nunca chega a ser pedida, não falha).
+- Sem novo teste automatizado do caminho de falha em si - forçar `acquireSystemAudioStream` a
+  falhar de forma determinística no ambiente de teste (Chromium com `--use-fake-device-for-media-
+  stream`) exigiria um hook novo sem equivalente já estabelecido no projeto; o `typecheck` cobre
+  que todo `setState` continua satisfazendo o tipo, e o caminho de sucesso já tem cobertura E2E
+  real (`recording.spec.ts`, cenário "system audio + microfone").
+
 ## Pendências conhecidas
 
 - Nuvem/colaboração — fora do escopo do MVP por desenho (ver `11_ROADMAP_BACKLOG.md`, Fases 8-9).
@@ -2975,10 +3001,14 @@ baixo.
   E2E com hardware real neste ambiente de teste (contenção de recursos - decisão registrada #22);
   a lógica está provada correta via teste sintético de 4 trilhas em
   `recording-session-manager.test.ts`.
-- Áudio do sistema não tem indicador visual quando a plataforma não suporta (RF-005 degrada
-  graciosamente, mas a UI não avisa o usuário que aquela trilha ficou de fora - refinamento
-  futuro, não bloqueante). O mesmo vale se não houver nenhuma fonte `kind: 'screen'` disponível
-  para servir de portador da captura.
+- Resolvido: áudio do sistema agora avisa explicitamente na UI quando a captura falha (RF-005
+  continua degradando graciosamente - só essa trilha fica de fora), ver
+  [Aviso de áudio do sistema indisponível](#aviso-de-áudio-do-sistema-indisponível-fase-1). Segue
+  sem aviso o caso diferente de "sem nenhuma fonte `kind: 'screen'` disponível pra servir de
+  portador" - hoje isso faz `systemAudioCarrierSourceId` ficar `null` mesmo com o checkbox
+  marcado, então a trilha SYSTEM_AUDIO nunca chega a ser pedida (nem tentada, nem falha) -
+  silenciosamente não gravada, sem aviso nenhum; o checkbox continua habilitado independente de
+  telas disponíveis.
 - `RecordingSetupPage` ainda não tem seleção de qualidade/segmentação/layout (também previstos na
   tela de setup por `08_UX_FLOWS.md` §3).
 - Biblioteca ainda não tem uma tela de detalhes do projeto (duração, trilhas gravadas, tamanho em

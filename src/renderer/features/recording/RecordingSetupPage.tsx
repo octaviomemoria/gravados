@@ -166,6 +166,7 @@ export function RecordingSetupPage() {
         markerCount={recordingSession.markers.length}
         diskSpaceStatus={recordingSession.diskSpaceStatus}
         freeDiskBytes={recordingSession.freeDiskBytes}
+        systemAudioUnavailable={recordingSession.systemAudioUnavailable}
         onStart={(title) => void recordingSession.start(title)}
         onStop={() => void recordingSession.stop()}
         onPause={() => void recordingSession.pause()}

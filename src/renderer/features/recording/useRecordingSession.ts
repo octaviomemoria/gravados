@@ -20,6 +20,15 @@ export interface RecordingSessionState {
    */
   diskSpaceStatus: DiskSpaceStatus | null
   freeDiskBytes: number | null
+  /**
+   * Refinamento pos-RF-005 - `true` quando o usuario pediu audio do sistema (marcou o checkbox em
+   * `RecordingSetupPage`) mas a captura falhou nesta plataforma (degradacao graciosa, ver
+   * `acquireSystemAudioStream`) - a gravacao continua sem essa trilha, mas antes disso a UI nao
+   * tinha nenhuma forma de avisar o usuario que ele PEDIU algo que nao foi gravado. `false` (nunca
+   * `null`) quando audio do sistema nao foi pedido OU foi capturado com sucesso - só vira `true` no
+   * caminho de falha real.
+   */
+  systemAudioUnavailable: boolean
 }
 
 /**
@@ -197,7 +206,8 @@ export function useRecordingSession(sources: RecordingSources) {
     error: null,
     markers: [],
     diskSpaceStatus: null,
-    freeDiskBytes: null
+    freeDiskBytes: null,
+    systemAudioUnavailable: false
   })
 
   const projectIdRef = useRef<string | null>(null)
@@ -409,7 +419,8 @@ export function useRecordingSession(sources: RecordingSources) {
         error: null,
         markers: [],
         diskSpaceStatus: null,
-        freeDiskBytes: null
+        freeDiskBytes: null,
+        systemAudioUnavailable: false
       })
       stoppedRef.current = false
 
@@ -461,6 +472,7 @@ export function useRecordingSession(sources: RecordingSources) {
                 systemAudioError
               )
               stream = null
+              setState((prev) => ({ ...prev, systemAudioUnavailable: true }))
             }
           }
           if (!stream) continue
@@ -489,14 +501,17 @@ export function useRecordingSession(sources: RecordingSources) {
         }, DISK_SPACE_POLL_INTERVAL_MS)
         void pollDiskSpaceRef.current()
 
-        setState({
+        // Merge via `prev` (nao um objeto literal completo) - preserva `systemAudioUnavailable`
+        // setado durante o loop de aquisicao de streams acima, se a captura tiver falhado.
+        setState((prev) => ({
+          ...prev,
           status: 'recording',
           elapsedMs: 0,
           error: null,
           markers: [],
           diskSpaceStatus: null,
           freeDiskBytes: null
-        })
+        }))
       } catch (error) {
         console.error('Falha ao iniciar gravacao', error)
         screenStreamRef.current?.getTracks().forEach((track) => track.stop())
@@ -534,7 +549,8 @@ export function useRecordingSession(sources: RecordingSources) {
             : 'Nao foi possivel iniciar a gravacao. Tente novamente.',
           markers: [],
           diskSpaceStatus: null,
-          freeDiskBytes: null
+          freeDiskBytes: null,
+          systemAudioUnavailable: false
         })
       }
     },
@@ -721,7 +737,8 @@ export function useRecordingSession(sources: RecordingSources) {
         error: autoStopReasonRef.current,
         markers: [],
         diskSpaceStatus: null,
-        freeDiskBytes: null
+        freeDiskBytes: null,
+        systemAudioUnavailable: false
       })
     } catch (error) {
       console.error('Falha ao finalizar gravacao', error)
@@ -731,7 +748,8 @@ export function useRecordingSession(sources: RecordingSources) {
         error: 'Falha ao finalizar a gravacao.',
         markers: [],
         diskSpaceStatus: null,
-        freeDiskBytes: null
+        freeDiskBytes: null,
+        systemAudioUnavailable: false
       })
     } finally {
       trackRecorders.clear()
