@@ -634,6 +634,15 @@ video.library-list__player {
   color: var(--ms-color-text-muted);
 }
 
+/* Refinamento pos-MVP - explica que o titulo digitado ANTES de "Iniciar gravacao" cria o projeto
+   automaticamente (confusao real relatada pelo usuario: "nao vi onde posso cadastrar novo
+   projeto"). Discreto, sem chamar tanta atencao quanto os avisos (`.disk-space-warning`). */
+.recording-controls__title-hint {
+  font-size: 0.85rem;
+  color: var(--ms-color-text-muted);
+  margin: 0;
+}
+
 /* Refinamento pos-MVP - barra fixa (RecordingStatusBar) visivel em qualquer tela enquanto uma
    gravacao estiver ativa, exceto na propria "/recording" (que ja mostra os mesmos controles via
    RecordingControls). Reusa `.recording-indicator__dot` (mesmo ponto pulsante REC/PAUSADO). */

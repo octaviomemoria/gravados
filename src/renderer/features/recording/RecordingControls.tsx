@@ -69,15 +69,25 @@ export function RecordingControls({
       <h2>Gravacao</h2>
 
       {!isActive && (
-        <input
-          type="text"
-          className="device-select"
-          aria-label="Titulo da reuniao"
-          placeholder="Titulo da reuniao"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          disabled={status === 'starting'}
-        />
+        <>
+          <input
+            type="text"
+            className="device-select"
+            aria-label="Titulo da reuniao"
+            placeholder="Titulo da reuniao"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            disabled={status === 'starting'}
+          />
+          {/* Refinamento pos-MVP (confusao real relatada pelo usuario: "nao vi onde posso cadastrar
+              novo projeto" - o app nao tem uma tela separada de "criar projeto", o projeto E a
+              gravacao, criado automaticamente com este titulo ao clicar "Iniciar gravacao". Sem essa
+              explicacao, o campo parecia so um rotulo opcional em vez do proprio cadastro. */}
+          <p className="recording-controls__title-hint">
+            Nao ha uma tela separada de "novo projeto" - ao iniciar, este titulo cria um projeto
+            novo automaticamente, que fica disponivel na Biblioteca.
+          </p>
+        </>
       )}
 
       {error && <EmptyState message={error} />}
