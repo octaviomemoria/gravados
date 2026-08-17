@@ -32,7 +32,15 @@ export function registerHandler<TRequest, TResponse>(
   ipcMain.handle(channel, async (event, rawRequest: unknown): Promise<IpcResult<TResponse>> => {
     const parsedRequest = schemas.request.safeParse(rawRequest)
     if (!parsedRequest.success) {
-      logger.warn('Requisicao IPC invalida', { operation: channel })
+      // Achado real investigando um relato do usuario ("erro de validacao ao iniciar gravacao")
+      // sem NENHUM rastro no log - so o nome do canal era registrado, nunca o motivo. O resumo
+      // (caminho do campo + mensagem do Zod, NUNCA o valor em si - pode conter dado sensivel do
+      // usuario) vai na propria mensagem de log a partir de agora, tornando o PROXIMO caso
+      // parecido diagnosticavel sem precisar reproduzir.
+      const issuesSummary = parsedRequest.error.issues
+        .map((issue) => `${issue.path.join('.') || '(raiz)'}: ${issue.message}`)
+        .join(' | ')
+      logger.warn(`Requisicao IPC invalida - ${issuesSummary}`, { operation: channel })
       return {
         ok: false,
         error: {

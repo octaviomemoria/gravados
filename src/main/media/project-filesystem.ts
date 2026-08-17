@@ -33,8 +33,41 @@ export function defaultLibraryRootPath(documentsPath: string): string {
   return join(documentsPath, LIBRARY_FOLDER_NAME)
 }
 
-export function buildProjectPaths(libraryRootPath: string, projectId: string): ProjectPaths {
-  const rootPath = join(libraryRootPath, PROJECTS_FOLDER_NAME, projectId)
+/** Refinamento pos-MVP (pedido do usuario testando o app: "pasta com nome de UUID e dificil de
+ * achar"). Deriva um nome de pasta LEGIVEL a partir do titulo digitado pelo usuario, removendo
+ * caracteres invalidos em nomes de arquivo Windows (`<>:"/\|?*` + caracteres de controle),
+ * colapsando espacos e cortando um tamanho razoavel - nunca deixa passar `..`/`.`/string vazia
+ * (cai no fallback `gravacao`). Path traversal (`..`) fica impossivel de qualquer forma porque
+ * `buildProjectFolderName` sempre concatena um sufixo do id - mesmo um titulo que sanitiza pra
+ * exatamente `..` vira `.._a1b2c3d4`, um nome de pasta literal, nunca ".." de verdade. */
+export function sanitizeFolderName(rawTitle: string): string {
+  const cleaned = rawTitle
+    // Caracteres de controle tambem sao invalidos em nomes de arquivo Windows, removidos junto
+    // com os simbolos reservados.
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ') // eslint-disable-line no-control-regex
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/, '')
+    .slice(0, 60)
+    .trim()
+  return cleaned.length > 0 ? cleaned : 'gravacao'
+}
+
+/** `<titulo-sanitizado>_<8 primeiros chars do id>` - o sufixo garante unicidade mesmo entre dois
+ * projetos com o MESMO titulo (README ja registra que titulos duplicados sao permitidos), sem
+ * precisar consultar o banco por colisao. So usado na CRIACAO do projeto (ver
+ * `initializeProjectOnDisk`) - renomear um projeto depois (`ProjectService.renameProject`) nunca
+ * move a pasta no disco, mesma decisao que ja valia pro nome baseado em UUID (o `rootPath`
+ * persistido no banco e a fonte da verdade, sempre). */
+export function buildProjectFolderName(title: string, projectId: string): string {
+  return `${sanitizeFolderName(title)}_${projectId.slice(0, 8)}`
+}
+
+/** Deriva a arvore completa de caminhos a partir de um `rootPath` JA RESOLVIDO - nunca reconstroi
+ * o nome da pasta a partir do `projectId` sozinho (isso quebraria desde que a pasta passou a
+ * incluir o titulo, ver `buildProjectFolderName`). Callers que ja tem a linha do projeto (com
+ * `rootPath` persistido) devem usar esta funcao, nunca `buildProjectPaths`. */
+export function projectPathsFromRoot(rootPath: string): ProjectPaths {
   const sourceRoot = join(rootPath, SOURCE_ROOT_FOLDER_NAME)
   return {
     rootPath,
@@ -48,6 +81,14 @@ export function buildProjectPaths(libraryRootPath: string, projectId: string): P
     exportsPath: join(rootPath, 'exports'),
     recoveryPath: join(rootPath, 'recovery')
   }
+}
+
+/** Fallback legado (pasta nomeada so pelo `projectId`, sem titulo) - mantido pra nao quebrar
+ * chamadores que ainda nao tem o titulo em maos; `initializeProjectOnDisk` NAO usa mais esta
+ * funcao (ver comentario ali). */
+export function buildProjectPaths(libraryRootPath: string, projectId: string): ProjectPaths {
+  const rootPath = join(libraryRootPath, PROJECTS_FOLDER_NAME, projectId)
+  return projectPathsFromRoot(rootPath)
 }
 
 const PROJECT_ID_PATTERN = /^[a-zA-Z0-9-]{1,100}$/
@@ -208,13 +249,18 @@ export async function readManifest(manifestPath: string): Promise<ProjectManifes
   }
 }
 
+/** `title` opcional (default `''`, cai no fallback `gravacao_<id>`) - so pra nao quebrar
+ * chamadores existentes/testes que ainda nao repassam o titulo. */
 export async function initializeProjectOnDisk(
   libraryRootPath: string,
-  projectId: string
+  projectId: string,
+  title = ''
 ): Promise<{ paths: ProjectPaths; manifest: ProjectManifest }> {
   assertValidProjectId(projectId)
-  const paths = buildProjectPaths(libraryRootPath, projectId)
-  assertPathWithinBoundary(paths.rootPath, join(libraryRootPath, PROJECTS_FOLDER_NAME))
+  const folderName = buildProjectFolderName(title, projectId)
+  const rootPath = join(libraryRootPath, PROJECTS_FOLDER_NAME, folderName)
+  assertPathWithinBoundary(rootPath, join(libraryRootPath, PROJECTS_FOLDER_NAME))
+  const paths = projectPathsFromRoot(rootPath)
   await createProjectDirectoryTree(paths)
   const manifest = createInitialManifest(projectId)
   await writeManifestAtomic(paths.manifestPath, manifest)

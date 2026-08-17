@@ -8,7 +8,7 @@ import type { MarkerRepository } from '../database/repositories/marker.repositor
 import type { MarkerEntity } from '../../shared/types/entities'
 import { RecordingStateMachine } from './recording-state-machine'
 import {
-  buildProjectPaths,
+  projectPathsFromRoot,
   buildSegmentFileName,
   createProjectDirectoryTree,
   writeManifestAtomic,
@@ -189,7 +189,11 @@ export class RecordingSessionManager {
     this.stateMachine.transitionTo('PREPARING')
 
     try {
-      const paths = buildProjectPaths(this.libraryRootPath, projectId)
+      // Usa o `rootPath` JA persistido no banco (gravado em `ProjectService.createProject`,
+      // nomeado a partir do titulo - ver `buildProjectFolderName`) - nunca reconstroi o caminho a
+      // partir so do `projectId`, o que apontaria pra uma pasta ERRADA/inexistente desde que o
+      // nome da pasta passou a incluir o titulo.
+      const paths = projectPathsFromRoot(project.rootPath)
       await createProjectDirectoryTree(paths)
 
       const tracks = new Map<string, TrackSessionState>()

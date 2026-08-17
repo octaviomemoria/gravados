@@ -1798,6 +1798,66 @@ fim, sem nenhum feedback sobre o download em andamento.
   download mapeado pra `[20, 40]`; a segunda chamada com o mesmo modelo não re-arma o callback,
   reusando o pipeline cacheado).
 
+### Notas do projeto editáveis na Biblioteca (Fase 2)
+
+Resolve a pendência registrada desde LIB-004: "renomear só edita `title`; `notes` segue sem UI
+dedicada".
+
+- **`RenameProjectRequestSchema` ganha `notes` opcional** (`null` limpa o campo, omitido não
+  altera) - mesmo contrato já usado em `UpdateMarkerRequestSchema` (MARKERS-EDIT), reaproveitado
+  aqui em vez de inventar uma convenção nova.
+- **Mesmo formulário de renomear, não um fluxo separado** - a textarea de notas aparece junto do
+  campo de título ao clicar "Renomear"; salvar grava os dois campos numa única chamada
+  (`ProjectRepository.updateNotes`, nova, ao lado de `updateTitle` já existente).
+- Testado via schema (patch parcial, `null` limpa) - cobertura reaproveita os testes já existentes
+  de `RenameProjectRequestSchema` no arquivo de schemas.
+
+### Pasta do projeto legível + abrir direto nos arquivos de gravação (Fase 1/2)
+
+Pedido do usuário testando o app: a pasta de cada projeto era nomeada só pelo UUID (`97543bc4-
+c0f4-41af-9ffc-35036eaca63c`), impossível de identificar visualmente, e "Abrir pasta" caía na
+raiz técnica do projeto (`exports/`, `proxies/`, `recovery/`, `source/`, `thumbnails/`,
+`manifest.json`) em vez dos arquivos de gravação de verdade.
+
+- **`buildProjectFolderName(title, projectId)`** gera `<título sanitizado>_<8 primeiros chars do
+  id>` - o sufixo garante uma pasta única mesmo entre dois projetos com o MESMO título (título
+  duplicado é permitido, ver decisão já registrada), sem precisar consultar o banco por colisão.
+  `sanitizeFolderName` remove caracteres inválidos em nomes de arquivo Windows (`<>:"/\|?*` +
+  caracteres de controle), colapsa espaços, corta em 60 chars e cai no fallback `gravacao` pra
+  título vazio/só-símbolos-inválidos - nunca produz um `..` literal (mesmo um título que sanitiza
+  pra exatamente `..` vira `.._a1b2c3d4`, um nome de pasta comum, não um path traversal).
+  **Só se aplica a projetos CRIADOS a partir de agora** - renomear um projeto existente depois
+  nunca move a pasta no disco (o `rootPath` persistido no banco continua sendo a fonte da
+  verdade), mesma decisão que já valia pro nome baseado em UUID; projetos antigos mantêm a pasta
+  com nome de UUID.
+- **Achado real corrigido no mesmo incremento**: `RecordingSessionManager.start()` e
+  `RecoveryService` reconstruíam o caminho da pasta a partir só do `projectId` (via
+  `buildProjectPaths(libraryRoot, projectId)`) toda vez que precisavam dele, presumindo que o
+  nome da pasta era sempre derivável do id sozinho - com a pasta agora incluindo o título, isso
+  apontaria pra uma pasta ERRADA/inexistente. Corrigido usando o `project.rootPath` JÁ
+  PERSISTIDO no banco (`projectPathsFromRoot(project.rootPath)`, nova função) nesses dois
+  lugares - mais correto de qualquer forma, independente do esquema de nomenclatura (nunca
+  reconstrói um caminho que já se conhece).
+- **`project.openFolder` abre `source/` diretamente**, não mais a raiz do projeto - é onde os
+  arquivos de mídia REAIS ficam (`screen/`, `camera/`, `microphone/`, `system-audio/`).
+- Testado via 8 novos testes em `project-filesystem.test.ts` (`sanitizeFolderName` - título
+  simples, caracteres inválidos viram espaço colapsado, pontos/espaços finais removidos, título
+  longo truncado em 60, fallback pra título vazio/inválido, nunca produz `".."` literal;
+  `buildProjectFolderName` - combina título+id, garante nomes diferentes pro mesmo título com ids
+  diferentes; `projectPathsFromRoot` - mesma árvore de `buildProjectPaths`, a partir de um
+  `rootPath` já resolvido).
+
+### Log de validação IPC mostra o motivo real (achado ao investigar um relato do usuário)
+
+Investigando um relato de erro de validação sem conseguir reproduzir, um problema de
+diagnosticabilidade ficou claro: `registerHandler` (o wrapper único por onde todo canal IPC
+passa) só registrava o NOME do canal quando uma requisição falhava a validação Zod, nunca o
+motivo - impossível saber, a partir do log, qual campo falhou e por quê. Corrigido: a mensagem de
+log agora inclui um resumo por campo (`caminho: mensagem`, formato compacto do Zod - nunca o
+VALOR em si, que pode ser dado sensível do usuário). Sem mudança de comportamento pro usuário
+(a resposta IPC/mensagem amigável na UI continuam as mesmas) - só torna o PRÓXIMO caso parecido
+diagnosticável direto pelo `main.log`, sem precisar reproduzir às cegas.
+
 ## Estrutura de diretórios
 
 ```text
@@ -3040,9 +3100,12 @@ descobriria depois, ao notar a ausência do áudio do sistema no arquivo final.
 - Excluir um projeto não pede confirmação por digitação/nome, só um segundo clique ("Sim,
   excluir") - suficiente para o MVP, mas mais fraco que confirmações usadas em apps de produção
   para ações destrutivas de alto risco.
-- Renomear só edita `title`; `notes` segue sem UI dedicada (já registrado acima). Não há
-  validação de título duplicado entre projetos - dois projetos podem ter o mesmo título sem
-  colisão (mesmo raciocínio já registrado na decisão sobre pastas nomeadas por UUID).
+- Resolvido: renomear agora edita `notes` também, ver
+  [Notas do projeto editáveis na Biblioteca](#notas-do-projeto-editáveis-na-biblioteca-fase-2).
+  Não há validação de título duplicado entre projetos - dois projetos podem ter o mesmo título sem
+  colisão (a pasta no disco nunca colide de qualquer forma - `buildProjectFolderName` sempre
+  concatena um sufixo derivado do id, ver [Pasta do projeto
+  legível](#pasta-do-projeto-legível--abrir-direto-nos-arquivos-de-gravação-fase-12)).
 - `getProjectDetails` expõe os segmentos FINALIZADOS de cada trilha (`relativePath`/`startedAtMs`/
   `durationMs`, refinamento pós-AI-002-LOCAL - resolveu a pendência anterior o suficiente pro
   player mínimo da Biblioteca), mas ainda não o `id`/`byteSize`/`mimeType` de cada um nem os

@@ -49,6 +49,13 @@ export class ProjectRepository {
     this.db.update(projects).set({ title }).where(eq(projects.id, id)).run()
   }
 
+  /** Refinamento pos-LIB-004 - `notes` editavel separadamente do titulo (mesmo raciocinio de
+   * `MarkerRepository.update`: um patch vazio nunca deveria chegar aqui, mas `ProjectService`
+   * so chama isso quando `notes !== undefined` de qualquer forma). */
+  updateNotes(id: string, notes: string | null): void {
+    this.db.update(projects).set({ notes }).where(eq(projects.id, id)).run()
+  }
+
   /** Usado ao iniciar/finalizar uma gravacao (`startedAt`/`endedAt`/`durationMs`/`status`). */
   updateRecordingLifecycle(
     id: string,

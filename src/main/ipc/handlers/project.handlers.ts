@@ -1,5 +1,7 @@
 import { shell } from 'electron'
+import { join } from 'node:path'
 import { IPC_CHANNELS } from '../../../shared/contracts/channels'
+import { SOURCE_ROOT_FOLDER_NAME } from '../../../shared/constants/filesystem'
 import {
   CreateProjectRequestSchema,
   CreateProjectResponseSchema,
@@ -50,11 +52,17 @@ export function registerProjectHandlers(context: AppContext): void {
     async (request) => {
       const project = context.projectService.getProject(request.id)
       if (!project) throw new NotFoundError(`Projeto nao encontrado: ${request.id}`)
-      // `shell.openPath` retorna uma string de erro (nao lanca) em caso de falha - ex.: pasta
-      // movida/apagada por fora do app. Isso nao e excepcional o suficiente pra virar erro IPC
-      // (AGENTS.md/08_UX_FLOWS.md: nunca mostrar codigo/erro cru - a UI trata `opened: false` com
-      // mensagem amigavel, igual a qualquer outro estado "vazio" ja tratado no app).
-      const errorMessage = await shell.openPath(project.rootPath)
+      // Refinamento pos-LIB-004 (pedido do usuario testando o app: "abrir a pasta cai numa arvore
+      // com varias subpastas tecnicas - exports/proxies/recovery/source/thumbnails - antes de
+      // chegar nos arquivos de gravacao de verdade"). Abre `source/` direto - onde os arquivos de
+      // midia REAIS ficam (`screen/`, `camera/`, `microphone/`, `system-audio/`) - em vez da raiz
+      // do projeto. `shell.openPath` retorna uma string de erro (nao lanca) em caso de falha -
+      // ex.: pasta movida/apagada por fora do app, ou uma gravacao que nunca produziu nenhum
+      // arquivo (pasta `source/` ainda existe, sempre criada no `recording.start`, so vazia).
+      // Isso nao e excepcional o suficiente pra virar erro IPC (AGENTS.md/08_UX_FLOWS.md: nunca
+      // mostrar codigo/erro cru - a UI trata `opened: false` com mensagem amigavel).
+      const sourcePath = join(project.rootPath, SOURCE_ROOT_FOLDER_NAME)
+      const errorMessage = await shell.openPath(sourcePath)
       return { opened: errorMessage === '' }
     }
   )
@@ -71,7 +79,8 @@ export function registerProjectHandlers(context: AppContext): void {
   registerHandler(
     IPC_CHANNELS.project.rename,
     { request: RenameProjectRequestSchema, response: RenameProjectResponseSchema },
-    async (request) => context.projectService.renameProject(request.id, request.title)
+    async (request) =>
+      context.projectService.renameProject(request.id, request.title, request.notes)
   )
 
   registerHandler(

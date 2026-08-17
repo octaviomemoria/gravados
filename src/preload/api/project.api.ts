@@ -51,11 +51,11 @@ export function createProjectApi(): ProjectApi {
         { request: OpenProjectFolderRequestSchema, response: OpenProjectFolderResponseSchema },
         { id }
       ),
-    rename: (id: string, title: string) =>
+    rename: (id: string, title: string, notes?: string | null) =>
       invokeChannel(
         IPC_CHANNELS.project.rename,
         { request: RenameProjectRequestSchema, response: RenameProjectResponseSchema },
-        { id, title }
+        { id, title, notes }
       ),
     delete: (id: string) =>
       invokeChannel(

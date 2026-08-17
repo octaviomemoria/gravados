@@ -311,6 +311,27 @@ body {
   font-size: 0.9rem;
 }
 
+/* Refinamento pos-LIB-004 - textarea de notas no mesmo formulario de renomear. */
+.library-list__rename-notes {
+  flex: 1 1 100%;
+  min-height: 3.5rem;
+  padding: var(--ms-space-2);
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-color-border);
+  background: var(--ms-color-surface);
+  color: var(--ms-color-text);
+  font-size: 0.85rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.library-list__notes {
+  margin: var(--ms-space-1) 0 0;
+  font-size: 0.85rem;
+  color: var(--ms-color-text-muted);
+  white-space: pre-wrap;
+}
+
 .library-list__delete-confirm {
   display: flex;
   align-items: center;

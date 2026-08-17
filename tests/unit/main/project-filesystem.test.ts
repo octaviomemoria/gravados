@@ -8,7 +8,10 @@ import {
   defaultLibraryRootPath,
   assertValidProjectId,
   assertPathWithinBoundary,
-  initializeProjectOnDisk
+  initializeProjectOnDisk,
+  sanitizeFolderName,
+  buildProjectFolderName,
+  projectPathsFromRoot
 } from '../../../src/main/media/project-filesystem'
 import { ValidationError, PermissionDeniedError } from '../../../src/shared/types/domain-errors'
 
@@ -79,5 +82,70 @@ describe('project-filesystem', () => {
 
     const manifestContent = await readFile(paths.manifestPath, 'utf-8')
     expect(JSON.parse(manifestContent)).toEqual(manifest)
+  })
+})
+
+describe('sanitizeFolderName', () => {
+  it('keeps a plain readable title unchanged', () => {
+    expect(sanitizeFolderName('Reuniao de sprint')).toBe('Reuniao de sprint')
+  })
+
+  it('replaces filesystem-invalid characters (Windows) with spaces, then collapses them', () => {
+    expect(sanitizeFolderName('Q3<Review>: "planning"/roadmap\\notes|*?')).toBe(
+      'Q3 Review planning roadmap notes'
+    )
+  })
+
+  it('strips trailing dots and spaces (Windows disallows a folder name ending in either)', () => {
+    expect(sanitizeFolderName('Reuniao final...   ')).toBe('Reuniao final')
+  })
+
+  it('truncates a very long title to 60 chars', () => {
+    const long = 'a'.repeat(120)
+    expect(sanitizeFolderName(long)).toHaveLength(60)
+  })
+
+  it('falls back to "gravacao" for an empty/whitespace-only/all-invalid-chars title', () => {
+    expect(sanitizeFolderName('')).toBe('gravacao')
+    expect(sanitizeFolderName('   ')).toBe('gravacao')
+    expect(sanitizeFolderName('///???')).toBe('gravacao')
+  })
+
+  it('never produces a literal ".." even from a title that sanitizes down to just dots', () => {
+    // ".." sozinho e removido pelo trim de pontos/espacos finais, caindo no fallback.
+    expect(sanitizeFolderName('..')).toBe('gravacao')
+  })
+})
+
+describe('buildProjectFolderName', () => {
+  it('combines the sanitized title with the first 8 chars of the project id', () => {
+    const id = '11111111-2222-4333-8444-555555555555'
+    expect(buildProjectFolderName('Reuniao de sprint', id)).toBe('Reuniao de sprint_11111111')
+  })
+
+  it('guarantees a different folder name for two projects with the identical title', () => {
+    const idA = '11111111-2222-4333-8444-555555555555'
+    const idB = 'aaaaaaaa-2222-4333-8444-555555555555'
+    const nameA = buildProjectFolderName('Reuniao semanal', idA)
+    const nameB = buildProjectFolderName('Reuniao semanal', idB)
+    expect(nameA).not.toBe(nameB)
+  })
+
+  it('never resolves to a literal ".." path segment even for a title that sanitizes to dots', () => {
+    const id = '11111111-2222-4333-8444-555555555555'
+    const folderName = buildProjectFolderName('..', id)
+    expect(folderName).not.toBe('..')
+    expect(folderName).toBe('gravacao_11111111')
+  })
+})
+
+describe('projectPathsFromRoot', () => {
+  it('derives the same folder tree as buildProjectPaths, from an already-resolved rootPath', () => {
+    const rootPath = join('/library', 'projects', 'Reuniao de sprint_11111111')
+    const paths = projectPathsFromRoot(rootPath)
+    expect(paths.rootPath).toBe(rootPath)
+    expect(paths.manifestPath).toBe(join(rootPath, 'manifest.json'))
+    expect(paths.sourceScreenPath).toBe(join(rootPath, 'source', 'screen'))
+    expect(paths.proxiesPath).toBe(join(rootPath, 'proxies'))
   })
 })

@@ -43,11 +43,14 @@ export const OpenProjectFolderRequestSchema = z.object({ id: IdSchema })
 export type OpenProjectFolderRequest = z.infer<typeof OpenProjectFolderRequestSchema>
 export const OpenProjectFolderResponseSchema = z.object({ opened: z.boolean() })
 
-/** LIB-004 (decimo primeiro incremento - Fase 2, Biblioteca): apenas o titulo e editavel aqui -
- * `notes` segue sem UI dedicada (mesmo escopo ja registrado em "Pendências conhecidas"). */
+/** LIB-004 (decimo primeiro incremento - Fase 2, Biblioteca). Refinamento posterior: `notes`
+ * passa a ser editavel aqui tambem (opcional) - `null` explicito LIMPA o campo, omitido NAO
+ * altera, mesmo padrao ja usado em `UpdateMarkerRequestSchema` (MARKERS-EDIT). `title` continua
+ * obrigatorio (nunca fica sem titulo). */
 export const RenameProjectRequestSchema = z.object({
   id: IdSchema,
-  title: z.string().min(1).max(200)
+  title: z.string().min(1).max(200),
+  notes: z.string().max(2000).nullable().optional()
 })
 export type RenameProjectRequest = z.infer<typeof RenameProjectRequestSchema>
 export const RenameProjectResponseSchema = ProjectResponseSchema

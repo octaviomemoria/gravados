@@ -5,7 +5,7 @@ import type { TrackRepository } from '../database/repositories/track.repository'
 import type { SegmentRepository } from '../database/repositories/segment.repository'
 import type { SegmentEntity } from '../../shared/types/entities'
 import {
-  buildProjectPaths,
+  projectPathsFromRoot,
   readManifest,
   writeManifestAtomic,
   assertPathWithinBoundary,
@@ -71,7 +71,7 @@ export class RecoveryService {
 
     const detected: string[] = []
     for (const project of candidates) {
-      const paths = buildProjectPaths(this.libraryRootPath, project.id)
+      const paths = projectPathsFromRoot(project.rootPath)
       const manifest = await readManifest(paths.manifestPath)
 
       if (manifest) {
@@ -124,7 +124,7 @@ export class RecoveryService {
       )
     }
 
-    const paths = buildProjectPaths(this.libraryRootPath, projectId)
+    const paths = projectPathsFromRoot(project.rootPath)
     const existingManifest = await readManifest(paths.manifestPath)
     const dbTracks = this.trackRepository.listByProject(projectId)
 

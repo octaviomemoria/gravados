@@ -41,7 +41,7 @@ export class ProjectService {
   async createProject(title: string, notes?: string): Promise<ProjectEntity> {
     const id = randomUUID()
     const createdAt = new Date().toISOString()
-    const { paths } = await initializeProjectOnDisk(this.libraryRootPath, id)
+    const { paths } = await initializeProjectOnDisk(this.libraryRootPath, id, title)
     return this.repository.create({
       id,
       title,
@@ -87,14 +87,16 @@ export class ProjectService {
     return { project, tracks, totalBytes }
   }
 
-  /** LIB-004: so o titulo e editavel nesta fase (ver `RenameProjectRequestSchema`). */
-  async renameProject(id: string, title: string): Promise<ProjectEntity> {
+  /** LIB-004 + refinamento posterior - `notes` opcional (`undefined` = nao mexe, `null` = limpa,
+   * mesmo contrato de `RenameProjectRequestSchema`). */
+  async renameProject(id: string, title: string, notes?: string | null): Promise<ProjectEntity> {
     const project = this.repository.findById(id)
     if (!project) throw new NotFoundError(`Projeto nao encontrado: ${id}`)
     this.assertNoActiveSession(project)
 
     this.repository.updateTitle(id, title)
-    return { ...project, title }
+    if (notes !== undefined) this.repository.updateNotes(id, notes)
+    return { ...project, title, notes: notes !== undefined ? notes : project.notes }
   }
 
   /**

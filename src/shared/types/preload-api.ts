@@ -50,8 +50,9 @@ export interface ProjectApi {
   getDetails: (id: string) => Promise<ProjectDetailsResponse>
   /** RF-017 - abre a pasta do projeto no explorador de arquivos do SO. */
   openFolder: (id: string) => Promise<{ opened: boolean }>
-  /** LIB-004 - renomeia o titulo do projeto. Rejeita se houver gravacao ativa. */
-  rename: (id: string, title: string) => Promise<ProjectResponse>
+  /** LIB-004 + refinamento posterior - renomeia o titulo do projeto e, opcionalmente, atualiza
+   * `notes` (`null` limpa, omitido nao altera). Rejeita se houver gravacao ativa. */
+  rename: (id: string, title: string, notes?: string | null) => Promise<ProjectResponse>
   /** LIB-006 - exclusao permanente (banco + arquivos). Rejeita se houver gravacao ativa. */
   delete: (id: string) => Promise<{ deleted: boolean }>
 }

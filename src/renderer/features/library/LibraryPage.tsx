@@ -112,9 +112,12 @@ export function LibraryPage() {
   const [transcriptionBusy, setTranscriptionBusy] = useState(false)
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
 
-  // LIB-004: edicao inline do titulo.
+  // LIB-004: edicao inline do titulo. Refinamento posterior: `notes` (sem UI dedicada ate entao,
+  // ver README "Pendências conhecidas") passa a ser editavel no MESMO formulario - reusa
+  // `renamingId`/`renameSavingId`/`renameErrorId`, nunca um segundo fluxo de edicao paralelo.
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  const [renameNotesDraft, setRenameNotesDraft] = useState('')
   const [renameSavingId, setRenameSavingId] = useState<string | null>(null)
   const [renameErrorId, setRenameErrorId] = useState<string | null>(null)
 
@@ -315,11 +318,13 @@ export function LibraryPage() {
     setRenameErrorId(null)
     setRenamingId(project.id)
     setRenameDraft(project.title)
+    setRenameNotesDraft(project.notes ?? '')
   }
 
   function handleCancelRename(): void {
     setRenamingId(null)
     setRenameDraft('')
+    setRenameNotesDraft('')
   }
 
   async function handleSaveRename(projectId: string): Promise<void> {
@@ -331,7 +336,8 @@ export function LibraryPage() {
     setRenameErrorId(null)
     setRenameSavingId(projectId)
     try {
-      await window.meetingStudio.project.rename(projectId, title)
+      const trimmedNotes = renameNotesDraft.trim()
+      await window.meetingStudio.project.rename(projectId, title, trimmedNotes === '' ? null : trimmedNotes)
       setRenamingId(null)
       loadProjects()
     } catch {
@@ -387,6 +393,17 @@ export function LibraryPage() {
                     value={renameDraft}
                     onChange={(event) => setRenameDraft(event.target.value)}
                   />
+                  {/* Refinamento pos-LIB-004 - `notes` ganha edicao aqui, no MESMO formulario do
+                      titulo (nunca um segundo botao/fluxo "editar notas" separado). Campo vazio
+                      salva como `null` (limpa), nunca string vazia (ver `handleSaveRename`). */}
+                  <textarea
+                    className="library-list__rename-notes"
+                    aria-label="Notas da reuniao"
+                    placeholder="Notas (opcional)"
+                    value={renameNotesDraft}
+                    onChange={(event) => setRenameNotesDraft(event.target.value)}
+                    maxLength={2000}
+                  />
                   <Button
                     variant="secondary"
                     disabled={renameSavingId === project.id}
@@ -406,6 +423,7 @@ export function LibraryPage() {
                       Incompleta
                     </span>
                   )}
+                  {project.notes && <p className="library-list__notes">{project.notes}</p>}
                 </span>
               )}
 
