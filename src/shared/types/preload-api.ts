@@ -187,6 +187,9 @@ export interface TranscriptionApi {
   list: (projectId: string) => Promise<TranscriptionJobResponse[]>
   getStatus: (id: string) => Promise<TranscriptionJobResponse>
   getTranscript: (projectId: string) => Promise<TranscriptResponse | null>
+  /** Refinamento pos-MVP - sobrescreve `Transcript.editedText` com o texto inteiro passado (nao um
+   * patch). Lanca `NotFoundError` se o projeto nunca teve um transcript `COMPLETED`. */
+  updateText: (projectId: string, text: string) => Promise<TranscriptResponse>
 }
 
 /**

@@ -7,7 +7,9 @@ import {
   GetTranscriptionStatusRequestSchema,
   GetTranscriptionStatusResponseSchema,
   GetTranscriptRequestSchema,
-  GetTranscriptResponseSchema
+  GetTranscriptResponseSchema,
+  UpdateTranscriptTextRequestSchema,
+  UpdateTranscriptTextResponseSchema
 } from '../../../shared/schemas/transcription.schema'
 import { registerHandler } from '../ipc-handler'
 import type { AppContext } from '../../app-context'
@@ -41,5 +43,11 @@ export function registerTranscriptionHandlers(context: AppContext): void {
     IPC_CHANNELS.transcription.getTranscript,
     { request: GetTranscriptRequestSchema, response: GetTranscriptResponseSchema },
     async (request) => context.transcriptionService.getTranscript(request.projectId)
+  )
+
+  registerHandler(
+    IPC_CHANNELS.transcription.updateText,
+    { request: UpdateTranscriptTextRequestSchema, response: UpdateTranscriptTextResponseSchema },
+    async (request) => context.transcriptionService.updateTranscriptText(request.projectId, request.text)
   )
 }

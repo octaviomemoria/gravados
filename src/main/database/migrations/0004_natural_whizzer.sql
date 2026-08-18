@@ -1,0 +1,1 @@
+ALTER TABLE `transcripts` ADD `edited_text` text;

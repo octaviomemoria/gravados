@@ -32,7 +32,14 @@ export const transcriptionJobs = sqliteTable(
   (table) => [index('idx_transcription_jobs_project').on(table.projectId, table.status)]
 )
 
-/** `06_DATA_MODEL.md` "Transcript" - so existe apos um `transcription_jobs` terminar `COMPLETED`. */
+/** `06_DATA_MODEL.md` "Transcript" - so existe apos um `transcription_jobs` terminar `COMPLETED`.
+ * `editedText`: refinamento pos-MVP (pedido real do usuario - "abrir a transcricao numa caixa de
+ * texto editavel"). `NULL` ate a primeira edicao manual - a UI usa o texto ORIGINAL (juncao dos
+ * `transcript_segments`, imutaveis) enquanto isso. Guardado como um campo separado, de proposito,
+ * em vez de reescrever `transcript_segments.text` - os segmentos continuam intactos com seus
+ * timestamps/falante/confianca (usados pelo deep-link de busca e pelo indice FTS5), e uma edicao
+ * manual livre (o usuario pode reescrever o texto inteiro, juntar/quebrar frases como quiser) nao
+ * teria como ser remapeada de volta pra segmentos individuais sem perder informacao. */
 export const transcripts = sqliteTable(
   'transcripts',
   {
@@ -43,7 +50,8 @@ export const transcripts = sqliteTable(
     provider: text('provider').notNull(),
     model: text('model').notNull(),
     language: text('language'),
-    createdAt: text('created_at').notNull()
+    createdAt: text('created_at').notNull(),
+    editedText: text('edited_text')
   },
   (table) => [index('idx_transcripts_project').on(table.projectId)]
 )

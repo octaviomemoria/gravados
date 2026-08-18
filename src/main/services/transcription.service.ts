@@ -194,6 +194,23 @@ export class TranscriptionService {
     const segments = this.transcriptRepository.listSegments(latest.id)
     return toTranscriptResponse(latest, segments)
   }
+
+  /** Refinamento pos-MVP (pedido real do usuario - "abrir a transcricao numa caixa de texto
+   * editavel"). So grava em `editedText` (ver comentario no schema) - os segmentos originais
+   * nunca sao tocados. Sempre edita o transcript mais RECENTE do projeto, mesmo criterio de
+   * `getTranscript`. */
+  updateTranscriptText(projectId: string, text: string): TranscriptResponse {
+    const candidates = this.transcriptRepository.findByProject(projectId)
+    if (candidates.length === 0) {
+      throw new NotFoundError(`Este projeto ainda nao tem nenhuma transcricao concluida: ${projectId}`)
+    }
+    const latest = candidates.reduce((mostRecent, candidate) =>
+      candidate.createdAt > mostRecent.createdAt ? candidate : mostRecent
+    )
+    this.transcriptRepository.updateEditedText(latest.id, text)
+    const segments = this.transcriptRepository.listSegments(latest.id)
+    return toTranscriptResponse({ ...latest, editedText: text }, segments)
+  }
 }
 
 function toTranscriptResponse(
@@ -207,6 +224,7 @@ function toTranscriptResponse(
     model: transcript.model,
     language: transcript.language,
     createdAt: transcript.createdAt,
+    editedText: transcript.editedText,
     segments: segments.map((segment) => ({
       id: segment.id,
       transcriptId: segment.transcriptId,
@@ -235,7 +253,8 @@ export function buildTranscriptEntities(
     provider,
     model: result.model,
     language: result.language,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    editedText: null
   }
   const segments: TranscriptSegmentEntity[] = result.segments.map((segment) => ({
     id: randomUUID(),

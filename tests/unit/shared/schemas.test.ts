@@ -160,6 +160,7 @@ describe('transcription.schema', () => {
       model: 'Xenova/whisper-base',
       language: 'pt',
       createdAt: '2026-01-01T00:00:00.000Z',
+      editedText: null,
       segments: []
     })
     expect(result.success).toBe(true)
@@ -173,6 +174,7 @@ describe('transcription.schema', () => {
       model: 'whisper-1',
       language: 'pt',
       createdAt: '2026-01-01T00:00:00.000Z',
+      editedText: null,
       segments: [
         {
           id: projectId,

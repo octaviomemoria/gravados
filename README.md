@@ -1894,6 +1894,51 @@ outra rota desmontava o componente, o que parava as tracks no meio da gravação
   (ambos os hooks de dispositivo já tratavam falha via `try`/`catch` silencioso, sem
   `console.error`, mesmo antes desta mudança).
 
+### Dica de que o título cria o projeto automaticamente (Fase 1)
+
+Confusão real relatada pelo usuário testando o app: "não vi onde posso cadastrar novo projeto" na
+tela de Nova gravação. O app nunca teve (nem precisa ter) uma tela separada de "criar projeto" - o
+`Project` É a gravação, criado automaticamente com o título digitado assim que "Iniciar gravação"
+é clicado (`RecordingSessionManager.start()`). Sem nenhuma explicação na UI, o campo "Título da
+reunião" parecia só um rótulo opcional em vez do próprio cadastro.
+
+- Texto discreto (`.recording-controls__title-hint`) adicionado logo abaixo do campo, visível só
+  antes de iniciar (mesmo guard `!isActive` do campo em si) - some junto com ele quando a gravação
+  fica ativa.
+- Sem mudança de comportamento - só esclarece o fluxo já existente.
+- Testado via `RecordingControls.test.tsx` (dica aparece antes de iniciar, some com o campo quando
+  `status: 'recording'`).
+
+### Ver/copiar/editar a transcrição concluída (Fase 5)
+
+Pergunta real do usuário depois de concluir uma transcrição: "onde encontro a transcrição?" - o
+texto já existia no banco (`transcript_segments`, consultável via `transcription.getTranscript`),
+mas nenhuma tela o exibia; só aparecia indiretamente como trecho realçado nos resultados de busca
+(`SearchPage`). Pedido explícito de acompanhamento: um botão que abra uma caixa de texto
+redimensionável com o conteúdo completo, e botões Copiar/Editar.
+
+- **"Ver transcrição" na Biblioteca** (visível quando a transcrição mais recente está
+  `COMPLETED`, ao lado de "Transcrever") abre um painel com um `<textarea>` (`resize: vertical` -
+  o "tamanho editável" pedido) mostrando o texto inteiro, mais os botões **Copiar** (
+  `navigator.clipboard.writeText`, com feedback "Copiado!" por 2s) e **Editar**.
+- **Editar grava num campo NOVO e separado** (`transcripts.edited_text`, migration `0004`) -
+  os `transcript_segments` originais (timestamps, falante, confiança - usados pelo deep-link de
+  busca e pelo índice FTS5) nunca são tocados. Decisão deliberada: uma edição livre (o usuário pode
+  reescrever o texto inteiro, juntar/separar frases como quiser) não teria como ser remapeada de
+  volta pra segmentos individuais sem perder informação ou quebrar o realce da busca.
+  `getTranscript`/a UI usam `editedText` quando presente, senão a junção dos `segments.text`
+  (função pura `transcriptDisplayText`, testada isoladamente).
+- **`transcription.updateText`**, novo canal IPC - sempre edita o transcript mais RECENTE do
+  projeto (mesmo critério de `getTranscript`), lança `NotFoundError` se o projeto nunca teve uma
+  transcrição concluída.
+- Testado via `transcription.service.test.ts` (grava sem tocar os segmentos, sempre edita o mais
+  recente, `NotFoundError` sem transcript), `transcript-display-text.test.ts` (função pura), e um
+  fluxo E2E completo em `library.spec.ts` (abre, edita, salva, fecha, reabre - confirma que a
+  edição foi persistida de verdade, não só mantida em estado local do componente).
+- **Pendência conhecida**: uma edição manual NÃO atualiza o índice FTS5 (`transcript_segments_fts`,
+  construído a partir dos segmentos originais) - buscar por um trecho só presente na versão editada
+  não encontra o resultado; a busca sempre reflete a transcrição ORIGINAL do Whisper.
+
 ## Estrutura de diretórios
 
 ```text

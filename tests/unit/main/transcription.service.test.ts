@@ -351,6 +351,55 @@ describe('TranscriptionService', () => {
       expect(result!.segments[1]!.confidence).toBe(0.9)
     })
   })
+
+  describe('updateTranscriptText', () => {
+    it('throws NotFoundError when the project never had a completed transcript', () => {
+      const service = buildService(new FakeTranscriptionProvider(FAKE_RESULT))
+      const project = createProject()
+      expect(() => service.updateTranscriptText(project.id, 'texto editado')).toThrow(NotFoundError)
+    })
+
+    it('stores editedText without touching the original segments, and getTranscript reflects it afterwards', () => {
+      const service = buildService(new FakeTranscriptionProvider(FAKE_RESULT))
+      const project = createProject()
+      const built = buildTranscriptEntities(project.id, 'WHISPER_LOCAL', {
+        model: 'whisper-base',
+        language: 'pt',
+        segments: [{ startMs: 0, endMs: 1000, text: 'original' }]
+      })
+      transcriptRepository.createWithSegments(built.transcript, built.segments)
+
+      const result = service.updateTranscriptText(project.id, 'texto editado pelo usuario')
+      expect(result.editedText).toBe('texto editado pelo usuario')
+      expect(result.segments.map((segment) => segment.text)).toEqual(['original'])
+
+      const reFetched = service.getTranscript(project.id)
+      expect(reFetched!.editedText).toBe('texto editado pelo usuario')
+      expect(reFetched!.segments.map((segment) => segment.text)).toEqual(['original'])
+    })
+
+    it('always edits the most recent transcript when a project has more than one', () => {
+      const service = buildService(new FakeTranscriptionProvider(FAKE_RESULT))
+      const project = createProject()
+      const older = buildTranscriptEntities(project.id, 'WHISPER_LOCAL', {
+        model: 'whisper-base',
+        language: 'pt',
+        segments: [{ startMs: 0, endMs: 1000, text: 'antigo' }]
+      })
+      transcriptRepository.createWithSegments(older.transcript, older.segments)
+      const newer = buildTranscriptEntities(project.id, 'WHISPER_LOCAL', {
+        model: 'whisper-base',
+        language: 'pt',
+        segments: [{ startMs: 0, endMs: 1000, text: 'novo' }]
+      })
+      newer.transcript.createdAt = new Date(Date.now() + 1000).toISOString()
+      transcriptRepository.createWithSegments(newer.transcript, newer.segments)
+
+      const result = service.updateTranscriptText(project.id, 'edicao')
+      expect(result.id).toBe(newer.transcript.id)
+      expect(service.getTranscript(project.id)!.id).toBe(newer.transcript.id)
+    })
+  })
 })
 
 describe('buildTranscriptEntities', () => {
@@ -364,6 +413,7 @@ describe('buildTranscriptEntities', () => {
     expect(transcript.provider).toBe('WHISPER_LOCAL')
     expect(transcript.model).toBe('whisper-base')
     expect(transcript.language).toBeNull()
+    expect(transcript.editedText).toBeNull()
     expect(transcript.id).toBeTruthy()
     expect(segments).toHaveLength(1)
     expect(segments[0]!.transcriptId).toBe(transcript.id)

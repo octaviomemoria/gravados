@@ -59,7 +59,8 @@ export const IPC_CHANNELS = {
     start: 'transcription.start',
     list: 'transcription.list',
     getStatus: 'transcription.getStatus',
-    getTranscript: 'transcription.getTranscript'
+    getTranscript: 'transcription.getTranscript',
+    updateText: 'transcription.updateText'
   },
   search: {
     transcripts: 'search.transcripts'

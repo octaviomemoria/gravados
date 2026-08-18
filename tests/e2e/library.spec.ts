@@ -228,6 +228,30 @@ test.describe('library (details, rename, delete)', () => {
     await listItem.getByRole('button', { name: 'Transcrever' }).click()
     const status = listItem.locator('.library-list__transcription-status')
     await expect(status).toContainText('Concluida', { timeout: POLL_TIMEOUT_MS })
+
+    // Refinamento pos-MVP (pedido real do usuario - "onde encontro a transcricao?" + caixa de
+    // texto editavel com copiar/editar). `buildFakeTranscriptionProviderForE2E` (main/index.ts)
+    // sempre devolve o segmento fixo "teste e2e".
+    await listItem.getByRole('button', { name: 'Ver transcrição' }).click()
+    const textarea = listItem.getByLabel('Texto da transcrição')
+    await expect(textarea).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await expect(textarea).toHaveValue('teste e2e')
+    await expect(textarea).toHaveAttribute('readonly', '')
+
+    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await expect(textarea).not.toHaveAttribute('readonly', '')
+    await textarea.fill('texto corrigido manualmente')
+    await listItem.getByRole('button', { name: 'Salvar' }).click()
+    await expect(listItem.getByRole('button', { name: 'Editar' })).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await expect(textarea).toHaveValue('texto corrigido manualmente')
+    await expect(textarea).toHaveAttribute('readonly', '')
+
+    // Fecha e reabre - confirma que a edicao foi persistida de verdade (transcripts.editedText),
+    // nao so mantida em estado local do componente.
+    await listItem.getByRole('button', { name: 'Fechar transcrição' }).click()
+    await expect(textarea).not.toBeVisible()
+    await listItem.getByRole('button', { name: 'Ver transcrição' }).click()
+    await expect(textarea).toHaveValue('texto corrigido manualmente', { timeout: POLL_TIMEOUT_MS })
   })
 
   /**

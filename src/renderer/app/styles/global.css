@@ -404,6 +404,44 @@ video.library-list__player {
   margin: var(--ms-space-2) 0 0;
 }
 
+/* Refinamento pos-MVP - "Transcrever" + "Ver transcrição" lado a lado (pedido real do usuario). */
+.library-list__transcription-actions {
+  display: flex;
+  gap: var(--ms-space-2);
+}
+
+/* Caixa da transcricao aberta - `resize: vertical` de proposito (pedido explicito do usuario,
+   "caixa de texto com tamanho editavel"): o usuario pode arrastar a alca no canto pra ver mais
+   texto de uma vez, sem alterar a largura (que já acompanha o cartao). */
+.library-list__transcript-panel {
+  margin-top: var(--ms-space-3);
+}
+
+.library-list__transcript-textarea {
+  width: 100%;
+  min-height: 8rem;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  padding: var(--ms-space-2);
+  border-radius: var(--ms-radius-sm);
+  border: 1px solid var(--ms-color-border);
+  background: var(--ms-color-bg);
+  color: var(--ms-color-text);
+  box-sizing: border-box;
+}
+
+.library-list__transcript-textarea:read-only {
+  background: var(--ms-color-surface);
+}
+
+.library-list__transcript-actions {
+  display: flex;
+  gap: var(--ms-space-2);
+  margin-top: var(--ms-space-2);
+}
+
 /* SEARCH-001 - formulario de busca (input + botao) e lista de resultados, mesmo tratamento
    visual de cartao ja usado em `.library-list`/`.export-list`. */
 .search-form {

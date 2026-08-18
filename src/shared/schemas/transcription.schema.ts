@@ -56,6 +56,10 @@ export const TranscriptResponseSchema = z.object({
   model: z.string(),
   language: z.string().nullable(),
   createdAt: IsoDateTimeSchema,
+  /** Refinamento pos-MVP - `null` ate a primeira edicao manual (ver comentario completo em
+   * `main/database/schema/transcription.schema.ts`). A UI usa isto quando presente, senao junta
+   * o `text` de todos os `segments` abaixo. */
+  editedText: z.string().nullable(),
   segments: z.array(TranscriptSegmentResponseSchema)
 })
 export type TranscriptResponse = z.infer<typeof TranscriptResponseSchema>
@@ -83,3 +87,14 @@ export type GetTranscriptRequest = z.infer<typeof GetTranscriptRequestSchema>
  * chamador (UI) decide como reagir (mostrar "ainda nao transcrito"), mesmo padrao ja usado por
  * outras consultas opcionais deste app. */
 export const GetTranscriptResponseSchema = TranscriptResponseSchema.nullable()
+
+/** Refinamento pos-MVP - `text` e o conteudo INTEIRO da caixa de edicao (nao um diff/patch),
+ * mesmo formato ja usado por `RenameProjectRequestSchema.notes`. Vazio e permitido (o usuario
+ * pode apagar tudo de proposito) - so o campo em si e obrigatorio nesta requisicao (sem
+ * `.optional()`, diferente de `notes`, que tem um terceiro estado "nao mexer"). */
+export const UpdateTranscriptTextRequestSchema = z.object({
+  projectId: IdSchema,
+  text: z.string().max(200_000)
+})
+export type UpdateTranscriptTextRequest = z.infer<typeof UpdateTranscriptTextRequestSchema>
+export const UpdateTranscriptTextResponseSchema = TranscriptResponseSchema

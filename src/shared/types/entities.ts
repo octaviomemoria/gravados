@@ -120,6 +120,9 @@ export interface TranscriptEntity {
   model: string
   language: string | null
   createdAt: string
+  /** Refinamento pos-MVP - texto editado manualmente pelo usuario (ver comentario completo em
+   * `main/database/schema/transcription.schema.ts`). `null` ate a primeira edicao. */
+  editedText: string | null
 }
 
 export interface TranscriptSegmentEntity {

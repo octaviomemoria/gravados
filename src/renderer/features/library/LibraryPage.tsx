@@ -9,7 +9,8 @@ import { pickPreviewTrack, isVideoTrackType } from '@shared/media/preview-layout
 import { buildMeetingMediaUrl } from '@shared/constants/media-protocol'
 import type { ProjectResponse, ProjectDetailsResponse } from '@shared/schemas/project.schema'
 import type { MarkerResponse } from '@shared/schemas/markers.schema'
-import type { TranscriptionJobResponse } from '@shared/schemas/transcription.schema'
+import type { TranscriptionJobResponse, TranscriptResponse } from '@shared/schemas/transcription.schema'
+import { transcriptDisplayText } from './transcript-display-text'
 
 /**
  * RECOV-002/RECOV-003 (decimo incremento - Fase 2, recuperacao). Um projeto chega com
@@ -111,6 +112,20 @@ export function LibraryPage() {
   const [transcriptionJob, setTranscriptionJob] = useState<TranscriptionJobResponse | null>(null)
   const [transcriptionBusy, setTranscriptionBusy] = useState(false)
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
+
+  // Refinamento pos-MVP (pedido real do usuario - "onde encontro a transcricao?" + "um botao de
+  // abrir transcricao com caixa de texto editavel, copiar, editar"). So carregado sob demanda ao
+  // clicar "Ver transcricao" (nao junto com `transcriptionJob` acima) - a maioria das vezes que os
+  // detalhes sao expandidos o usuario so quer ver status/marcadores, sem precisar buscar o texto
+  // inteiro do transcript.
+  const [transcriptOpenId, setTranscriptOpenId] = useState<string | null>(null)
+  const [transcript, setTranscript] = useState<TranscriptResponse | null>(null)
+  const [transcriptLoading, setTranscriptLoading] = useState(false)
+  const [transcriptViewError, setTranscriptViewError] = useState<string | null>(null)
+  const [transcriptEditing, setTranscriptEditing] = useState(false)
+  const [transcriptDraft, setTranscriptDraft] = useState('')
+  const [transcriptSaving, setTranscriptSaving] = useState(false)
+  const [transcriptCopied, setTranscriptCopied] = useState(false)
 
   // LIB-004: edicao inline do titulo. Refinamento posterior: `notes` (sem UI dedicada ate entao,
   // ver README "Pendências conhecidas") passa a ser editavel no MESMO formulario - reusa
@@ -222,6 +237,10 @@ export function LibraryPage() {
     setMarkers(null)
     setTranscriptionJob(null)
     setTranscriptionError(null)
+    setTranscriptOpenId(null)
+    setTranscript(null)
+    setTranscriptViewError(null)
+    setTranscriptEditing(false)
     setDetailsLoadingId(projectId)
     try {
       const result = await window.meetingStudio.library.getDetails(projectId)
@@ -311,6 +330,68 @@ export function LibraryPage() {
       setTranscriptionError('Nao foi possivel iniciar a transcricao.')
     } finally {
       setTranscriptionBusy(false)
+    }
+  }
+
+  /** Refinamento pos-MVP - abre/fecha a caixa de texto da transcricao. Busca sob demanda (nao
+   * junto com `handleToggleDetails`, ver comentario no estado acima); fechar (segundo clique)
+   * descarta qualquer edicao em andamento sem salvar, mesmo espirito do "Cancelar" abaixo. */
+  async function handleToggleTranscriptView(projectId: string): Promise<void> {
+    if (transcriptOpenId === projectId) {
+      setTranscriptOpenId(null)
+      setTranscript(null)
+      setTranscriptEditing(false)
+      return
+    }
+    setTranscriptViewError(null)
+    setTranscriptOpenId(projectId)
+    setTranscript(null)
+    setTranscriptEditing(false)
+    setTranscriptLoading(true)
+    try {
+      const result = await window.meetingStudio.transcription.getTranscript(projectId)
+      setTranscript(result)
+    } catch {
+      setTranscriptViewError('Nao foi possivel carregar a transcricao.')
+    } finally {
+      setTranscriptLoading(false)
+    }
+  }
+
+  async function handleCopyTranscript(): Promise<void> {
+    if (!transcript) return
+    try {
+      await navigator.clipboard.writeText(transcriptDisplayText(transcript))
+      setTranscriptCopied(true)
+      window.setTimeout(() => setTranscriptCopied(false), 2000)
+    } catch {
+      setTranscriptViewError('Nao foi possivel copiar - verifique a permissao de area de transferencia.')
+    }
+  }
+
+  function handleStartTranscriptEdit(): void {
+    if (!transcript) return
+    setTranscriptViewError(null)
+    setTranscriptDraft(transcriptDisplayText(transcript))
+    setTranscriptEditing(true)
+  }
+
+  function handleCancelTranscriptEdit(): void {
+    setTranscriptEditing(false)
+    setTranscriptDraft('')
+  }
+
+  async function handleSaveTranscriptEdit(projectId: string): Promise<void> {
+    setTranscriptViewError(null)
+    setTranscriptSaving(true)
+    try {
+      const updated = await window.meetingStudio.transcription.updateText(projectId, transcriptDraft)
+      setTranscript(updated)
+      setTranscriptEditing(false)
+    } catch {
+      setTranscriptViewError('Nao foi possivel salvar a edicao.')
+    } finally {
+      setTranscriptSaving(false)
     }
   }
 
@@ -648,16 +729,31 @@ export function LibraryPage() {
                         </>
                       )}
                       <h4>Transcrição</h4>
-                      <Button
-                        variant="secondary"
-                        onClick={() => void handleStartTranscription(project.id)}
-                        disabled={
-                          transcriptionBusy ||
-                          (transcriptionJob?.status === 'QUEUED' || transcriptionJob?.status === 'RUNNING')
-                        }
-                      >
-                        Transcrever
-                      </Button>
+                      <div className="library-list__transcription-actions">
+                        <Button
+                          variant="secondary"
+                          onClick={() => void handleStartTranscription(project.id)}
+                          disabled={
+                            transcriptionBusy ||
+                            (transcriptionJob?.status === 'QUEUED' || transcriptionJob?.status === 'RUNNING')
+                          }
+                        >
+                          Transcrever
+                        </Button>
+                        {/* Refinamento pos-MVP - "onde encontro a transcricao?" (pedido real do
+                            usuario). So aparece quando ha algo pra mostrar - um transcript
+                            `COMPLETED` (o proprio `getTranscript` que decide, nao um filtro no
+                            status do JOB mais recente aqui: um job `FAILED` apos um `COMPLETED`
+                            anterior nao deveria esconder a transcricao ja existente). */}
+                        {transcriptionJob?.status === 'COMPLETED' && (
+                          <Button
+                            variant="secondary"
+                            onClick={() => void handleToggleTranscriptView(project.id)}
+                          >
+                            {transcriptOpenId === project.id ? 'Fechar transcrição' : 'Ver transcrição'}
+                          </Button>
+                        )}
+                      </div>
                       {transcriptionError && (
                         <p className="library-list__error">{transcriptionError}</p>
                       )}
@@ -673,6 +769,52 @@ export function LibraryPage() {
                             transcriptionJob.error &&
                             ` - ${transcriptionJob.error}`}
                         </p>
+                      )}
+                      {transcriptOpenId === project.id && (
+                        <div className="library-list__transcript-panel">
+                          {transcriptLoading && <p className="empty-state">Carregando transcrição...</p>}
+                          {transcriptViewError && (
+                            <p className="library-list__error">{transcriptViewError}</p>
+                          )}
+                          {transcript && !transcriptLoading && (
+                            <>
+                              <textarea
+                                className="library-list__transcript-textarea"
+                                aria-label="Texto da transcrição"
+                                value={transcriptEditing ? transcriptDraft : transcriptDisplayText(transcript)}
+                                onChange={(event) => setTranscriptDraft(event.target.value)}
+                                readOnly={!transcriptEditing}
+                                disabled={transcriptSaving}
+                              />
+                              <div className="library-list__transcript-actions">
+                                <Button variant="secondary" onClick={() => void handleCopyTranscript()}>
+                                  {transcriptCopied ? 'Copiado!' : 'Copiar'}
+                                </Button>
+                                {transcriptEditing ? (
+                                  <>
+                                    <Button
+                                      onClick={() => void handleSaveTranscriptEdit(project.id)}
+                                      disabled={transcriptSaving}
+                                    >
+                                      {transcriptSaving ? 'Salvando...' : 'Salvar'}
+                                    </Button>
+                                    <Button
+                                      variant="secondary"
+                                      onClick={handleCancelTranscriptEdit}
+                                      disabled={transcriptSaving}
+                                    >
+                                      Cancelar
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <Button variant="secondary" onClick={handleStartTranscriptEdit}>
+                                    Editar
+                                  </Button>
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
                       )}
                     </>
                   )}

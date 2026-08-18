@@ -7,7 +7,9 @@ import {
   GetTranscriptionStatusRequestSchema,
   GetTranscriptionStatusResponseSchema,
   GetTranscriptRequestSchema,
-  GetTranscriptResponseSchema
+  GetTranscriptResponseSchema,
+  UpdateTranscriptTextRequestSchema,
+  UpdateTranscriptTextResponseSchema
 } from '../../shared/schemas/transcription.schema'
 import type { TranscriptionApi } from '../../shared/types/preload-api'
 import { invokeChannel } from '../invoke'
@@ -37,6 +39,12 @@ export function createTranscriptionApi(): TranscriptionApi {
         IPC_CHANNELS.transcription.getTranscript,
         { request: GetTranscriptRequestSchema, response: GetTranscriptResponseSchema },
         { projectId }
+      ),
+    updateText: (projectId: string, text: string) =>
+      invokeChannel(
+        IPC_CHANNELS.transcription.updateText,
+        { request: UpdateTranscriptTextRequestSchema, response: UpdateTranscriptTextResponseSchema },
+        { projectId, text }
       )
   }
 }

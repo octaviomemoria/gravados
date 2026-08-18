@@ -4,8 +4,10 @@ import { transcripts, transcriptSegments } from '../schema'
 import type { TranscriptEntity, TranscriptSegmentEntity } from '../../../shared/types/entities'
 
 /** AI-001 - so escrito pelo `TranscriptionService` quando um `transcription_jobs` termina
- * `COMPLETED` (ver comentario em `transcription.schema.ts`) - nenhum metodo de update parcial
- * aqui de proposito, um transcript e imutavel apos criado nesta fase (reprocessar cria um novo). */
+ * `COMPLETED` (ver comentario em `transcription.schema.ts`) - os SEGMENTOS continuam imutaveis
+ * apos criados (`transcript_segments`, usados por busca/deep-link). `editedText` (refinamento
+ * pos-MVP) e a UNICA excecao a essa regra - um campo separado que o usuario pode sobrescrever
+ * livremente via `updateEditedText`, sem afetar os segmentos originais. */
 export class TranscriptRepository {
   constructor(private readonly db: AppDatabase) {}
 
@@ -22,6 +24,10 @@ export class TranscriptRepository {
 
   findByProject(projectId: string): TranscriptEntity[] {
     return this.db.select().from(transcripts).where(eq(transcripts.projectId, projectId)).all()
+  }
+
+  updateEditedText(transcriptId: string, text: string): void {
+    this.db.update(transcripts).set({ editedText: text }).where(eq(transcripts.id, transcriptId)).run()
   }
 
   listSegments(transcriptId: string): TranscriptSegmentEntity[] {
