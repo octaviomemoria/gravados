@@ -34,7 +34,8 @@ export type WhisperTranscribeFn = (
  * nunca o chama, porque `pipeline()` nao emite eventos `progress` quando nao ha nada pra baixar. */
 export type WhisperPipelineFactory = (
   repoId: string,
-  onDownloadProgress?: (percent: number) => void
+  onDownloadProgress?: (percent: number) => void,
+  cacheDir?: string
 ) => Promise<WhisperTranscribeFn>
 
 /** Mapeia o tamanho de modelo exposto na UI (Configuracoes) pro repositorio ONNX real no
@@ -47,11 +48,31 @@ const WHISPER_MODEL_REPO_IDS: Record<WhisperModelId, string> = {
   medium: 'Xenova/whisper-medium'
 }
 
+/**
+ * Bug real encontrado testando transcricao no app EMPACOTADO: `cacheDir` PRECISA ser configurado
+ * no MESMO `env` que `pipeline()` usa aqui embaixo, via este import DINAMICO - configura-lo num
+ * `env` importado ESTATICAMENTE em outro arquivo (como `app-context.ts` fazia antes) nao tem
+ * NENHUM efeito aqui. Motivo: `@huggingface/transformers` publica DOIS entry points Node
+ * diferentes (`exports.node.require` vs `exports.node.import`, ver o `package.json` do pacote) -
+ * um `import()` DINAMICO (como este) sempre resolve pra `dist/transformers.node.mjs`, enquanto um
+ * `import` ESTATICO transpilado pra CJS pelo `electron-vite` (`require(...)`, confirmado no
+ * `out/main/index.js` gerado) resolve pra `dist/transformers.node.cjs` - dois ARQUIVOS diferentes,
+ * cada um com seu PROPRIO `env` (singleton do modulo, nunca compartilhado entre os dois). Mutar o
+ * `env` do lado CJS nunca chegava a afetar o carregamento real do modelo, que sempre acontecia do
+ * lado MJS - por isso a transcricao no app empacotado sempre tentava ler o `.onnx` do cache
+ * PADRAO da biblioteca (dentro do proprio `app.asar`, um caminho que nem existe) em vez do cache
+ * configurado (`userData/whisper-models`, ver `getWhisperModelsCacheDir`). Nunca reproduzido em
+ * dev/testes porque nenhum deles roda de dentro de um `.asar` de verdade.
+ */
 async function loadRealWhisperPipeline(
   repoId: string,
-  onDownloadProgress?: (percent: number) => void
+  onDownloadProgress?: (percent: number) => void,
+  cacheDir?: string
 ): Promise<WhisperTranscribeFn> {
-  const { pipeline } = await import('@huggingface/transformers')
+  const { pipeline, env } = await import('@huggingface/transformers')
+  if (cacheDir) {
+    env.cacheDir = cacheDir
+  }
   const transcriber = await pipeline('automatic-speech-recognition', repoId, {
     // `progress_total` agrega TODOS os arquivos do repositorio (pesos + tokenizer + config) num
     // unico percentual 0-100 - preferido a `progress` (que so cobre UM arquivo por vez e voltaria
@@ -163,7 +184,10 @@ export class WhisperLocalProvider implements TranscriptionProvider {
 
   constructor(
     private readonly getModelId: () => WhisperModelId,
-    private readonly pipelineFactory: WhisperPipelineFactory = loadRealWhisperPipeline
+    private readonly pipelineFactory: WhisperPipelineFactory = loadRealWhisperPipeline,
+    /** Ver comentario completo em `loadRealWhisperPipeline` sobre por que isto precisa ser
+     * repassado ATE AQUI (e nao configurado de fora via `env` importado estaticamente). */
+    private readonly whisperModelsCacheDir?: string
   ) {}
 
   async transcribe(
@@ -186,9 +210,13 @@ export class WhisperLocalProvider implements TranscriptionProvider {
       // usa de 40 a 90 abaixo). So dispara na PRIMEIRA transcricao com um modelo novo (ver
       // `loadRealWhisperPipeline`) - trocas de modelo subsequentes reusam `pipelineCache` e pulam
       // direto pra 40 sem eventos intermediarios, o mesmo comportamento de antes deste refinamento.
-      transcriberPromise = this.pipelineFactory(repoId, (downloadPercent) => {
-        onProgress(20 + Math.round((downloadPercent / 100) * 20))
-      })
+      transcriberPromise = this.pipelineFactory(
+        repoId,
+        (downloadPercent) => {
+          onProgress(20 + Math.round((downloadPercent / 100) * 20))
+        },
+        this.whisperModelsCacheDir
+      )
       this.pipelineCache.set(repoId, transcriberPromise)
     }
     const transcriber = await transcriberPromise

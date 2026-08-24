@@ -19,7 +19,6 @@ import { ExportService } from './services/export.service'
 import { TranscriptionService } from './services/transcription.service'
 import { WhisperLocalProvider } from './services/transcription/providers/whisper-local-provider'
 import type { TranscriptionProvider } from './services/transcription/transcription-provider'
-import { env as transformersEnv } from '@huggingface/transformers'
 import { SearchService } from './services/search.service'
 import { SettingsService, buildDefaultSettings } from './services/settings.service'
 import { JobRunner } from './jobs/job-runner'
@@ -136,16 +135,21 @@ export function createAppContext(options: CreateAppContextOptions): AppContext {
     new TranscriptionJobStore(transcriptionJobRepository)
   )
   // Refinamento pos-SEARCH-001 - modelo cacheado FORA da pasta de gravacoes (ver comentario em
-  // `getWhisperModelsCacheDir`); configurado uma unica vez aqui, antes de qualquer transcricao
-  // poder rodar. Omitido (testes de integracao que montam este contexto sem Electron real) cai no
-  // cache padrao da propria biblioteca - irrelevante em teste, que sempre injeta um
-  // `pipelineFactory` falso e nunca baixa nada de verdade.
-  if (whisperModelsCacheDir) {
-    transformersEnv.cacheDir = whisperModelsCacheDir
-  }
+  // `getWhisperModelsCacheDir`). Bug real encontrado testando no app EMPACOTADO: configurar isso
+  // aqui via um `env` importado ESTATICAMENTE (como este arquivo fazia antes) nao tinha NENHUM
+  // efeito - `@huggingface/transformers` resolve pra um ARQUIVO diferente (e portanto um `env`
+  // singleton diferente) dependendo de `import` estatico vs dinamico; `WhisperLocalProvider` agora
+  // recebe o caminho e configura o `env` do MESMO import dinamico que de fato carrega o modelo
+  // (ver comentario completo em `loadRealWhisperPipeline`). Omitido (testes de integracao que
+  // montam este contexto sem Electron real) cai no cache padrao da propria biblioteca - irrelevante
+  // em teste, que sempre injeta um `pipelineFactory` falso e nunca baixa nada de verdade.
   const whisperLocalProvider: TranscriptionProvider =
     transcriptionProviderOverride ??
-    new WhisperLocalProvider(() => settingsService.get('transcription').modelId)
+    new WhisperLocalProvider(
+      () => settingsService.get('transcription').modelId,
+      undefined,
+      whisperModelsCacheDir
+    )
   const transcriptionService = new TranscriptionService(
     projectRepository,
     trackRepository,

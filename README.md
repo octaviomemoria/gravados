@@ -1975,6 +1975,49 @@ em paralelo no mesmo computador.
   foi avisado diretamente na conversa; a limpeza fica a critério dele (dado real do usuário, fora
   do escopo de uma limpeza automática).
 
+### Transcrição real quebrada no app empacotado (dois bugs de packaging, nunca pegos antes)
+
+Bug real relatado pelo usuário reinstalando o `.exe` corrigido acima: clicar "Transcrever" falhava
+com `spawn ...\app.asar\node_modules\ffmpeg-static\ffmpeg.exe ENOENT`. Investigação encontrou DOIS
+bugs empilhados, ambos da MESMA classe (código que funciona em `pnpm dev`/testes, onde não existe
+nenhum `.asar` de verdade, mas quebra dentro de um app empacotado) - nenhum dos dois tinha como ser
+pego antes, porque nenhum teste automatizado (unitário ou E2E) já tinha exercitado transcrição
+REAL de dentro de um `.asar` de verdade (E2E sempre usa `MEETING_STUDIO_E2E_FAKE_TRANSCRIPTION`).
+
+- **Bug 1 - `ffmpeg-static`/`ffprobe-static` calculam o próprio caminho via `path.join(__dirname,
+  ...)`, sem NENHUMA noção de `asar`.** Dentro de um app empacotado, `__dirname` de um módulo
+  carregado de dentro do `.asar` continua literalmente `...\app.asar\node_modules\...` (o
+  `require()` funciona através do arquivo via um shim do Electron, mas a STRING do caminho nunca
+  muda) - `spawn()` (diferente de `fs.readFile`) não tem esse shim, precisa de um arquivo de
+  verdade em disco, exatamente o que `asarUnpack` já extrai pra `app.asar.unpacked`. Só faltava o
+  CÓDIGO trocar o segmento do caminho antes de spawnar. Corrigido com uma nova função pura
+  `unpackAsarPath` (`ffmpeg-locator.ts`), testada isoladamente (`ffmpeg-locator.test.ts`) sem
+  precisar de um `.asar` real - fora de um app empacotado é sempre um no-op.
+- **Bug 2 - `env.cacheDir` do Whisper (`@huggingface/transformers`) configurado no PROCESSO
+  ERRADO.** Mais sutil: `app-context.ts` importava `env` ESTATICAMENTE
+  (`import { env } from '@huggingface/transformers'`), enquanto `whisper-local-provider.ts` já
+  importava a mesma biblioteca DINAMICAMENTE (`await import(...)`) pra carregar o modelo de
+  verdade. `@huggingface/transformers` publica DOIS entry points Node diferentes no seu
+  `package.json` (`exports.node.require` → `dist/transformers.node.cjs`, `exports.node.import` →
+  `dist/transformers.node.mjs`) - um `import` estático transpilado pra CJS pelo `electron-vite`
+  vira `require(...)` (confirmado direto no `out/main/index.js` gerado), um `import()` dinâmico
+  nunca é reescrito, fica um import ESM de verdade. Resultado: **dois ARQUIVOS diferentes, dois
+  `env` singleton diferentes** - mutar o `env` do lado CJS nunca chegava a afetar o carregamento
+  real do modelo (lado MJS), que sempre caía no cache PADRÃO da própria biblioteca (um caminho
+  dentro do próprio `app.asar`, que nem existe ali). Corrigido movendo a configuração de
+  `cacheDir` pra DENTRO de `loadRealWhisperPipeline` (o mesmo import dinâmico que carrega o
+  modelo) - `WhisperLocalProvider` passou a receber `whisperModelsCacheDir` pelo construtor e
+  repassá-lo ao `pipelineFactory` como terceiro argumento; `app-context.ts` não importa mais
+  `@huggingface/transformers` diretamente.
+- **Validado com um smoke test real de ponta a ponta** contra o `.exe` empacotado de verdade
+  (fora da suíte automatizada - grava via UI, aguarda bytes reais no disco, chama
+  `transcription.start`/`getStatus` via IPC direto): job foi de `RUNNING` (progresso 0→100%) a
+  `COMPLETED`, com um segmento de texto real transcrito - confirma que AMBOS os bugs estão
+  corrigidos no artefato que o usuário de fato instala.
+- Novos testes: `ffmpeg-locator.test.ts` (`unpackAsarPath` isolado + `resolveFfmpegBinaries`),
+  dois novos casos em `whisper-local-provider.test.ts` confirmando que `whisperModelsCacheDir`
+  chega ao `pipelineFactory` (com e sem o valor configurado).
+
 ## Estrutura de diretórios
 
 ```text

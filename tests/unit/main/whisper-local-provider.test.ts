@@ -211,6 +211,32 @@ describe('WhisperLocalProvider', () => {
     expect(result.model).toBe('Xenova/whisper-small')
   })
 
+  it('passes whisperModelsCacheDir through to the pipeline factory (bug real corrigido - ver comentario em loadRealWhisperPipeline)', async () => {
+    let receivedCacheDir: string | undefined
+    const provider = new WhisperLocalProvider(
+      () => 'base',
+      async (_repoId, _onDownloadProgress, cacheDir) => {
+        receivedCacheDir = cacheDir
+        return async () => ({ text: '', chunks: [] })
+      },
+      '/custom/whisper-models-cache'
+    )
+    const filePath = await writeTestWav(16000, [0, 0])
+    await provider.transcribe({ audioPath: filePath }, () => {})
+    expect(receivedCacheDir).toBe('/custom/whisper-models-cache')
+  })
+
+  it('passes undefined cacheDir when the provider is constructed without one (default behavior preserved)', async () => {
+    let receivedCacheDir: string | undefined = 'sentinel'
+    const provider = new WhisperLocalProvider(() => 'base', async (_repoId, _onDownloadProgress, cacheDir) => {
+      receivedCacheDir = cacheDir
+      return async () => ({ text: '', chunks: [] })
+    })
+    const filePath = await writeTestWav(16000, [0, 0])
+    await provider.transcribe({ audioPath: filePath }, () => {})
+    expect(receivedCacheDir).toBeUndefined()
+  })
+
   it('propagates an error thrown by the injected pipeline (never swallows it)', async () => {
     const provider = new WhisperLocalProvider(
       () => 'medium',
