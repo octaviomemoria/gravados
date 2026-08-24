@@ -70,7 +70,12 @@ export function registerHandler<TRequest, TResponse>(
           error: { code: error.code, message: error.message, metadata: error.metadata }
         }
       }
-      logger.error('Erro inesperado em handler IPC', { operation: channel })
+      // Mesmo raciocinio ja aplicado ao resumo de validacao acima e ao `unhandledRejection` global
+      // (`app-lifecycle.ts`) - achado real investigando um relato do usuario ("erro inesperado" ao
+      // gravar) sem NENHUM detalhe no log alem do nome do canal. A mensagem real (nunca o erro cru
+      // inteiro - pode ter campos nao previstos) vai na propria linha de log a partir de agora.
+      const detail = error instanceof Error ? error.message : String(error)
+      logger.error(`Erro inesperado em handler IPC - ${detail}`, { operation: channel })
       return {
         ok: false,
         error: { code: ERROR_CODES.UNKNOWN_ERROR, message: 'Ocorreu um erro inesperado.' }

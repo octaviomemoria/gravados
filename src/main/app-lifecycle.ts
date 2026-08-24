@@ -26,7 +26,12 @@ export function registerLifecycleHandlers(options: { onAllWindowsClosed: () => v
   })
 
   process.on('unhandledRejection', (reason) => {
-    logger.error('unhandledRejection nao tratado no processo main', {
+    // Achado real investigando um relato do usuario ("erro inesperado" gravando) - so `errorCode`
+    // (ex.: "SqliteError") nunca foi suficiente pra diagnosticar sem reproduzir; a mensagem real
+    // (nunca o `reason` inteiro - pode carregar dados sensiveis num objeto nao-Error) vai junto a
+    // partir de agora, mesmo raciocinio ja aplicado ao resumo de validacao IPC em `ipc-handler.ts`.
+    const detail = reason instanceof Error ? reason.message : String(reason)
+    logger.error(`unhandledRejection nao tratado no processo main - ${detail}`, {
       operation: 'process.unhandledRejection',
       errorCode: reason instanceof Error ? reason.name : 'UNKNOWN'
     })

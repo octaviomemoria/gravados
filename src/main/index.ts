@@ -22,6 +22,23 @@ import type { TranscriptionProvider } from './services/transcription/transcripti
 const logger = createScopedLogger('main')
 const VALID_LOG_LEVELS: readonly LogLevel[] = ['error', 'warn', 'info', 'verbose', 'debug', 'silly']
 
+// USERDATA-ISOLATION (bug real encontrado investigando um relato do usuario - "erro inesperado"
+// ao gravar). `app.getPath('userData')` deriva do `name` do package.json - o MESMO em modo dev
+// (`pnpm dev`), em cada `electron.launch()` dos testes E2E, E no app EMPACOTADO instalado (o
+// `package.json` copiado pra dentro do `.asar` nunca teve um campo `productName` proprio pra
+// sobrescrever isso). Resultado: toda sessao de desenvolvimento/teste rodada nesta maquina sempre
+// escreveu no MESMO `meeting-studio.db` que o app instalado do usuario usa de verdade - confirmado
+// via `SqliteError` em `unhandledRejection` no `main.log`, na hora exata em que o usuario testava
+// o app empacotado enquanto uma validacao deste sessao rodava em paralelo (contencao real de
+// escrita concorrente no mesmo arquivo, dois PROCESSOS SEPARADOS com conexoes SQLite distintas).
+// So muda o nome em modo NAO empacotado - o app empacotado continua no MESMO caminho de sempre
+// (nenhuma migracao dos dados reais ja existentes do usuario e necessaria). PRECISA rodar antes de
+// QUALQUER `app.getPath('userData')` (logger, banco, cache do Whisper) - por isso aqui, no topo
+// absoluto do modulo, antes ate do registro do protocolo `meeting-media:`.
+if (!app.isPackaged) {
+  app.setName('meeting-studio-dev')
+}
+
 // EDIT-003 (Fase 3 - preview): PRECISA rodar antes de `app.whenReady()`, no topo do modulo, fora
 // de qualquer funcao - exigencia do Electron para marcar o esquema `meeting-media:` como
 // privilegiado (standard/secure/com suporte a Fetch e streaming).

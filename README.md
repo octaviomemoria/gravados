@@ -1939,6 +1939,42 @@ redimensionável com o conteúdo completo, e botões Copiar/Editar.
   construído a partir dos segmentos originais) - buscar por um trecho só presente na versão editada
   não encontra o resultado; a busca sempre reflete a transcrição ORIGINAL do Whisper.
 
+### `userData` de desenvolvimento isolado do app instalado (bug real de produção corrigido)
+
+Bug real relatado pelo usuário usando o instalador `.exe`: "Ocorreu um erro inesperado" ao clicar
+"Iniciar gravação". Investigação via `main.log` encontrou vários `SqliteError` em
+`unhandledRejection` bem na janela de tempo em que uma sessão de desenvolvimento/validação rodava
+em paralelo no mesmo computador.
+
+- **Causa raiz**: `app.getPath('userData')` deriva do campo `name` do `package.json` - o MESMO
+  tanto em modo `pnpm dev` quanto em CADA `electron.launch()` dos testes E2E quanto no app
+  EMPACOTADO instalado (o `package.json` copiado pra dentro do `.asar` nunca teve um `productName`
+  próprio pra sobrescrever isso). Resultado: toda sessão de desenvolvimento/teste já rodada nesta
+  máquina sempre escreveu no MESMO `meeting-studio.db` que o app instalado do usuário usa de
+  verdade - duas conexões SQLite de PROCESSOS SEPARADOS disputando o mesmo arquivo, causando falhas
+  transitórias reais (não hipotéticas - confirmadas no log, coincidindo no tempo com o relato).
+- **Correção**: `app.setName('meeting-studio-dev')` logo no topo de `main/index.ts`, ANTES de
+  qualquer `app.getPath('userData')` (logger, banco, cache do Whisper) - só em modo NÃO
+  empacotado (`!app.isPackaged`). O app empacotado continua no MESMO caminho de sempre
+  (`%APPDATA%\meeting-studio`) - nenhuma migração dos dados reais já existentes do usuário foi
+  necessária. Confirmado via inspeção direta do sistema de arquivos: uma nova pasta
+  `meeting-studio-dev`, separada, aparece a partir de agora para qualquer execução de
+  desenvolvimento/E2E.
+- **Endurecimento defensivo complementar** (`database/client.ts`): `busy_timeout = 5000` (pragma
+  SQLite) - sem isso, o padrão do `better-sqlite3` é `0`, então qualquer disputa TRANSITÓRIA de
+  milissegundos por uma escrita (mesmo dentro do mesmo processo, ex.: um job em segundo plano)
+  falharia IMEDIATAMENTE em vez de aguardar.
+- **Diagnosticabilidade melhorada** nos dois pontos que engoliam o detalhe real do erro (mesmo
+  raciocínio já aplicado ao log de validação IPC): o `unhandledRejection` global
+  (`app-lifecycle.ts`) e o catch-all genérico de `ipc-handler.ts` agora incluem a mensagem real do
+  erro na própria linha de log, nunca só o nome/código - um caso parecido no futuro será
+  diagnosticável sem precisar reproduzir às cegas.
+- **Efeito colateral conhecido, sem ação necessária**: como dev/E2E compartilhavam o banco real até
+  agora, a Biblioteca do app instalado do usuário provavelmente tem entradas de teste acumuladas
+  (títulos começando com "Reunião de teste E2E - ...") misturadas com gravações reais - o usuário
+  foi avisado diretamente na conversa; a limpeza fica a critério dele (dado real do usuário, fora
+  do escopo de uma limpeza automática).
+
 ## Estrutura de diretórios
 
 ```text

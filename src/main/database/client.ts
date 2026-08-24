@@ -30,6 +30,13 @@ export function createDatabaseClient(options: CreateDatabaseClientOptions): Data
   }
   // SQLite desabilita FKs por padrao; sem isso, ON DELETE CASCADE/SET NULL nao teriam efeito.
   sqlite.pragma('foreign_keys = ON')
+  // Endurecimento defensivo (achado real investigando um `SqliteError` em producao - ver
+  // comentario completo em `main/index.ts`, USERDATA-ISOLATION): sem `busy_timeout`, better-
+  // sqlite3 usa o padrao `0` - qualquer escrita que encontre o arquivo momentaneamente travado por
+  // OUTRA conexao (mesmo dentro do mesmo processo, ex.: um job em segundo plano) falha IMEDIATAMENTE
+  // com `SQLITE_BUSY` em vez de aguardar. 5s da margem suficiente pra uma escrita concorrente
+  // terminar sem o usuario ver um erro por uma disputa transitoria de milissegundos.
+  sqlite.pragma('busy_timeout = 5000')
 
   const db = drizzle(sqlite, { schema })
 
