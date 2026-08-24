@@ -3063,6 +3063,45 @@ instalável de verdade.
   `out/` antes de empacotar, nunca empacota um build desatualizado. Saída em `dist-installer/`
   (gitignored, mesmo padrão de `out/`/`dist/`).
 
+### Preparação técnica para a Microsoft Store (MSIX/APPX)
+
+Pergunta real do usuário: "existe alguma forma de distribuirmos esse aplicativo no Windows
+Store?". Resposta: sim, mas a submissão em si exige uma conta de desenvolvedor no Microsoft
+Partner Center (custo real, cadastro do usuário) e um processo de certificação - nada disso é uma
+decisão técnica livre pra tomar sozinho. O que ESTE incremento entrega é só a preparação técnica
+que não depende de nada disso: a config pra gerar um pacote `.appx` local, validada gerando um de
+verdade.
+
+- **`electron-builder` já suporta o alvo `appx` nativamente** - `win.target` do NSIS (usado por
+  `pnpm dist:win`) foi deixado INTOCADO de propósito; o `.appx` é um alvo adicional, gerado só sob
+  demanda via `pnpm dist:win:appx`, pra nunca mudar o comportamento já validado do instalador
+  atual.
+- **`identityName`/`publisher` propositalmente OMITIDOS** - segundo a própria documentação do
+  `electron-builder`, `publisher` "não é usado se o AppX for gerado só para teste" (o caso agora,
+  sem reserva de nome no Partner Center ainda). Um pacote gerado assim serve pra TESTAR localmente
+  (sideload com o modo de desenvolvedor do Windows) e confirmar que o app funciona dentro do
+  sandbox MSIX - mas não pode ser submetido à Store de verdade sem antes reservar o nome do app no
+  Partner Center, que atribui os valores corretos.
+- **Capabilities escolhidas refletem exatamente o que o app já usa de verdade** - `microphone`/
+  `webcam` (captura real de áudio/vídeo), `graphicsCapture` (necessária pro `desktopCapturer`
+  funcionar dentro do sandbox MSIX - sem ela a lista de telas/janelas para captura viria vazia),
+  `documentsLibrary`/`broadFileSystemAccess` (a biblioteca padrão vive em Documentos, fora da
+  pasta virtualizada de dados do app dentro do container MSIX).
+- **Risco real documentado, não escondido**: `broadFileSystemAccess` é uma "restricted capability"
+  - a Microsoft exige justificativa explícita na submissão pra Store, mesmo sendo tecnicamente
+  válida aqui; e tanto a captura de tela quanto o áudio do sistema (loopback) podem ter mais
+  fricção dentro do sandbox MSIX do que num instalador tradicional - vale testar isso a fundo antes
+  de investir tempo/dinheiro numa submissão real de certificação.
+- **Validado gerando um `.appx` de verdade** (`pnpm dist:win:appx`, ~600MB) - build concluído com
+  sucesso (o único erro no processo foi a extração de arquivos `.dylib` do macOS de uma dependência
+  de assinatura de código, irrelevante pra um build Windows, e não impediu o `.appx` final de ser
+  gerado).
+- Novo script `pnpm dist:win:appx` (`electron-vite build && electron-builder --win appx`).
+- **Pendência clara pro usuário decidir**: nada aqui cria conta nem submete nada à Store - o
+  próximo passo real (reservar o nome no Partner Center, testar o sandbox MSIX com captura de tela/
+  áudio do sistema de verdade, e eventualmente submeter pra certificação) depende inteiramente de
+  uma decisão do usuário.
+
 ### Indicador explícito de espaço em disco (Fase 1)
 
 Resolve a pendência registrada desde o monitor de espaço em disco (RF-042): o texto sempre mostrava

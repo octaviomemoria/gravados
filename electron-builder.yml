@@ -67,5 +67,42 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: Meeting Studio
 
+# STORE-PREP (refinamento pos-MVP, preparacao tecnica pedida pelo usuario - "existe forma de
+# distribuir na Windows Store?"). SO a config do pacote MSIX/APPX em si - NAO faz parte do target
+# `win` padrao acima (que continua gerando so o NSIS de sempre via `pnpm dist:win`), pra nao mudar
+# o comportamento ja validado do instalador atual. Gerado sob demanda via `pnpm dist:win:appx`.
+#
+# `identityName`/`publisher` propositalmente OMITIDOS aqui - segundo a doc do electron-builder,
+# `publisher` "nao e usado se o AppX for gerado so para teste" (que e o caso agora, sem conta no
+# Partner Center ainda). Um pacote gerado assim serve pra TESTAR localmente (sideload com o modo de
+# desenvolvedor do Windows ativado) e pra confirmar que o app funciona dentro do sandbox MSIX, mas
+# NAO pode ser submetido a Store de verdade sem antes reservar o nome do app no Partner Center - o
+# proprio Partner Center atribui o `identityName`/`publisher` corretos, que precisam substituir
+# estes valores antes de qualquer submissao real.
+#
+# Capabilities escolhidas com cuidado - cada uma reflete uma permissao que o app JA usa de verdade:
+# `microphone`/`webcam` (captura real de audio/video), `graphicsCapture` (necessaria pro
+# `desktopCapturer`/captura de tela funcionar dentro do sandbox MSIX - sem ela a lista de telas/
+# janelas vem vazia), `documentsLibrary`/`broadFileSystemAccess` (a biblioteca padrao vive em
+# Documentos, fora da pasta virtualizada de dados do app - sem `broadFileSystemAccess` o app so
+# enxergaria seus proprios arquivos dentro do container MSIX). `broadFileSystemAccess` e uma
+# "restricted capability" - a Microsoft exige justificativa explicita na submissao pra Store,
+# mesmo sendo tecnicamente valida aqui; risco real de fricção extra na certificação, documentado no
+# README.
+appx:
+  applicationId: MeetingStudio
+  identityName: MeetingStudio
+  displayName: Meeting Studio
+  publisherDisplayName: Meeting Studio
+  languages:
+    - pt-BR
+    - en-US
+  capabilities:
+    - microphone
+    - webcam
+    - graphicsCapture
+    - documentsLibrary
+    - broadFileSystemAccess
+
 # `asar: true` (padrao do electron-builder) - todo o resto do app fica compactado num unico
 # arquivo, exceto o que `asarUnpack` extrai explicitamente acima.
