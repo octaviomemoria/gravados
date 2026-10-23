@@ -233,16 +233,19 @@ test.describe('library (details, rename, delete)', () => {
     // texto editavel com copiar/editar). `buildFakeTranscriptionProviderForE2E` (main/index.ts)
     // sempre devolve o segmento fixo "teste e2e".
     await listItem.getByRole('button', { name: 'Ver transcrição' }).click()
-    const textarea = listItem.getByLabel('Texto da transcrição')
+    // Escopo no painel da transcricao: o cartao da Biblioteca ja tem um "Editar" proprio (edita o
+    // projeto), e um seletor so por nome casaria com os dois (strict mode violation no CI).
+    const transcriptPanel = listItem.locator('.library-list__transcript-panel')
+    const textarea = transcriptPanel.getByLabel('Texto da transcrição')
     await expect(textarea).toBeVisible({ timeout: POLL_TIMEOUT_MS })
     await expect(textarea).toHaveValue('teste e2e')
     await expect(textarea).toHaveAttribute('readonly', '')
 
-    await listItem.getByRole('button', { name: 'Editar' }).click()
+    await transcriptPanel.getByRole('button', { name: 'Editar', exact: true }).click()
     await expect(textarea).not.toHaveAttribute('readonly', '')
     await textarea.fill('texto corrigido manualmente')
-    await listItem.getByRole('button', { name: 'Salvar' }).click()
-    await expect(listItem.getByRole('button', { name: 'Editar' })).toBeVisible({ timeout: POLL_TIMEOUT_MS })
+    await transcriptPanel.getByRole('button', { name: 'Salvar', exact: true }).click()
+    await expect(transcriptPanel.getByRole('button', { name: 'Editar', exact: true })).toBeVisible({ timeout: POLL_TIMEOUT_MS })
     await expect(textarea).toHaveValue('texto corrigido manualmente')
     await expect(textarea).toHaveAttribute('readonly', '')
 
